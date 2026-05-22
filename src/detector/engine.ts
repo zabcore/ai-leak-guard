@@ -21,6 +21,12 @@ export function detect(text: string, rules: Rule[] = RULES): Finding[] {
 
   const findings: Finding[] = []
   for (const rule of rules) {
+    // A non-global pattern never advances lastIndex, so exec() in the loop
+    // below would spin forever. Fail loudly instead — this also guards against
+    // malformed remote rules in a future rules-updater.
+    if (!rule.pattern.global) {
+      throw new Error(`[AI Leak Guard] rule "${rule.id}" pattern must use the global (g) flag`)
+    }
     rule.pattern.lastIndex = 0
     let match: RegExpExecArray | null
     while ((match = rule.pattern.exec(text)) !== null) {

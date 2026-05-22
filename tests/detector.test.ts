@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { detect, mergeOverlapping } from '../src/detector/engine'
 import { RULES } from '../src/detector/rules'
-import type { Finding } from '../src/detector/types'
+import type { Finding, Rule } from '../src/detector/types'
 
 function ruleIds(findings: Finding[]): string[] {
   return findings.map((f) => f.ruleId)
@@ -169,6 +169,16 @@ describe('detect — engine behavior', () => {
 
   it('uses the default RULES when no rules argument is given', () => {
     expect(ruleIds(detect('contains AKIAIOSFODNN7EXAMPLE here'))).toContain('aws_access_key')
+  })
+
+  it('throws a clear error when a rule pattern lacks the global flag', () => {
+    const badRule: Rule = {
+      id: 'non_global_rule',
+      label: 'Non-global',
+      severity: 'high',
+      pattern: /secret/,
+    }
+    expect(() => detect('this text is long enough to scan', [badRule])).toThrow(/non_global_rule/)
   })
 
   it('reports correct ruleId, value, start, and end for a single finding', () => {
