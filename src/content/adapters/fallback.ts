@@ -2,8 +2,19 @@ import type { SiteAdapter } from './base'
 
 type TextField = HTMLTextAreaElement | HTMLInputElement
 
+// Input types that behave like a free-text prompt. Everything else (checkbox,
+// radio, file, number, date pickers, etc.) is intentionally excluded — they are
+// not prompts. password is excluded too: the browser already protects it and we
+// must never read/transform it.
+const TEXT_INPUT_TYPES = new Set(['text', 'search', 'url', 'email', 'tel'])
+
 export function isTextField(el: Element): el is TextField {
-  return el.tagName === 'TEXTAREA' || el.tagName === 'INPUT'
+  if (el.tagName === 'TEXTAREA') return true
+  if (el.tagName !== 'INPUT') return false
+  const type = el.getAttribute('type')
+  // A missing or empty type attribute defaults to "text".
+  if (type === null || type === '') return true
+  return TEXT_INPUT_TYPES.has(type.toLowerCase())
 }
 
 // Checks the live `isContentEditable` property and falls back to the attribute,

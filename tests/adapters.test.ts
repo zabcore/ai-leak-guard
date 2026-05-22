@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { getAdapterForHost, ADAPTERS, fallback } from '../src/content/adapters'
 import chatgpt from '../src/content/adapters/chatgpt'
 import claude from '../src/content/adapters/claude'
@@ -111,13 +111,14 @@ describe('fallback.insertText', () => {
     expect(ta.value).toBe('masked')
   })
 
-  it('dispatches a bubbling input event', () => {
+  it('dispatches both input and change events', () => {
     const ta = document.createElement('textarea')
     document.body.appendChild(ta)
     const spy = vi.spyOn(ta, 'dispatchEvent')
     fallback.insertText(ta, 'x')
     const dispatched = spy.mock.calls.map((call) => call[0].type)
     expect(dispatched).toContain('input')
+    expect(dispatched).toContain('change')
   })
 
   it('inserts at the current cursor position', () => {
@@ -144,17 +145,108 @@ describe('fallback.replaceContents', () => {
     expect(ta.value).toBe('restored')
   })
 
-  it('dispatches a bubbling change event', () => {
+  it('dispatches both input and change events', () => {
     const ta = document.createElement('textarea')
     document.body.appendChild(ta)
     const spy = vi.spyOn(ta, 'dispatchEvent')
     fallback.replaceContents(ta, 'restored')
     const dispatched = spy.mock.calls.map((call) => call[0].type)
+    expect(dispatched).toContain('input')
     expect(dispatched).toContain('change')
   })
 
   it('returns false for a non-editable element', () => {
     expect(fallback.replaceContents(document.createElement('div'), 'x')).toBe(false)
+  })
+})
+
+describe('fallback.isPromptInput input-type restriction', () => {
+  const allowed = ['text', 'search', 'url', 'email', 'tel']
+  it.each(allowed)('accepts input[type=%s]', (type) => {
+    const input = document.createElement('input')
+    input.setAttribute('type', type)
+    expect(fallback.isPromptInput(input)).toBe(true)
+  })
+
+  it('accepts an input with no type attribute (defaults to text)', () => {
+    expect(fallback.isPromptInput(document.createElement('input'))).toBe(true)
+  })
+
+  it('accepts an input with an empty type attribute', () => {
+    const input = document.createElement('input')
+    input.setAttribute('type', '')
+    expect(fallback.isPromptInput(input)).toBe(true)
+  })
+
+  const excluded = [
+    'checkbox',
+    'radio',
+    'submit',
+    'button',
+    'file',
+    'image',
+    'color',
+    'hidden',
+    'password',
+    'range',
+    'date',
+    'time',
+    'datetime-local',
+    'month',
+    'week',
+    'number',
+  ]
+  it.each(excluded)('rejects input[type=%s]', (type) => {
+    const input = document.createElement('input')
+    input.setAttribute('type', type)
+    expect(fallback.isPromptInput(input)).toBe(false)
+  })
+})
+
+describe('fallback contenteditable handling', () => {
+  let editable: HTMLElement
+
+  beforeEach(() => {
+    editable = document.createElement('div')
+    editable.setAttribute('contenteditable', 'true')
+    document.body.appendChild(editable)
+    // jsdom 29 does not define execCommand at all, so assign a mock that
+    // simulates the parts the adapter relies on: insertText writes the value,
+    // selectAll is a no-op.
+    document.execCommand = vi.fn((command: string, _showUi?: boolean, value?: string): boolean => {
+      if (command === 'insertText') {
+        editable.textContent = value ?? ''
+        return true
+      }
+      if (command === 'selectAll') {
+        return true
+      }
+      return false
+    })
+  })
+
+  afterEach(() => {
+    delete (document as { execCommand?: Document['execCommand'] }).execCommand
+  })
+
+  it('insertText focuses the element, runs execCommand insertText, and updates content', () => {
+    const focusSpy = vi.spyOn(editable, 'focus')
+    const ok = fallback.insertText(editable, 'masked value')
+    expect(ok).toBe(true)
+    expect(focusSpy).toHaveBeenCalled()
+    expect(document.execCommand).toHaveBeenCalledWith('insertText', false, 'masked value')
+    expect(editable.textContent).toBe('masked value')
+  })
+
+  it('replaceContents focuses, selects all, runs insertText, and replaces content', () => {
+    editable.textContent = 'original sensitive text'
+    const focusSpy = vi.spyOn(editable, 'focus')
+    const ok = fallback.replaceContents(editable, 'restored')
+    expect(ok).toBe(true)
+    expect(focusSpy).toHaveBeenCalled()
+    expect(document.execCommand).toHaveBeenCalledWith('selectAll')
+    expect(document.execCommand).toHaveBeenCalledWith('insertText', false, 'restored')
+    expect(editable.textContent).toBe('restored')
   })
 })
 
