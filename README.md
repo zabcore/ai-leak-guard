@@ -37,6 +37,16 @@ Then load the extension in Chrome:
 | `npm run format`    | Format with Prettier                      |
 | `npm run typecheck` | Type-check with the TypeScript compiler   |
 
+## Testing
+
+The detection engine is a pure, Node-testable module with no browser
+dependencies. Run the unit tests with [Vitest](https://vitest.dev):
+
+```bash
+npm test              # run all tests once
+npm test -- --watch   # watch mode (re-runs on file changes)
+```
+
 ## Documentation
 
 - [Product Requirements (PRD)](docs/PRD.md)

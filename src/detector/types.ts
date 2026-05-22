@@ -1,4 +1,4 @@
-export type Severity = 'critical' | 'high' | 'medium'
+export type Severity = 'critical' | 'high' | 'medium' | 'low'
 
 export interface Rule {
   id: string
@@ -11,8 +11,8 @@ export interface Rule {
 export interface Finding {
   ruleId: string
   label: string
-  match: string
+  severity: Severity
   start: number
   end: number
-  severity: Severity
+  value: string
 }
