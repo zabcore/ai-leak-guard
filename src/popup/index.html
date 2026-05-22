@@ -8,8 +8,22 @@
   </head>
   <body>
     <main class="popup">
-      <h1 class="popup__title">AI Leak Guard</h1>
-      <p id="counter" class="popup__counter">0 leaks prevented</p>
+      <header class="popup__header">
+        <span class="popup__shield" aria-hidden="true">🛡</span>
+        <h1 class="popup__title">AI Leak Guard</h1>
+      </header>
+
+      <div class="popup__count" id="total">0</div>
+      <div class="popup__sub"><span id="today">0</span> today</div>
+      <div class="popup__caption">leaks prevented</div>
+
+      <label class="toggle">
+        <input type="checkbox" id="toggle" checked />
+        <span class="toggle__track"><span class="toggle__thumb"></span></span>
+        <span class="toggle__label" id="toggle-label">Enabled</span>
+      </label>
+
+      <footer class="popup__footer">Local-only. No data leaves your device.</footer>
     </main>
     <script type="module" src="./popup.ts"></script>
   </body>
