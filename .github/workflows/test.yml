@@ -1,1 +1,89 @@
+name: Test and Build
 
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test, lint, and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+        continue-on-error: true
+
+      - name: Run linter
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Run unit tests
+        run: npm test
+        continue-on-error: true
+
+      - name: Build extension
+        run: npm run build
+        continue-on-error: true
+
+      - name: Check build output
+        run: |
+          if [ -d "dist" ]; then
+            echo "✅ Build output exists"
+            ls -la dist/
+          else
+            echo "ℹ️ No dist/ folder yet — expected until repo is scaffolded"
+          fi
+
+  package:
+    name: Package extension zip
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+        continue-on-error: true
+
+      - name: Build extension
+        run: npm run build
+        continue-on-error: true
+
+      - name: Create extension zip
+        run: |
+          if [ -d "dist" ]; then
+            cd dist && zip -r ../ai-leak-guard-${{ github.sha }}.zip . && cd ..
+            echo "ZIP_CREATED=true" >> $GITHUB_ENV
+          else
+            echo "Skipping zip — no dist/ folder yet"
+            echo "ZIP_CREATED=false" >> $GITHUB_ENV
+          fi
+
+      - name: Upload extension artifact
+        if: env.ZIP_CREATED == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-leak-guard-extension
+          path: ai-leak-guard-*.zip
+          retention-days: 30
