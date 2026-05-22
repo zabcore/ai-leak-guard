@@ -6,7 +6,9 @@
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=20"
+   "engines": {
+     "node": ">=22"
+   },
   },
   "scripts": {
     "build": "vite build",
