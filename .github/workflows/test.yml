@@ -18,37 +18,20 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Check for package.json
-        id: check_pkg
-        run: |
-          if [ -f "package.json" ]; then
-            echo "has_pkg=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_pkg=false" >> $GITHUB_OUTPUT
-            echo "ℹ️ No package.json yet — repo not scaffolded. Skipping npm steps."
-          fi
+          node-version: '22'
+          cache: 'npm'
 
       - name: Install dependencies
-        if: steps.check_pkg.outputs.has_pkg == 'true'
         run: npm ci
-        continue-on-error: true
 
       - name: Run linter
-        if: steps.check_pkg.outputs.has_pkg == 'true'
         run: npm run lint
-        continue-on-error: true
 
       - name: Run unit tests
-        if: steps.check_pkg.outputs.has_pkg == 'true'
         run: npm test
-        continue-on-error: true
 
       - name: Build extension
-        if: steps.check_pkg.outputs.has_pkg == 'true'
         run: npm run build
-        continue-on-error: true
 
       - name: Check build output
         run: |
@@ -56,7 +39,8 @@ jobs:
             echo "✅ Build output exists"
             ls -la dist/
           else
-            echo "ℹ️ No dist/ folder yet — expected until repo is scaffolded"
+            echo "❌ No dist/ folder produced by build"
+            exit 1
           fi
 
   package:
@@ -69,45 +53,22 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Check for package.json
-        id: check_pkg
-        run: |
-          if [ -f "package.json" ]; then
-            echo "has_pkg=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_pkg=false" >> $GITHUB_OUTPUT
-            echo "ℹ️ No package.json yet — skipping packaging."
-          fi
-
       - name: Set up Node.js
-        if: steps.check_pkg.outputs.has_pkg == 'true'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
+          cache: 'npm'
 
       - name: Install dependencies
-        if: steps.check_pkg.outputs.has_pkg == 'true'
         run: npm ci
-        continue-on-error: true
 
       - name: Build extension
-        if: steps.check_pkg.outputs.has_pkg == 'true'
         run: npm run build
-        continue-on-error: true
 
       - name: Create extension zip
-        if: steps.check_pkg.outputs.has_pkg == 'true'
-        run: |
-          if [ -d "dist" ]; then
-            cd dist && zip -r ../ai-leak-guard-${{ github.sha }}.zip . && cd ..
-            echo "ZIP_CREATED=true" >> $GITHUB_ENV
-          else
-            echo "Skipping zip — no dist/ folder yet"
-            echo "ZIP_CREATED=false" >> $GITHUB_ENV
-          fi
+        run: cd dist && zip -r ../ai-leak-guard-${{ github.sha }}.zip . && cd ..
 
       - name: Upload extension artifact
-        if: env.ZIP_CREATED == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ai-leak-guard-extension
