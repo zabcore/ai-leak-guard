@@ -111,14 +111,15 @@ describe('fallback.insertText', () => {
     expect(ta.value).toBe('masked')
   })
 
-  it('dispatches both input and change events', () => {
+  it('dispatches bubbling input and change events', () => {
     const ta = document.createElement('textarea')
     document.body.appendChild(ta)
     const spy = vi.spyOn(ta, 'dispatchEvent')
     fallback.insertText(ta, 'x')
-    const dispatched = spy.mock.calls.map((call) => call[0].type)
-    expect(dispatched).toContain('input')
-    expect(dispatched).toContain('change')
+    const inputEvt = spy.mock.calls.find(([evt]) => evt.type === 'input')?.[0]
+    const changeEvt = spy.mock.calls.find(([evt]) => evt.type === 'change')?.[0]
+    expect(inputEvt?.bubbles).toBe(true)
+    expect(changeEvt?.bubbles).toBe(true)
   })
 
   it('inserts at the current cursor position', () => {
@@ -145,14 +146,15 @@ describe('fallback.replaceContents', () => {
     expect(ta.value).toBe('restored')
   })
 
-  it('dispatches both input and change events', () => {
+  it('dispatches bubbling input and change events', () => {
     const ta = document.createElement('textarea')
     document.body.appendChild(ta)
     const spy = vi.spyOn(ta, 'dispatchEvent')
     fallback.replaceContents(ta, 'restored')
-    const dispatched = spy.mock.calls.map((call) => call[0].type)
-    expect(dispatched).toContain('input')
-    expect(dispatched).toContain('change')
+    const inputEvt = spy.mock.calls.find(([evt]) => evt.type === 'input')?.[0]
+    const changeEvt = spy.mock.calls.find(([evt]) => evt.type === 'change')?.[0]
+    expect(inputEvt?.bubbles).toBe(true)
+    expect(changeEvt?.bubbles).toBe(true)
   })
 
   it('returns false for a non-editable element', () => {
