@@ -1,12 +1,12 @@
 # AI Leak Guard
 
-A free Chrome extension that protects you from accidentally leaking sensitive information into AI tools. Before you paste content into ChatGPT, Claude, Gemini, Perplexity, or Microsoft Copilot, AI Leak Guard catches sensitive data — API keys, SSNs, credit cards, secrets — and masks it locally, on your device, before it ever leaves your browser. No backend, no database, no accounts, no telemetry.
+AI Leak Guard is a free Chrome extension project aimed at preventing accidental leakage of sensitive information into AI tools. Planned behavior (in upcoming issues) is to detect sensitive data — API keys, SSNs, credit cards, secrets — and mask it locally on your device before it leaves your browser. No backend, no database, no accounts, no telemetry.
 
 > **Privacy promise:** Your text never leaves your browser. Detection and masking happen locally on your device. Read the full [Privacy Policy](docs/PRIVACY.md).
 
 ## Status
 
-This repository is at the scaffolding stage (V1, issue #1). The build, lint, and test tooling are in place; detection, paste interception, site adapters, the toast UI, and the rules updater land in subsequent issues.
+This repository is at the scaffolding stage (V1, issue `#1`). The build, lint, and test tooling are in place; detection, paste interception, site adapters, the toast UI, and the rules updater land in subsequent issues.
 
 ## Local development
 
