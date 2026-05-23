@@ -4,20 +4,22 @@ import { mask } from './masker'
 import { getAdapterForHost } from './adapters'
 import { maskInsertAndNotify } from './paste-flow'
 import { undoMask } from './undo'
+import { resolveInitialEnabled } from './enabled-state'
 import { getPrefs } from '../shared/storage'
 
 const MIN_TEXT_LENGTH = 8
 
 const adapter = getAdapterForHost(window.location.hostname)
 
-// `preventDefault()` on a paste event must run synchronously, so we cannot await
-// a storage read inside the handler. Instead we cache the enabled flag and keep
-// it live via storage.onChanged, which lets the popup toggle take effect
+// Default to disabled until the stored preference is confirmed. This avoids
+// masking during the brief startup window if the user had turned the extension
+// off, and fails closed (stays inactive) if the preference can't be read. The
+// flag is then kept live via storage.onChanged so the popup toggle takes effect
 // immediately without a page reload.
-let enabled = true
+let enabled = false
 
-void getPrefs().then((prefs) => {
-  enabled = prefs.enabled
+void resolveInitialEnabled(getPrefs).then((value) => {
+  enabled = value
 })
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
