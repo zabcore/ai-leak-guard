@@ -1,8 +1,5 @@
 import { getCounters, getPrefs, setPrefs } from '../shared/storage'
-
-function todayKey(): string {
-  return new Date().toISOString().slice(0, 10)
-}
+import { localDateKey } from '../shared/counter'
 
 function setToggleLabel(enabled: boolean): void {
   const label = document.getElementById('toggle-label')
@@ -17,7 +14,7 @@ async function render(): Promise<void> {
   const toggle = document.getElementById('toggle')
 
   if (total !== null) total.textContent = String(counters.total)
-  if (today !== null) today.textContent = String(counters.byDay[todayKey()] ?? 0)
+  if (today !== null) today.textContent = String(counters.byDay[localDateKey()] ?? 0)
   if (toggle instanceof HTMLInputElement) toggle.checked = prefs.enabled
   setToggleLabel(prefs.enabled)
 }
