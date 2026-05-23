@@ -1,22 +1,20 @@
 export interface ToastOptions {
   count: number
   labels: string[]
-  onUndo: () => void
+  // Returns true if the undo succeeded. On false, the toast shows an error
+  // instead of dismissing.
+  onUndo: () => boolean
   onDismiss?: () => void
-  durationMs?: number
 }
 
 export interface ToastHandle {
   dismiss: () => void
-  disableUndo: () => void
 }
 
-const DEFAULT_DURATION_MS = 6000
-const NOOP_HANDLE: ToastHandle = { dismiss: () => {}, disableUndo: () => {} }
+const NOOP_HANDLE: ToastHandle = { dismiss: () => {} }
 
 interface ActiveToast {
   host: HTMLElement
-  timer: ReturnType<typeof setTimeout>
   onDismiss?: () => void
 }
 
@@ -24,7 +22,6 @@ let active: ActiveToast | null = null
 
 function dismiss(): void {
   if (active === null) return
-  clearTimeout(active.timer)
   active.host.remove()
   const onDismiss = active.onDismiss
   active = null
@@ -39,9 +36,9 @@ const STYLES = `
     z-index: 2147483647;
     display: flex;
     align-items: center;
-    gap: 12px;
-    max-width: 380px;
-    padding: 12px 16px;
+    gap: 10px;
+    max-width: 420px;
+    padding: 12px 14px;
     background: #1a1a1a;
     color: #ffffff;
     border-radius: 10px;
@@ -57,6 +54,9 @@ const STYLES = `
   .toast__text {
     flex: 1 1 auto;
   }
+  .toast__text--error {
+    color: #f87171;
+  }
   .toast__undo {
     flex: 0 0 auto;
     padding: 6px 12px;
@@ -71,18 +71,29 @@ const STYLES = `
   .toast__undo:hover {
     background: rgba(74, 222, 128, 0.12);
   }
-  .toast__undo:disabled {
-    opacity: 0.45;
-    cursor: default;
-    color: #9ca3af;
-    border-color: #9ca3af;
+  .toast__close {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    padding: 0;
     background: transparent;
+    color: rgba(255, 255, 255, 0.55);
+    border: none;
+    border-radius: 6px;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .toast__close:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.12);
   }
 `
 
 // Shows a Shadow DOM toast in the bottom-right corner. The shadow root uses
 // mode 'closed' so the host page cannot read or restyle it. Only one toast is
-// visible at a time — a new one dismisses the previous.
+// visible at a time — a new one dismisses the previous. The toast stays until
+// the user clicks Undo or the close (×) button; it does not auto-dismiss.
 export function showToast(opts: ToastOptions): ToastHandle {
   dismiss()
 
@@ -100,22 +111,35 @@ export function showToast(opts: ToastOptions): ToastHandle {
   icon.textContent = '🛡'
 
   const noun = opts.count === 1 ? 'item' : 'items'
-  const baseMessage = `${opts.count} sensitive ${noun} masked (${opts.labels.join(', ')})`
-
   const text = document.createElement('span')
   text.className = 'toast__text'
-  text.textContent = baseMessage
+  text.textContent = `${opts.count} sensitive ${noun} masked (${opts.labels.join(', ')})`
 
   const undo = document.createElement('button')
   undo.className = 'toast__undo'
   undo.type = 'button'
   undo.textContent = 'Undo'
   undo.addEventListener('click', () => {
-    dismiss()
-    opts.onUndo()
+    if (opts.onUndo()) {
+      dismiss()
+    } else {
+      undo.disabled = true
+      text.className = 'toast__text toast__text--error'
+      text.textContent = "Couldn't undo automatically — please clear the field manually."
+    }
   })
 
-  container.append(icon, text, undo)
+  const close = document.createElement('button')
+  close.className = 'toast__close'
+  close.type = 'button'
+  close.textContent = '×'
+  close.setAttribute('aria-label', 'Dismiss')
+  close.title = 'Dismiss'
+  close.addEventListener('click', () => {
+    dismiss()
+  })
+
+  container.append(icon, text, undo, close)
   shadow.append(style, container)
 
   // Defensive: if the document has no body yet, fall back to the root element;
@@ -124,15 +148,7 @@ export function showToast(opts: ToastOptions): ToastHandle {
   if (mount === null) return NOOP_HANDLE
   mount.appendChild(host)
 
-  const duration = opts.durationMs ?? DEFAULT_DURATION_MS
-  active = { host, timer: setTimeout(dismiss, duration), onDismiss: opts.onDismiss }
+  active = { host, onDismiss: opts.onDismiss }
 
-  return {
-    dismiss,
-    disableUndo: () => {
-      undo.disabled = true
-      undo.title = 'Undo is unavailable because the input changed after masking'
-      text.textContent = `${baseMessage} — input changed, undo disabled`
-    },
-  }
+  return { dismiss }
 }
