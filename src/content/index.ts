@@ -9,7 +9,7 @@ import { getPrefs } from '../shared/storage'
 
 const MIN_TEXT_LENGTH = 8
 
-const adapter = getAdapterForHost(window.location.hostname)
+const adapter = getAdapterForHost(globalThis.location.hostname)
 
 // Default to disabled until the stored preference is confirmed. This avoids
 // masking during the brief startup window if the user had turned the extension
@@ -50,34 +50,21 @@ document.addEventListener(
       event.preventDefault()
       event.stopPropagation()
 
-      const { text: maskedText } = mask(text, findings)
-
-      // Undo restores the full original paste, which is only safe while the
-      // input still holds exactly what we inserted. Once the user edits the
-      // input, disable Undo (and say so) rather than clobber their typing.
-      // Our own insertion's input event fired synchronously during insertion,
-      // before this listener is attached, so it won't trip the dirty check.
-      const onUserEdit = (): void => {
-        result.handle?.disableUndo()
-        target.removeEventListener('input', onUserEdit)
-      }
+      const { text: maskedText, maskedSegments } = mask(text, findings)
 
       const labels = [...new Set(findings.map((finding) => finding.label))]
       const result = maskInsertAndNotify(adapter, target, maskedText, findings, {
         count: findings.length,
         labels,
-        onUndo: () => {
-          void undoMask(adapter, target, text, findings)
-        },
-        onDismiss: () => {
-          target.removeEventListener('input', onUserEdit)
-        },
+        // Undo restores only the placeholder spans (preserving anything typed
+        // after the paste) and reports success, so it is always safe to offer —
+        // no fragile edit-detection that could wrongly block it when the site
+        // fires its own DOM events after insertion.
+        onUndo: () => undoMask(adapter, target, maskedSegments, findings),
       })
 
       // Both insertion paths failed: nothing was pasted and no toast shown.
       if (!result.inserted) return
-
-      target.addEventListener('input', onUserEdit)
     } catch (err) {
       // Never break the user's paste flow; on any error let the original through.
       console.error('[AI Leak Guard] paste handler error:', err)

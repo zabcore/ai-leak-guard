@@ -14,7 +14,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:sw": "node scripts/verify-sw.mjs"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.4.0",
