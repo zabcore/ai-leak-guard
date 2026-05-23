@@ -3,6 +3,8 @@ import type { MaskedSegment } from './masker'
 import type { SiteAdapter } from './adapters/base'
 import { decrementCounters } from '../shared/counter'
 
+export type UndoOutcome = 'restored' | 'partial' | 'failed'
+
 function readCurrentText(target: Element): string {
   if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
     return (target as HTMLTextAreaElement | HTMLInputElement).value
@@ -10,36 +12,47 @@ function readCurrentText(target: Element): string {
   return target.textContent ?? ''
 }
 
-// Restores the original values by replacing ONLY the placeholder spans within
-// the current field content — anything the user typed after the paste is left
-// untouched. Placeholders are replaced left-to-right so repeated placeholders
-// map to their respective originals. If a placeholder can no longer be found
-// (the user edited it), we refuse to restore and return false so the caller can
-// surface an error rather than destroy content. Returns false (without
-// decrementing) when restoration can't be applied or the editor rejects it.
+// Restores original values by replacing ONLY the placeholder spans within the
+// current field content — text typed after the paste is left untouched. Each
+// placeholder's leftmost remaining occurrence is replaced, so repeated
+// placeholders map to their respective originals in order and replacements
+// never break when offsets shift (an earlier approach that searched forward
+// from the previous match could overshoot a nearby placeholder when the
+// original was longer than the placeholder, failing multi-finding undos).
+//
+// Returns 'restored' when every placeholder was found and replaced, 'partial'
+// when some were missing (user edited them) but at least one was restored, and
+// 'failed' when none could be restored or the editor rejected the change.
+// Counters are only decremented on a full restore.
 export function undoMask(
   adapter: SiteAdapter,
   target: Element,
   segments: MaskedSegment[],
   findings: Finding[],
-): boolean {
+): UndoOutcome {
   const current = readCurrentText(target)
 
   let restored = current
-  let searchFrom = 0
+  let restoredCount = 0
+  let missingCount = 0
   for (const segment of segments) {
-    const index = restored.indexOf(segment.placeholder, searchFrom)
+    const index = restored.indexOf(segment.placeholder)
     if (index === -1) {
-      console.warn(
-        '[AI Leak Guard] Undo skipped: a placeholder is no longer present (the input was edited); not restoring to avoid clobbering content.',
-      )
-      return false
+      missingCount += 1
+      continue
     }
     restored =
       restored.slice(0, index) +
       segment.original +
       restored.slice(index + segment.placeholder.length)
-    searchFrom = index + segment.original.length
+    restoredCount += 1
+  }
+
+  if (restoredCount === 0) {
+    console.warn(
+      '[AI Leak Guard] Undo skipped: no placeholders were found (the input was edited); nothing restored.',
+    )
+    return 'failed'
   }
 
   const ok = adapter.replaceContents(target, restored)
@@ -47,9 +60,16 @@ export function undoMask(
     console.warn(
       '[AI Leak Guard] Undo failed: replaceContents returned false; the field was not restored and the counter is left unchanged.',
     )
-    return false
+    return 'failed'
   }
 
-  void decrementCounters(findings)
-  return true
+  if (missingCount === 0) {
+    void decrementCounters(findings)
+    return 'restored'
+  }
+
+  console.warn(
+    `[AI Leak Guard] Undo partially applied: ${missingCount} placeholder(s) were edited and could not be restored.`,
+  )
+  return 'partial'
 }

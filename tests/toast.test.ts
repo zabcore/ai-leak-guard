@@ -13,19 +13,19 @@ afterEach(() => {
 // test plan.
 describe('showToast', () => {
   it('mounts a single host element into the document body', () => {
-    showToast({ count: 1, labels: ['SSN'], onUndo: () => true })
+    showToast({ count: 1, labels: ['SSN'], onUndo: () => 'restored' })
     expect(document.body.childElementCount).toBe(1)
   })
 
   it('uses a closed shadow root the host page cannot read', () => {
-    showToast({ count: 1, labels: ['SSN'], onUndo: () => true })
+    showToast({ count: 1, labels: ['SSN'], onUndo: () => 'restored' })
     expect(document.body.firstElementChild?.shadowRoot).toBeNull()
   })
 
   it('does not auto-dismiss after a delay (BUG A)', () => {
     vi.useFakeTimers()
     try {
-      showToast({ count: 1, labels: ['SSN'], onUndo: () => true })
+      showToast({ count: 1, labels: ['SSN'], onUndo: () => 'restored' })
       vi.advanceTimersByTime(60_000)
       expect(document.body.childElementCount).toBe(1)
     } finally {
@@ -35,7 +35,7 @@ describe('showToast', () => {
 
   it('does not schedule any timer in its lifecycle (BUG A)', () => {
     const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
-    showToast({ count: 1, labels: ['SSN'], onUndo: () => true })
+    showToast({ count: 1, labels: ['SSN'], onUndo: () => 'restored' })
     expect(setTimeoutSpy).not.toHaveBeenCalled()
   })
 
@@ -44,22 +44,22 @@ describe('showToast', () => {
     stray.setAttribute('data-ai-leak-guard-toast', '')
     document.body.appendChild(stray)
 
-    showToast({ count: 1, labels: ['SSN'], onUndo: () => true })
+    showToast({ count: 1, labels: ['SSN'], onUndo: () => 'restored' })
 
     expect(document.body.childElementCount).toBe(1)
   })
 
   it('dismiss() removes the toast and invokes onDismiss', () => {
     const onDismiss = vi.fn()
-    const handle = showToast({ count: 1, labels: ['SSN'], onUndo: () => true, onDismiss })
+    const handle = showToast({ count: 1, labels: ['SSN'], onUndo: () => 'restored', onDismiss })
     handle.dismiss()
     expect(document.body.childElementCount).toBe(0)
     expect(onDismiss).toHaveBeenCalledOnce()
   })
 
   it('replaces a previous toast so only one is visible at a time', () => {
-    showToast({ count: 1, labels: ['SSN'], onUndo: () => true })
-    showToast({ count: 2, labels: ['AWS Access Key', 'SSN'], onUndo: () => true })
+    showToast({ count: 1, labels: ['SSN'], onUndo: () => 'restored' })
+    showToast({ count: 2, labels: ['AWS Access Key', 'SSN'], onUndo: () => 'restored' })
     expect(document.body.childElementCount).toBe(1)
   })
 })

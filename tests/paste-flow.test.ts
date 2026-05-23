@@ -25,7 +25,7 @@ const target = {} as unknown as Element
 const toastOptions = {
   count: 1,
   labels: ['SSN'],
-  onUndo: () => true,
+  onUndo: () => 'restored' as const,
   onDismiss: () => {},
 }
 

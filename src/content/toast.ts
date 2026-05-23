@@ -1,9 +1,11 @@
+import type { UndoOutcome } from './undo'
+
 export interface ToastOptions {
   count: number
   labels: string[]
-  // Returns true if the undo succeeded. On false, the toast shows an error
-  // instead of dismissing.
-  onUndo: () => boolean
+  // Returns the undo outcome. 'restored' dismisses the toast; 'partial' and
+  // 'failed' keep it open with an explanatory message.
+  onUndo: () => UndoOutcome
   onDismiss?: () => void
 }
 
@@ -135,13 +137,17 @@ export function showToast(opts: ToastOptions): ToastHandle {
   undo.type = 'button'
   undo.textContent = 'Undo'
   undo.addEventListener('click', () => {
-    if (opts.onUndo()) {
+    const outcome = opts.onUndo()
+    if (outcome === 'restored') {
       dismiss()
-    } else {
-      undo.disabled = true
-      text.className = 'toast__text toast__text--error'
-      text.textContent = "Couldn't undo automatically — please clear the field manually."
+      return
     }
+    undo.disabled = true
+    text.className = 'toast__text toast__text--error'
+    text.textContent =
+      outcome === 'partial'
+        ? "Couldn't fully restore — some items were edited. Please check the field."
+        : "Couldn't undo automatically — please clear the field manually."
   })
 
   const close = document.createElement('button')

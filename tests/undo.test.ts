@@ -38,9 +38,9 @@ afterEach(() => {
 })
 
 describe('undoMask', () => {
-  it('replaces only the placeholder, preserving text typed after the paste (BUG D)', () => {
+  it('replaces a single placeholder, preserving text typed after the paste', () => {
     let restored: string | undefined
-    const ok = undoMask(
+    const outcome = undoMask(
       fakeAdapter(true, (text) => {
         restored = text
       }),
@@ -48,24 +48,49 @@ describe('undoMask', () => {
       [segment('[US_SOCIAL_SECURITY_NUMBER]', '123-45-6789')],
       [finding('ssn')],
     )
-    expect(ok).toBe(true)
+    expect(outcome).toBe('restored')
     expect(restored).toBe('My SSN is 123-45-6789 and I need help please')
   })
 
-  it('restores multiple placeholders to their respective originals', () => {
+  it('restores ALL placeholders in a multi-finding paste (BUG D, multi-finding)', () => {
+    let restored: string | undefined
+    const outcome = undoMask(
+      fakeAdapter(true, (text) => {
+        restored = text
+      }),
+      textarea(
+        'My SSN is [US_SOCIAL_SECURITY_NUMBER] and my AWS key is [AWS_ACCESS_KEY] and card [CREDIT_CARD]',
+      ),
+      [
+        segment('[US_SOCIAL_SECURITY_NUMBER]', '123-45-6789', 'ssn'),
+        segment('[AWS_ACCESS_KEY]', 'AKIAIOSFODNN7EXAMPLE', 'aws'),
+        segment('[CREDIT_CARD]', '4532015112830366', 'cc'),
+      ],
+      [finding('ssn'), finding('aws'), finding('cc')],
+    )
+    expect(outcome).toBe('restored')
+    expect(restored).toBe(
+      'My SSN is 123-45-6789 and my AWS key is AKIAIOSFODNN7EXAMPLE and card 4532015112830366',
+    )
+  })
+
+  it('restores adjacent placeholders whose originals are longer (offset-shift regression)', () => {
     let restored: string | undefined
     undoMask(
       fakeAdapter(true, (text) => {
         restored = text
       }),
-      textarea('a [SSN] b [AWS] c'),
-      [segment('[SSN]', '123-45-6789', 'ssn'), segment('[AWS]', 'AKIAEXAMPLE', 'aws')],
-      [finding('ssn'), finding('aws')],
+      textarea('[CREDIT_CARD][AWS_ACCESS_KEY]'),
+      [
+        segment('[CREDIT_CARD]', '4532015112830366', 'cc'),
+        segment('[AWS_ACCESS_KEY]', 'AKIAIOSFODNN7EXAMPLE', 'aws'),
+      ],
+      [finding('cc'), finding('aws')],
     )
-    expect(restored).toBe('a 123-45-6789 b AKIAEXAMPLE c')
+    expect(restored).toBe('4532015112830366AKIAIOSFODNN7EXAMPLE')
   })
 
-  it('maps repeated identical placeholders in order', () => {
+  it('maps repeated identical placeholders to their originals in order', () => {
     let restored: string | undefined
     undoMask(
       fakeAdapter(true, (text) => {
@@ -78,55 +103,71 @@ describe('undoMask', () => {
     expect(restored).toBe('111-11-1111 then 222-22-2222')
   })
 
-  it('refuses to restore (no replace, returns false) when a placeholder is gone', () => {
+  it('partially restores (and reports partial) when some placeholders were edited', () => {
+    let restored: string | undefined
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const outcome = undoMask(
+      fakeAdapter(true, (text) => {
+        restored = text
+      }),
+      textarea('[SSN] but the second item was edited'),
+      [segment('[SSN]', '123-45-6789', 'ssn'), segment('[AWS_ACCESS_KEY]', 'AKIAEXAMPLE', 'aws')],
+      [finding('ssn'), finding('aws')],
+    )
+    expect(outcome).toBe('partial')
+    expect(restored).toBe('123-45-6789 but the second item was edited')
+    expect(warn).toHaveBeenCalled()
+  })
+
+  it('fails (no replace) when no placeholders are present', () => {
     let replaceCalled = false
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const ok = undoMask(
+    const outcome = undoMask(
       fakeAdapter(true, () => {
         replaceCalled = true
       }),
-      textarea('the user deleted the placeholder entirely'),
+      textarea('the user deleted every placeholder'),
       [segment('[US_SOCIAL_SECURITY_NUMBER]', '123-45-6789')],
       [finding('ssn')],
     )
-    expect(ok).toBe(false)
+    expect(outcome).toBe('failed')
     expect(replaceCalled).toBe(false)
     expect(warn).toHaveBeenCalledOnce()
   })
 
-  it('returns false and warns when replaceContents fails', () => {
+  it('fails and warns when replaceContents returns false', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const ok = undoMask(
+    const outcome = undoMask(
       fakeAdapter(false),
       textarea('[SSN]'),
       [segment('[SSN]', '123-45-6789')],
       [finding('ssn')],
     )
-    expect(ok).toBe(false)
+    expect(outcome).toBe('failed')
     expect(warn).toHaveBeenCalledOnce()
   })
 
-  it('decrements counters when restoration succeeds', async () => {
+  it('decrements counters on a full restore', async () => {
     await incrementCounters([finding('ssn'), finding('ssn')])
-    const ok = undoMask(
+    const outcome = undoMask(
       fakeAdapter(true),
       textarea('[SSN]'),
       [segment('[SSN]', '123-45-6789')],
       [finding('ssn')],
     )
-    expect(ok).toBe(true)
+    expect(outcome).toBe('restored')
     await flush()
     expect((await getCounters()).total).toBe(1)
   })
 
-  it('does not decrement counters when restoration is refused', async () => {
+  it('does not decrement counters on a partial restore', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     await incrementCounters([finding('ssn'), finding('ssn')])
     undoMask(
       fakeAdapter(true),
-      textarea('edited away'),
-      [segment('[SSN]', '123-45-6789')],
-      [finding('ssn')],
+      textarea('[SSN] and an edited [AWS_ACCESS_KEY_GONE]'),
+      [segment('[SSN]', '123-45-6789', 'ssn'), segment('[AWS_ACCESS_KEY]', 'AKIAEXAMPLE', 'aws')],
+      [finding('ssn'), finding('aws')],
     )
     await flush()
     expect((await getCounters()).total).toBe(2)
