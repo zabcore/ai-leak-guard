@@ -22,7 +22,11 @@ async function render(): Promise<void> {
   setToggleLabel(prefs.enabled)
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+async function init(): Promise<void> {
+  // Render initial state from storage BEFORE wiring the change listener so the
+  // programmatic checked-state assignment can't be observed as a user change.
+  await render()
+
   const toggle = document.getElementById('toggle')
   if (toggle instanceof HTMLInputElement) {
     toggle.addEventListener('change', () => {
@@ -30,5 +34,8 @@ document.addEventListener('DOMContentLoaded', () => {
       void setPrefs({ enabled: toggle.checked })
     })
   }
-  void render()
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  void init()
 })

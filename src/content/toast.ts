@@ -2,14 +2,22 @@ export interface ToastOptions {
   count: number
   labels: string[]
   onUndo: () => void
+  onDismiss?: () => void
   durationMs?: number
 }
 
+export interface ToastHandle {
+  dismiss: () => void
+  disableUndo: () => void
+}
+
 const DEFAULT_DURATION_MS = 6000
+const NOOP_HANDLE: ToastHandle = { dismiss: () => {}, disableUndo: () => {} }
 
 interface ActiveToast {
   host: HTMLElement
   timer: ReturnType<typeof setTimeout>
+  onDismiss?: () => void
 }
 
 let active: ActiveToast | null = null
@@ -18,7 +26,9 @@ function dismiss(): void {
   if (active === null) return
   clearTimeout(active.timer)
   active.host.remove()
+  const onDismiss = active.onDismiss
   active = null
+  onDismiss?.()
 }
 
 const STYLES = `
@@ -61,12 +71,19 @@ const STYLES = `
   .toast__undo:hover {
     background: rgba(74, 222, 128, 0.12);
   }
+  .toast__undo:disabled {
+    opacity: 0.45;
+    cursor: default;
+    color: #9ca3af;
+    border-color: #9ca3af;
+    background: transparent;
+  }
 `
 
 // Shows a Shadow DOM toast in the bottom-right corner. The shadow root uses
 // mode 'closed' so the host page cannot read or restyle it. Only one toast is
 // visible at a time — a new one dismisses the previous.
-export function showToast(opts: ToastOptions): void {
+export function showToast(opts: ToastOptions): ToastHandle {
   dismiss()
 
   const host = document.createElement('div')
@@ -82,10 +99,12 @@ export function showToast(opts: ToastOptions): void {
   icon.className = 'toast__icon'
   icon.textContent = '🛡'
 
+  const noun = opts.count === 1 ? 'item' : 'items'
+  const baseMessage = `${opts.count} sensitive ${noun} masked (${opts.labels.join(', ')})`
+
   const text = document.createElement('span')
   text.className = 'toast__text'
-  const noun = opts.count === 1 ? 'item' : 'items'
-  text.textContent = `${opts.count} sensitive ${noun} masked (${opts.labels.join(', ')})`
+  text.textContent = baseMessage
 
   const undo = document.createElement('button')
   undo.className = 'toast__undo'
@@ -98,8 +117,22 @@ export function showToast(opts: ToastOptions): void {
 
   container.append(icon, text, undo)
   shadow.append(style, container)
-  document.body.appendChild(host)
+
+  // Defensive: if the document has no body yet, fall back to the root element;
+  // if neither exists, skip showing the toast rather than throwing.
+  const mount = document.body ?? document.documentElement
+  if (mount === null) return NOOP_HANDLE
+  mount.appendChild(host)
 
   const duration = opts.durationMs ?? DEFAULT_DURATION_MS
-  active = { host, timer: setTimeout(dismiss, duration) }
+  active = { host, timer: setTimeout(dismiss, duration), onDismiss: opts.onDismiss }
+
+  return {
+    dismiss,
+    disableUndo: () => {
+      undo.disabled = true
+      undo.title = 'Undo is unavailable because the input changed after masking'
+      text.textContent = `${baseMessage} — input changed, undo disabled`
+    },
+  }
 }

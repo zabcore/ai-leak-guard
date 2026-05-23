@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { incrementCounters, decrementCounters } from '../src/shared/counter'
+import { incrementCounters, decrementCounters, localDateKey } from '../src/shared/counter'
 import { getCounters } from '../src/shared/storage'
 import type { Finding, Severity } from '../src/detector/types'
 
@@ -7,7 +7,14 @@ function finding(ruleId: string, severity: Severity = 'high'): Finding {
   return { ruleId, label: ruleId, severity, start: 0, end: 1, value: 'x' }
 }
 
-const today = new Date().toISOString().slice(0, 10)
+const today = localDateKey()
+
+describe('localDateKey', () => {
+  it('formats local date components as zero-padded YYYY-MM-DD', () => {
+    expect(localDateKey(new Date(2026, 0, 5))).toBe('2026-01-05')
+    expect(localDateKey(new Date(2026, 11, 31))).toBe('2026-12-31')
+  })
+})
 
 describe('incrementCounters', () => {
   it('bumps total, byType, and byDay for a single finding', async () => {
@@ -31,6 +38,13 @@ describe('incrementCounters', () => {
     await incrementCounters([finding('ssn')])
     await incrementCounters([finding('ssn')])
     expect((await getCounters()).total).toBe(2)
+  })
+
+  it('serializes concurrent writes without losing updates', async () => {
+    await Promise.all(Array.from({ length: 10 }, () => incrementCounters([finding('ssn')])))
+    const counters = await getCounters()
+    expect(counters.total).toBe(10)
+    expect(counters.byType.ssn).toBe(10)
   })
 
   it('is a no-op for an empty findings array', async () => {

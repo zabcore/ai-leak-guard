@@ -52,12 +52,28 @@ describe('mask', () => {
     expect(result.text).toBe('leading [US_SOCIAL_SECURITY_NUMBER]')
   })
 
-  it('handles overlapping findings gracefully by skipping the overlap', () => {
+  it('merges overlapping findings so no matched byte survives', () => {
     const text = 'abcdefghij'
-    const result = mask(text, [finding(2, 6, 'First', 'first'), finding(4, 8, 'Second', 'second')])
-    expect(result.text).toBe('ab[FIRST]ghij')
+    const f1 = finding(2, 6, 'First', 'first')
+    const f2 = finding(4, 8, 'Second', 'second')
+    const result = mask(text, [f1, f2])
+    expect(result.text).toBe('ab[FIRST]ij')
     expect(result.maskedSegments).toHaveLength(1)
     expect(result.maskedSegments[0].ruleId).toBe('first')
+    // Every byte covered by either finding must be absent from the output.
+    for (const f of [f1, f2]) {
+      expect(result.text).not.toContain(text.slice(f.start, f.end))
+    }
+  })
+
+  it('covers the full union of chained overlapping findings', () => {
+    const text = '0123456789'
+    const findings = [finding(1, 4, 'A', 'a'), finding(3, 6, 'B', 'b'), finding(5, 9, 'C', 'c')]
+    const result = mask(text, findings)
+    expect(result.text).toBe('0[A]9')
+    for (const f of findings) {
+      expect(result.text).not.toContain(text.slice(f.start, f.end))
+    }
   })
 
   it('captures original text and metadata for each segment', () => {

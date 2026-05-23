@@ -56,15 +56,30 @@ document.addEventListener(
 
       void incrementCounters(findings)
 
+      // Undo restores the full original paste, which is only safe while the
+      // input still holds exactly what we inserted. Once the user edits the
+      // input, disable Undo (and say so) rather than clobber their typing.
+      // Our own insertion's input event fired synchronously above, before this
+      // listener is attached, so it won't trip the dirty check.
+      const onUserEdit = (): void => {
+        handle.disableUndo()
+        target.removeEventListener('input', onUserEdit)
+      }
+
       const labels = [...new Set(findings.map((finding) => finding.label))]
-      showToast({
+      const handle = showToast({
         count: findings.length,
         labels,
         onUndo: () => {
           adapter.replaceContents(target, text)
           void decrementCounters(findings)
         },
+        onDismiss: () => {
+          target.removeEventListener('input', onUserEdit)
+        },
       })
+
+      target.addEventListener('input', onUserEdit)
     } catch (err) {
       // Never break the user's paste flow; on any error let the original through.
       console.error('[AI Leak Guard] paste handler error:', err)
