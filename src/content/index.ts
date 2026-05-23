@@ -1,9 +1,8 @@
 import { detect } from '../detector/engine'
 import { RULES } from '../detector/rules'
 import { mask } from './masker'
-import { showToast } from './toast'
 import { getAdapterForHost } from './adapters'
-import { incrementCounters } from '../shared/counter'
+import { maskInsertAndNotify } from './paste-flow'
 import { undoMask } from './undo'
 import { getPrefs } from '../shared/storage'
 
@@ -50,25 +49,19 @@ document.addEventListener(
       event.stopPropagation()
 
       const { text: maskedText } = mask(text, findings)
-      const inserted = adapter.insertText(target, maskedText)
-      if (!inserted) {
-        document.execCommand('insertText', false, maskedText)
-      }
-
-      void incrementCounters(findings)
 
       // Undo restores the full original paste, which is only safe while the
       // input still holds exactly what we inserted. Once the user edits the
       // input, disable Undo (and say so) rather than clobber their typing.
-      // Our own insertion's input event fired synchronously above, before this
-      // listener is attached, so it won't trip the dirty check.
+      // Our own insertion's input event fired synchronously during insertion,
+      // before this listener is attached, so it won't trip the dirty check.
       const onUserEdit = (): void => {
-        handle.disableUndo()
+        result.handle?.disableUndo()
         target.removeEventListener('input', onUserEdit)
       }
 
       const labels = [...new Set(findings.map((finding) => finding.label))]
-      const handle = showToast({
+      const result = maskInsertAndNotify(adapter, target, maskedText, findings, {
         count: findings.length,
         labels,
         onUndo: () => {
@@ -78,6 +71,9 @@ document.addEventListener(
           target.removeEventListener('input', onUserEdit)
         },
       })
+
+      // Both insertion paths failed: nothing was pasted and no toast shown.
+      if (!result.inserted) return
 
       target.addEventListener('input', onUserEdit)
     } catch (err) {
