@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { incrementCounters, decrementCounters, localDateKey } from '../src/shared/counter'
 import { getCounters } from '../src/shared/storage'
 import type { Finding, Severity } from '../src/detector/types'
@@ -8,6 +8,10 @@ function finding(ruleId: string, severity: Severity = 'high'): Finding {
 }
 
 const today = localDateKey()
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('localDateKey', () => {
   it('formats local date components as zero-padded YYYY-MM-DD', () => {
@@ -50,6 +54,20 @@ describe('incrementCounters', () => {
   it('is a no-op for an empty findings array', async () => {
     await incrementCounters([])
     expect(await getCounters()).toEqual({ total: 0, byType: {}, byDay: {} })
+  })
+
+  it('warns and resolves (no unhandled rejection) when the storage write fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const originalSet = chrome.storage.local.set
+    chrome.storage.local.set = vi
+      .fn()
+      .mockRejectedValue(new Error('quota exceeded')) as typeof chrome.storage.local.set
+    try {
+      await expect(incrementCounters([finding('ssn')])).resolves.toBeUndefined()
+      expect(warn).toHaveBeenCalled()
+    } finally {
+      chrome.storage.local.set = originalSet
+    }
   })
 })
 

@@ -27,29 +27,43 @@ function enqueueWrite(op: () => Promise<void>): Promise<void> {
 export async function incrementCounters(findings: Finding[]): Promise<void> {
   if (findings.length === 0) return
 
-  await enqueueWrite(async () => {
-    const counters = await getCounters()
-    const day = localDateKey()
-    for (const finding of findings) {
-      counters.total += 1
-      counters.byType[finding.ruleId] = (counters.byType[finding.ruleId] ?? 0) + 1
-      counters.byDay[day] = (counters.byDay[day] ?? 0) + 1
-    }
-    await setCounters(counters)
-  })
+  try {
+    await enqueueWrite(async () => {
+      const counters = await getCounters()
+      const day = localDateKey()
+      for (const finding of findings) {
+        counters.total += 1
+        counters.byType[finding.ruleId] = (counters.byType[finding.ruleId] ?? 0) + 1
+        counters.byDay[day] = (counters.byDay[day] ?? 0) + 1
+      }
+      await setCounters(counters)
+    })
+  } catch (err) {
+    console.warn(
+      '[AI Leak Guard] Failed to persist the leak counter after masking; the count may be inaccurate.',
+      err,
+    )
+  }
 }
 
 export async function decrementCounters(findings: Finding[]): Promise<void> {
   if (findings.length === 0) return
 
-  await enqueueWrite(async () => {
-    const counters = await getCounters()
-    const day = localDateKey()
-    for (const finding of findings) {
-      counters.total = Math.max(0, counters.total - 1)
-      counters.byType[finding.ruleId] = Math.max(0, (counters.byType[finding.ruleId] ?? 0) - 1)
-      counters.byDay[day] = Math.max(0, (counters.byDay[day] ?? 0) - 1)
-    }
-    await setCounters(counters)
-  })
+  try {
+    await enqueueWrite(async () => {
+      const counters = await getCounters()
+      const day = localDateKey()
+      for (const finding of findings) {
+        counters.total = Math.max(0, counters.total - 1)
+        counters.byType[finding.ruleId] = Math.max(0, (counters.byType[finding.ruleId] ?? 0) - 1)
+        counters.byDay[day] = Math.max(0, (counters.byDay[day] ?? 0) - 1)
+      }
+      await setCounters(counters)
+    })
+  } catch (err) {
+    console.warn(
+      '[AI Leak Guard] Failed to persist the leak counter after undo; the count may be inaccurate.',
+      err,
+    )
+  }
 }

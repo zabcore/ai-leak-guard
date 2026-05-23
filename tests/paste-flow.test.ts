@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { maskInsertAndNotify } from '../src/content/paste-flow'
 import { incrementCounters } from '../src/shared/counter'
 import { getCounters } from '../src/shared/storage'
@@ -29,7 +29,20 @@ const toastOptions = {
   onDismiss: () => {},
 }
 
+// jsdom 29 does not define execCommand, so vi.spyOn can't wrap it. Save and
+// restore manually so a stub assigned in one test doesn't leak into others.
+let originalExecCommand: typeof document.execCommand | undefined
+
+beforeEach(() => {
+  originalExecCommand = document.execCommand
+})
+
 afterEach(() => {
+  if (originalExecCommand === undefined) {
+    delete (document as { execCommand?: typeof document.execCommand }).execCommand
+  } else {
+    document.execCommand = originalExecCommand
+  }
   document.body.innerHTML = ''
   vi.restoreAllMocks()
 })
