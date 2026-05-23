@@ -4,7 +4,7 @@ import { mask } from './masker'
 import { getAdapterForHost } from './adapters'
 import { maskInsertAndNotify } from './paste-flow'
 import { undoMask } from './undo'
-import { resolveInitialEnabled } from './enabled-state'
+import { resolveInitialEnabled, createEnabledState } from './enabled-state'
 import { getPrefs } from '../shared/storage'
 
 const MIN_TEXT_LENGTH = 8
@@ -13,13 +13,13 @@ const adapter = getAdapterForHost(window.location.hostname)
 
 // Default to disabled until the stored preference is confirmed. This avoids
 // masking during the brief startup window if the user had turned the extension
-// off, and fails closed (stays inactive) if the preference can't be read. The
-// flag is then kept live via storage.onChanged so the popup toggle takes effect
-// immediately without a page reload.
-let enabled = false
+// off, and fails closed (stays inactive) if the preference can't be read. A
+// live storage.onChanged update (e.g. the popup toggle) wins over a slower
+// initial read so the toggle takes effect immediately without a page reload.
+const enabledState = createEnabledState(false)
 
 void resolveInitialEnabled(getPrefs).then((value) => {
-  enabled = value
+  enabledState.applyInitial(value)
 })
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -28,7 +28,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (change === undefined) return
   const next = change.newValue as { enabled?: unknown } | undefined
   if (next !== undefined && typeof next.enabled === 'boolean') {
-    enabled = next.enabled
+    enabledState.applyLiveUpdate(next.enabled)
   }
 })
 
@@ -36,7 +36,7 @@ document.addEventListener(
   'paste',
   (event: ClipboardEvent): void => {
     try {
-      if (!enabled) return
+      if (!enabledState.isEnabled()) return
 
       const text = event.clipboardData?.getData('text/plain') ?? ''
       if (text.length < MIN_TEXT_LENGTH) return
