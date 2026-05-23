@@ -9,7 +9,7 @@ import { getPrefs } from '../shared/storage'
 
 const MIN_TEXT_LENGTH = 8
 
-const adapter = getAdapterForHost(window.location.hostname)
+const adapter = getAdapterForHost(globalThis.location.hostname)
 
 // Default to disabled until the stored preference is confirmed. This avoids
 // masking during the brief startup window if the user had turned the extension
