@@ -3,7 +3,8 @@ import { RULES } from '../detector/rules'
 import { mask } from './masker'
 import { showToast } from './toast'
 import { getAdapterForHost } from './adapters'
-import { incrementCounters, decrementCounters } from '../shared/counter'
+import { incrementCounters } from '../shared/counter'
+import { undoMask } from './undo'
 import { getPrefs } from '../shared/storage'
 
 const MIN_TEXT_LENGTH = 8
@@ -71,8 +72,7 @@ document.addEventListener(
         count: findings.length,
         labels,
         onUndo: () => {
-          adapter.replaceContents(target, text)
-          void decrementCounters(findings)
+          void undoMask(adapter, target, text, findings)
         },
         onDismiss: () => {
           target.removeEventListener('input', onUserEdit)
