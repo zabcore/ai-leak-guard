@@ -50,16 +50,17 @@ document.addEventListener(
       event.preventDefault()
       event.stopPropagation()
 
-      const { text: maskedText } = mask(text, findings)
+      const { text: maskedText, maskedSegments } = mask(text, findings)
 
       const labels = [...new Set(findings.map((finding) => finding.label))]
       const result = maskInsertAndNotify(adapter, target, maskedText, findings, {
         count: findings.length,
         labels,
-        // Undo does a content-preserving restore and reports success, so it is
-        // always safe to offer — no fragile edit-detection that could wrongly
-        // block it when the site fires its own DOM events after insertion.
-        onUndo: () => undoMask(adapter, target, text, maskedText, findings),
+        // Undo restores only the placeholder spans (preserving anything typed
+        // after the paste) and reports success, so it is always safe to offer —
+        // no fragile edit-detection that could wrongly block it when the site
+        // fires its own DOM events after insertion.
+        onUndo: () => undoMask(adapter, target, maskedSegments, findings),
       })
 
       // Both insertion paths failed: nothing was pasted and no toast shown.

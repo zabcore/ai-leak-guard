@@ -13,6 +13,10 @@ export interface ToastHandle {
 
 const NOOP_HANDLE: ToastHandle = { dismiss: () => {} }
 
+// Marks our toast host so we can guarantee a single toast in the DOM even if a
+// second content-script instance (e.g. another frame) also rendered one.
+const HOST_ATTR = 'data-ai-leak-guard-toast'
+
 interface ActiveToast {
   host: HTMLElement
   onDismiss?: () => void
@@ -26,6 +30,15 @@ function dismiss(): void {
   const onDismiss = active.onDismiss
   active = null
   onDismiss?.()
+}
+
+// Removes any toast hosts left in the DOM, including ones this module instance
+// doesn't track, so toasts can never stack.
+function removeStrayToasts(): void {
+  const root = document.body ?? document.documentElement
+  root?.querySelectorAll(`[${HOST_ATTR}]`).forEach((node) => {
+    node.remove()
+  })
 }
 
 const STYLES = `
@@ -96,8 +109,10 @@ const STYLES = `
 // the user clicks Undo or the close (×) button; it does not auto-dismiss.
 export function showToast(opts: ToastOptions): ToastHandle {
   dismiss()
+  removeStrayToasts()
 
   const host = document.createElement('div')
+  host.setAttribute(HOST_ATTR, '')
   const shadow = host.attachShadow({ mode: 'closed' })
 
   const style = document.createElement('style')

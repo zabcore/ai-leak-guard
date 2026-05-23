@@ -22,7 +22,7 @@ describe('showToast', () => {
     expect(document.body.firstElementChild?.shadowRoot).toBeNull()
   })
 
-  it('does not auto-dismiss after a delay', () => {
+  it('does not auto-dismiss after a delay (BUG A)', () => {
     vi.useFakeTimers()
     try {
       showToast({ count: 1, labels: ['SSN'], onUndo: () => true })
@@ -31,6 +31,22 @@ describe('showToast', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('does not schedule any timer in its lifecycle (BUG A)', () => {
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
+    showToast({ count: 1, labels: ['SSN'], onUndo: () => true })
+    expect(setTimeoutSpy).not.toHaveBeenCalled()
+  })
+
+  it('removes a stray toast host from another instance before mounting (BUG B)', () => {
+    const stray = document.createElement('div')
+    stray.setAttribute('data-ai-leak-guard-toast', '')
+    document.body.appendChild(stray)
+
+    showToast({ count: 1, labels: ['SSN'], onUndo: () => true })
+
+    expect(document.body.childElementCount).toBe(1)
   })
 
   it('dismiss() removes the toast and invokes onDismiss', () => {

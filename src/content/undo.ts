@@ -1,4 +1,5 @@
 import type { Finding } from '../detector/types'
+import type { MaskedSegment } from './masker'
 import type { SiteAdapter } from './adapters/base'
 import { decrementCounters } from '../shared/counter'
 
@@ -9,25 +10,40 @@ function readCurrentText(target: Element): string {
   return target.textContent ?? ''
 }
 
-// Restores the original pasted text. To avoid blowing away anything the user
-// typed after the paste, it replaces only the masked span within the current
-// content when that span is still present; otherwise it restores the original
-// text directly. Returns true only if the editor accepted the change — the
-// caller surfaces an error and leaves the counter alone when it returns false.
+// Restores the original values by replacing ONLY the placeholder spans within
+// the current field content — anything the user typed after the paste is left
+// untouched. Placeholders are replaced left-to-right so repeated placeholders
+// map to their respective originals. If a placeholder can no longer be found
+// (the user edited it), we refuse to restore and return false so the caller can
+// surface an error rather than destroy content. Returns false (without
+// decrementing) when restoration can't be applied or the editor rejects it.
 export function undoMask(
   adapter: SiteAdapter,
   target: Element,
-  originalText: string,
-  maskedText: string,
+  segments: MaskedSegment[],
   findings: Finding[],
 ): boolean {
   const current = readCurrentText(target)
-  const restoredText = current.includes(maskedText)
-    ? current.replace(maskedText, originalText)
-    : originalText
 
-  const restored = adapter.replaceContents(target, restoredText)
-  if (!restored) {
+  let restored = current
+  let searchFrom = 0
+  for (const segment of segments) {
+    const index = restored.indexOf(segment.placeholder, searchFrom)
+    if (index === -1) {
+      console.warn(
+        '[AI Leak Guard] Undo skipped: a placeholder is no longer present (the input was edited); not restoring to avoid clobbering content.',
+      )
+      return false
+    }
+    restored =
+      restored.slice(0, index) +
+      segment.original +
+      restored.slice(index + segment.placeholder.length)
+    searchFrom = index + segment.original.length
+  }
+
+  const ok = adapter.replaceContents(target, restored)
+  if (!ok) {
     console.warn(
       '[AI Leak Guard] Undo failed: replaceContents returned false; the field was not restored and the counter is left unchanged.',
     )

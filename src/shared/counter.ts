@@ -27,6 +27,8 @@ function enqueueWrite(op: () => Promise<void>): Promise<void> {
 export async function incrementCounters(findings: Finding[]): Promise<void> {
   if (findings.length === 0) return
 
+  // Diagnostic logging (BUG C): confirms the increment runs and the write lands.
+  console.log(`[AI Leak Guard] incrementCounters: recording ${findings.length} finding(s)`)
   try {
     await enqueueWrite(async () => {
       const counters = await getCounters()
@@ -37,6 +39,9 @@ export async function incrementCounters(findings: Finding[]): Promise<void> {
         counters.byDay[day] = (counters.byDay[day] ?? 0) + 1
       }
       await setCounters(counters)
+      console.log(
+        `[AI Leak Guard] counters persisted: total=${counters.total}, today(${day})=${counters.byDay[day]}`,
+      )
     })
   } catch (err) {
     console.warn(
