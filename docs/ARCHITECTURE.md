@@ -203,6 +203,42 @@ uses it if present and falls back to a label-derived form
 V1 rules leave `maskToken` unset, preserving their existing placeholders
 byte-for-byte.
 
+### Patient names + street addresses (V1.1 PR 3)
+
+Two more `IDENTITY` / `HIGH` detectors, both anchored — never free-prose:
+
+**`patient_name`** — fires only on `<patient-side label><separator><name>`.
+Labels: `Patient`, `Patient Name`, `Pt`, `Name`, `Member`, `Insured`,
+`Subscriber`, `Guarantor`. Provider labels (`Provider`, `Physician`, `Dr`,
+`Referring`) are explicitly excluded — provider names are not PHI and are
+already covered by NPI/DEA. Separator is REQUIRED (one of `:`, `-`, `–`,
+`=`) — a bare-label prefix like "the patient Sarah Khan reported…" would
+otherwise trigger. Value is 2–4 capitalized tokens (`First Last`, `First
+Middle Last`, `First M. Last`) OR `Last, First [Middle]`. Tokens allow
+apostrophes (`O'Brien`) and hyphens (`Smith-Jones`). Mask token:
+`[PATIENT_NAME]`.
+
+**`street_address`** — fires on EITHER a structural anchor (leading house
+number + capitalized street-name words + street-type suffix from a fixed
+set of ~18 suffixes + optional unit indicator) OR a label anchor (`Address`
+/ `Addr` / `Home Address` + required separator + rest of line). The
+leading house number is the discriminator for the structural form — it is
+what separates a real address from a street name mentioned in prose
+("We met on Main Street" → no fire). Mask token: `[ADDRESS]`.
+
+Both detectors are compiled with the `g` flag only (not `gi`) so
+case-sensitive `[A-Z]` classes actually discriminate — under `gi`, `[A-Z]`
+also matches `[a-z]` and the "must start with a capital" property that
+distinguishes names from prose evaporates. Case-insensitivity for the
+labels themselves is expressed inline via character classes
+(`[Pp]atient`, `[Aa]ddress`).
+
+`patient_name` does NOT go through `contextualRule` — its value regex needs
+that case-sensitive discipline, and the helper's `gi` compilation is a
+poor fit. `contextualRule` remains the right tool for the identifier
+detectors (MRN, member ID, claim, patient ID, account, license, CPT, DOB)
+where labels and values are both alphanumeric identifiers.
+
 ## Site adapter contract
 
 Each AI site has different input editors (contenteditable, ProseMirror, Lexical, etc.). The adapter interface:

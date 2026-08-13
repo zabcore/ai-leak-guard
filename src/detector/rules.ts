@@ -48,12 +48,22 @@ interface ContextualRuleConfig {
   isContextSignal?: boolean
   labelPattern: string
   valuePattern: string
+  // Overrides the default separator between the label and value. The default
+  // `[:#]?` (optional colon or hash) matches PR 2's identifier detectors, where
+  // labels like `MRN` / `Claim #` may appear with or without punctuation. Detectors
+  // like `patient_name` and `street_address` need a REQUIRED punctuation separator
+  // (`Patient:`, `Address -`, `Name =`) — otherwise a sentence fragment like
+  // "the patient Sarah Khan" would over-fire on a bare-label prefix. Callers pass
+  // the character class or pattern they want (unwrapped; the helper interpolates it
+  // between `\\s*` on either side).
+  separatorPattern?: string
   validateValue?: (value: string) => boolean
 }
 
 function contextualRule(cfg: ContextualRuleConfig): DetectorRule {
+  const separator = cfg.separatorPattern ?? '[:#]?'
   const pattern = new RegExp(
-    `\\b(?:${cfg.labelPattern})\\s*[:#]?\\s*(${cfg.valuePattern})\\b`,
+    `\\b(?:${cfg.labelPattern})\\s*${separator}\\s*(${cfg.valuePattern})\\b`,
     'gi',
   )
   const valueExtractor = new RegExp(`(${cfg.valuePattern})`, 'i')
@@ -248,6 +258,74 @@ export const RULES: DetectorRule[] = [
     baseSensitivity: SensitivityLevel.HIGH,
     maskToken: '[EMAIL]',
     pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
+  },
+
+  // ─── V1.1 PR 3: patient names + street addresses (contextual only) ────────
+  //
+  // Both detectors are label-anchored. Patient names have NO structural fallback
+  // (free-prose names are out of scope for V1.1 — the miss rate on unlabeled names
+  // is preferable to the false-positive rate any bare-name heuristic produces).
+  // Street addresses accept EITHER a label anchor OR a structural anchor (leading
+  // house number + street-type suffix). The house number is what separates a real
+  // address from a street name mentioned in prose ("We met on Main Street").
+  //
+  // Provider-side labels (`Provider`, `Physician`, `Dr`, `Referring`) are
+  // intentionally NOT in the patient_name label set: provider names are not PHI,
+  // and NPI/DEA already cover provider identifiers. Masking provider names would
+  // add noise without protecting anything.
+  //
+  // Separator is REQUIRED (`:`, `-`, `–`, `=`) — a bare-label prefix like
+  // "the patient Sarah Khan reported…" would otherwise over-fire.
+  //
+  // patient_name is compiled with the `g` flag only (NOT `gi`). We rely on
+  // case-sensitive value matching so a proper capitalized name token
+  // (e.g. `Sarah`, `O'Brien`, `Smith-Jones`) is distinguishable from an
+  // uppercase acronym or a lowercase word that follows it. Adding the `i` flag
+  // would collapse that distinction — `[A-Z]` would also match `[a-z]`, causing
+  // "Patient: seen today" to fire and "Patient: Sarah Khan DOB: 01/02/1980"
+  // to swallow `DOB` as if it were a name token. That is why we DO NOT use
+  // contextualRule here (which is `gi` by design for its identifier detectors):
+  // instead we pin the case-insensitivity to the label alternatives explicitly
+  // via `[Xx]` character classes.
+  //
+  // A NAME_WORD is `[A-Z]` followed by either at least one lowercase letter
+  // (`Sarah`, `Khan`), an apostrophe segment (`O'Brien`), or a hyphenated
+  // segment (`Smith-Jones`). An acronym like `DOB` fails because `[A-Z]` is
+  // not followed by any of those. A middle initial is `[A-Z]\.` (allowed as
+  // a non-terminal token only). Value = 2..4 tokens or `Last, First [Middle]`.
+  {
+    id: 'patient_name',
+    label: 'Patient Name',
+    severity: 'high',
+    category: DetectorCategory.IDENTITY,
+    baseSensitivity: SensitivityLevel.HIGH,
+    maskToken: '[PATIENT_NAME]',
+    pattern:
+      /\b(?:[Pp]atient\s+[Nn]ame|[Pp]atient|[Nn]ame|[Mm]ember|[Ii]nsured|[Ss]ubscriber|[Gg]uarantor|[Pp]t)\s*[:=–-]\s*(?:[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*,\s+[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*(?:\s+[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*)?|(?:(?:[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*|[A-Z]\.)\s+){1,3}[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*)\b/g,
+  },
+  {
+    id: 'street_address',
+    label: 'Street Address',
+    severity: 'high',
+    category: DetectorCategory.IDENTITY,
+    baseSensitivity: SensitivityLevel.HIGH,
+    maskToken: '[ADDRESS]',
+    // Alternation of two forms, either sufficient:
+    //   1. STRUCTURAL — leading house number + 1..4 capitalized street-name words
+    //      + a suffix from a fixed set + optional unit indicator. The leading
+    //      `\d{1,6}` is the discriminator: "We met on Main Street" has no number
+    //      and MUST NOT fire.
+    //   2. LABELED — `Address` / `Addr` / `Home Address` + required separator +
+    //      rest of line (excluding line breaks). The required separator prevents
+    //      "Meeting Address in the room" from over-firing.
+    //
+    // Also compiled with `g` (no `i`): structural detection depends on the
+    // street-name words being capitalized so a lowercase-prose "we met at 123
+    // main street" does NOT trip the structural form. The labeled form embeds
+    // case variants into the label alternation (`[Aa]ddress`, `[Aa]ddr`,
+    // `[Hh]ome`).
+    pattern:
+      /\b(?:\d{1,6}\s+(?:[A-Z][A-Za-z]{0,20}\s+){1,4}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Way|Place|Pl|Terrace|Ter|Circle|Cir|Highway|Hwy)\.?(?:,?\s+(?:(?:Apt|Suite|Ste|Unit|#)\s*[A-Za-z0-9-]+|\d{1,5}[A-Za-z]?))?|(?:[Hh]ome\s+[Aa]ddress|[Aa]ddress|[Aa]ddr)\s*[:=–-]\s*[^\n\r]+)/g,
   },
 
   // ─── V1.1: HEALTHCARE_PATIENT_ID ──────────────────────────────────────────
