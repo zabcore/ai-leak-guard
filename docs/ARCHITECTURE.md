@@ -162,13 +162,18 @@ Default fallback uses `document.execCommand('insertText')` which still works on 
 1. Content script attaches a **capture-phase** `paste` event listener on `document`
 2. When fired, read `clipboardData.getData('text/plain')`
 3. Pass to detector
-4. If `findings.length === 0`, do nothing — let the original paste through
-5. If findings exist:
+4. Filter the returned findings through `isMaskable` — this drops anything with
+   `effectiveSensitivity === LOW` (e.g. `CLINICAL_CONTEXT` findings from PR 2)
+   while keeping everything at `CRITICAL` or `HIGH`
+5. If the maskable list is empty, do nothing — let the original paste through
+   (even when the raw findings list is nonempty; unmaskable-only pastes must
+   not cancel the paste, show a toast, or increment the counter)
+6. If maskable findings exist:
    - `e.preventDefault()` and `e.stopPropagation()`
-   - Compute masked text via `masker.ts`
+   - Compute masked text via `masker.ts` using only the maskable findings
    - Use site adapter to insert masked text into active input
-   - Show toast with Undo
-   - Increment local counter
+   - Show toast with Undo (counts and labels come from the maskable set)
+   - Increment local counter for the maskable findings
 
 ## Storage schema
 
