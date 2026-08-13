@@ -37,9 +37,16 @@ export interface DetectorRule extends Rule {
   baseSensitivity: SensitivityLevel
   /**
    * True for CLINICAL_CONTEXT rules that contribute to scoring but are never
-   * masked on their own. No such rules exist in V1.1; reserved for PR 2.
+   * masked on their own (their `effectiveSensitivity` is LOW).
    */
   isContextSignal?: boolean
+  /**
+   * Explicit placeholder inserted by the masker (e.g. `"[MRN]"`). When absent,
+   * the masker derives one from `label` (e.g. `"Date of Birth"` →
+   * `"[DATE_OF_BIRTH]"`). Existing V1 rules leave this undefined and rely on
+   * the label-derived form; V1.1 healthcare rules set an explicit short token.
+   */
+  maskToken?: string
 }
 
 export interface Finding {
@@ -56,6 +63,8 @@ export interface Finding {
   baseSensitivity?: SensitivityLevel
   effectiveSensitivity?: SensitivityLevel
   isContextSignal?: boolean
+  /** Optional explicit mask token inherited from the source rule. */
+  maskToken?: string
 }
 
 // V1.1 result envelope for callers that want the aggregate flag alongside the

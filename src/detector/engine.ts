@@ -60,6 +60,7 @@ export function detect(text: string, rules: Rule[] = RULES): Finding[] {
         finding.category = rule.category
         finding.baseSensitivity = rule.baseSensitivity
         finding.isContextSignal = rule.isContextSignal
+        if (rule.maskToken !== undefined) finding.maskToken = rule.maskToken
       }
       findings.push(finding)
     }
