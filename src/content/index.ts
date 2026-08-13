@@ -1,4 +1,4 @@
-import { detect } from '../detector/engine'
+import { detect, isMaskable } from '../detector/engine'
 import { RULES } from '../detector/rules'
 import { mask } from './masker'
 import { getAdapterForHost } from './adapters'
@@ -44,23 +44,27 @@ document.addEventListener(
       const target = event.target as Element | null
       if (target === null || !adapter.isPromptInput(target)) return
 
-      const findings = detect(text, RULES)
-      if (findings.length === 0) return
+      // V1.1: detect() now returns findings enriched with `effectiveSensitivity`.
+      // Only CRITICAL/HIGH findings get masked; anything LOW (e.g. clinical
+      // context in PR 2) stays visible. Bare-Rule findings without taxonomy
+      // fall through `isMaskable` as true, preserving pre-V1.1 behavior.
+      const maskable = detect(text, RULES).filter(isMaskable)
+      if (maskable.length === 0) return
 
       event.preventDefault()
       event.stopPropagation()
 
-      const { text: maskedText, maskedSegments } = mask(text, findings)
+      const { text: maskedText, maskedSegments } = mask(text, maskable)
 
-      const labels = [...new Set(findings.map((finding) => finding.label))]
-      const result = maskInsertAndNotify(adapter, target, maskedText, findings, {
-        count: findings.length,
+      const labels = [...new Set(maskable.map((finding) => finding.label))]
+      const result = maskInsertAndNotify(adapter, target, maskedText, maskable, {
+        count: maskable.length,
         labels,
         // Undo restores only the placeholder spans (preserving anything typed
         // after the paste) and reports success, so it is always safe to offer —
         // no fragile edit-detection that could wrongly block it when the site
         // fires its own DOM events after insertion.
-        onUndo: () => undoMask(adapter, target, maskedSegments, findings),
+        onUndo: () => undoMask(adapter, target, maskedSegments, maskable),
       })
 
       // Both insertion paths failed: nothing was pasted and no toast shown.
