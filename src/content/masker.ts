@@ -12,8 +12,10 @@ export interface MaskResult {
   maskedSegments: MaskedSegment[]
 }
 
-// "AWS Access Key" -> "[AWS_ACCESS_KEY]"
-function toPlaceholder(label: string): string {
+// "AWS Access Key" -> "[AWS_ACCESS_KEY]". When the finding carries an explicit
+// `maskToken` from its rule (V1.1+), the token wins over the label-derived form.
+function toPlaceholder(label: string, maskToken?: string): string {
+  if (maskToken !== undefined && maskToken.length > 0) return maskToken
   return `[${label.toUpperCase().replace(/\s+/g, '_')}]`
 }
 
@@ -22,6 +24,7 @@ interface MergedRange {
   end: number
   ruleId: string
   label: string
+  maskToken?: string
 }
 
 // Pure function: no DOM, no Chrome APIs. Replaces every byte covered by any
@@ -46,6 +49,7 @@ export function mask(text: string, findings: Finding[]): MaskResult {
         end: finding.end,
         ruleId: finding.ruleId,
         label: finding.label,
+        maskToken: finding.maskToken,
       })
     }
   }
@@ -54,7 +58,7 @@ export function mask(text: string, findings: Finding[]): MaskResult {
   let result = ''
   let cursor = 0
   for (const range of merged) {
-    const placeholder = toPlaceholder(range.label)
+    const placeholder = toPlaceholder(range.label, range.maskToken)
     result += text.slice(cursor, range.start) + placeholder
     maskedSegments.push({
       original: text.slice(range.start, range.end),

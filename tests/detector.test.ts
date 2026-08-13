@@ -110,7 +110,12 @@ describe('detect — negative cases (near-misses, one per rule)', () => {
   })
 
   it('does not match a phone number formatted like an SSN', () => {
-    expect(detect('My phone number is 123-456-7890')).toHaveLength(0)
+    // The SSN detector must not fire on phone-shaped digits (semantic intent of
+    // the original V1 assertion). V1.1 adds a phone detector, so the input now
+    // legitimately produces a `phone` finding — we assert only that no `ssn`
+    // finding is present, which is what the boundary check exists to guard.
+    const findings = detect('My phone number is 123-456-7890')
+    expect(findings.find((f) => f.ruleId === 'ssn')).toBeUndefined()
   })
 
   it('does not match a Luhn-invalid credit card', () => {
@@ -254,8 +259,8 @@ describe('mergeOverlapping', () => {
 })
 
 describe('RULES integrity', () => {
-  it('defines all eleven V1 rules', () => {
-    expect(RULES).toHaveLength(11)
+  it('defines the expected number of rules (11 V1 + 15 V1.1 PR 2)', () => {
+    expect(RULES).toHaveLength(26)
   })
 
   it('uses globally-flagged patterns for every rule', () => {

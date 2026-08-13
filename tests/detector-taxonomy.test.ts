@@ -61,6 +61,7 @@ describe('RULES taxonomy', () => {
       RULES.map((r) => [r.id, { category: r.category, baseSensitivity: r.baseSensitivity }]),
     )
     expect(table).toEqual({
+      // V1 detectors
       aws_access_key: { category: 'developer_credential', baseSensitivity: 'critical' },
       github_pat: { category: 'developer_credential', baseSensitivity: 'critical' },
       anthropic_key: { category: 'developer_credential', baseSensitivity: 'critical' },
@@ -72,6 +73,26 @@ describe('RULES taxonomy', () => {
       ssn: { category: 'government_financial', baseSensitivity: 'critical' },
       credit_card: { category: 'government_financial', baseSensitivity: 'critical' },
       generic_secret: { category: 'developer_credential', baseSensitivity: 'high' },
+      // V1.1 PR 2 — PROVIDER_ID
+      npi: { category: 'provider_id', baseSensitivity: 'high' },
+      dea: { category: 'provider_id', baseSensitivity: 'high' },
+      // V1.1 PR 2 — IDENTITY
+      date_of_birth: { category: 'identity', baseSensitivity: 'high' },
+      phone: { category: 'identity', baseSensitivity: 'high' },
+      email: { category: 'identity', baseSensitivity: 'high' },
+      // V1.1 PR 2 — HEALTHCARE_PATIENT_ID
+      mrn: { category: 'healthcare_patient_id', baseSensitivity: 'critical' },
+      member_id: { category: 'healthcare_patient_id', baseSensitivity: 'high' },
+      claim_number: { category: 'healthcare_patient_id', baseSensitivity: 'high' },
+      rx_number: { category: 'healthcare_patient_id', baseSensitivity: 'high' },
+      patient_id: { category: 'healthcare_patient_id', baseSensitivity: 'high' },
+      // V1.1 PR 2 — GOVERNMENT_FINANCIAL (additions)
+      account_number: { category: 'government_financial', baseSensitivity: 'high' },
+      license_number: { category: 'government_financial', baseSensitivity: 'high' },
+      // V1.1 PR 2 — CLINICAL_CONTEXT
+      icd10: { category: 'clinical_context', baseSensitivity: 'low' },
+      cpt: { category: 'clinical_context', baseSensitivity: 'low' },
+      medication: { category: 'clinical_context', baseSensitivity: 'low' },
     })
   })
 })
@@ -184,14 +205,30 @@ describe('applyCombinationScoring — Rule B/C (CLINICAL_CONTEXT is always LOW i
   })
 })
 
-// ─── PR 2 placeholders (skipped until healthcare detectors land) ─────────────
+// ─── PR 2 — activated now that real healthcare detectors exist ───────────────
+// (Patient names are still deferred to PR 3, so the original placeholder title
+// is scoped down to DOB as the identifier here. MRN + medication ships in PR 2
+// and is exercised as-is.)
 
-describe.skip('PR 2 — combination scoring with real clinical detectors', () => {
-  it('name + DOB + clinical context — identifiers stay HIGH, context stays LOW', () => {
-    /* enabled once healthcare detectors ship in PR 2 */
+describe('PR 2 — combination scoring with real clinical detectors', () => {
+  it('DOB + ICD-10 (clinical context) — identifier stays HIGH, context stays LOW', () => {
+    const findings = detect('Patient DOB: 05/12/1980 with diagnosis K12.9 documented.')
+    const dob = findings.find((f) => f.ruleId === 'date_of_birth')
+    const icd = findings.find((f) => f.ruleId === 'icd10')
+    expect(dob?.effectiveSensitivity).toBe(SensitivityLevel.HIGH)
+    expect(icd?.effectiveSensitivity).toBe(SensitivityLevel.LOW)
+    expect(isMaskable(dob!)).toBe(true)
+    expect(isMaskable(icd!)).toBe(false)
   })
+
   it('MRN + medication — MRN masked, medication stays visible', () => {
-    /* enabled once healthcare detectors ship in PR 2 */
+    const findings = detect('Chart for MRN: 12345678 prescribed metformin daily.')
+    const mrn = findings.find((f) => f.ruleId === 'mrn')
+    const med = findings.find((f) => f.ruleId === 'medication')
+    expect(mrn).toBeDefined()
+    expect(med).toBeDefined()
+    expect(isMaskable(mrn!)).toBe(true)
+    expect(isMaskable(med!)).toBe(false)
   })
 })
 

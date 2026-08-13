@@ -142,6 +142,67 @@ detectors that ship in a subsequent PR.
 `detect()` returns `Finding[]` for backward compatibility; new callers can use
 `detectDetailed()` which returns `{ findings, hasCriticalOrHigh }`.
 
+## Healthcare detectors (V1.1 PR 2)
+
+PR 2 adds 15 detectors on top of the V1 developer-credential set, populating
+the taxonomy categories from PR 1:
+
+- **IDENTITY** — `date_of_birth` (contextual), `phone` (bare + `isPlausiblePhone`
+  validator), `email` (bare).
+- **HEALTHCARE_PATIENT_ID** — `mrn`, `member_id`, `claim_number`, `rx_number`,
+  `patient_id` (all contextual).
+- **GOVERNMENT_FINANCIAL** — `account_number`, `license_number` (contextual;
+  join the V1 `ssn` and `credit_card` in this category).
+- **PROVIDER_ID** — `npi` (bare + `isValidNpi` checksum, "80840" prefix +
+  Luhn), `dea` (bare + `isValidDea` checksum, `(d1+d3+d5)+2*(d2+d4+d6)` mod 10
+  == d7 with a registrant-type letter set).
+- **CLINICAL_CONTEXT** — `icd10` (bare regex, letter + 2 digits + optional
+  subcode), `cpt` (contextual), `medication` (dictionary — see below). All
+  three set `isContextSignal: true`, land at `LOW` after
+  `applyCombinationScoring`, and are NOT masked.
+
+### Contextual detectors and the `contextualRule` helper
+
+Contextual detectors fire ONLY when a label + separator + value appear
+together in the text — a bare identifier value (e.g. `12345678` with no
+"MRN" nearby) does NOT match. The shared `contextualRule` factory in
+`src/detector/rules.ts` builds all label-anchored detectors from the same
+template:
+
+```
+\b(?:LABEL)\s*[:#]?\s*(VALUE)\b   with the `gi` flag
+```
+
+The value pattern for identifier-style detectors additionally requires at
+least one digit inside the value (via a lookahead) so a match like
+`Member ID John` cannot capture `John` as an identifier. The engine's
+`validate` callback receives the whole `match[0]`; when `validateValue` is
+supplied to `contextualRule`, we re-extract the capture group and pass it
+through — the same pattern the V1 `generic_secret` detector already uses.
+
+Because the engine uses `match[0]` as the finding's `value`, masking replaces
+the WHOLE labeled span with the mask token — the output reads
+`"The patient's [MRN]"` rather than `"The patient's MRN: [MRN]"`.
+
+### Medication dictionary
+
+`src/detector/data/medications.ts` ships a curated list of ~320 common
+generic + brand medication names (single-word entries, lower-case, matched
+case-insensitively on word boundaries). It is intentionally a plain data file
+so it can be reviewed and extended by appending to the exported array
+without touching engine code. The source is documented at the top of that
+file (publicly available top-prescribed U.S. medication lists; FDA Orange
+Book brand equivalents). Multi-word brand names are deferred to a later
+pass.
+
+### Explicit mask tokens
+
+V1.1 rules can declare an explicit `maskToken` (e.g. `"[MRN]"`). The masker
+uses it if present and falls back to a label-derived form
+(`"US Social Security Number"` → `"[US_SOCIAL_SECURITY_NUMBER]"`) otherwise.
+V1 rules leave `maskToken` unset, preserving their existing placeholders
+byte-for-byte.
+
 ## Site adapter contract
 
 Each AI site has different input editors (contenteditable, ProseMirror, Lexical, etc.). The adapter interface:
