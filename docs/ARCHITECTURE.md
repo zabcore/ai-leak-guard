@@ -186,7 +186,7 @@ the WHOLE labeled span with the mask token — the output reads
 
 ### Medication dictionary
 
-`src/detector/data/medications.ts` ships a curated list of ~220 common
+`src/detector/data/medications.ts` ships a curated list of ~320 common
 generic + brand medication names (single-word entries, lower-case, matched
 case-insensitively on word boundaries). It is intentionally a plain data file
 so it can be reviewed and extended by appending to the exported array

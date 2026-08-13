@@ -169,8 +169,8 @@ describe('isPlausiblePhone', () => {
   it('accepts a normal 10-digit US phone', () => {
     expect(isPlausiblePhone('(415) 555-2671')).toBe(true)
   })
-  it('accepts an international number of up to 15 digits', () => {
-    expect(isPlausiblePhone('+44 20 7946 0958')).toBe(true)
+  it('accepts an 11-digit US number with +1 country code', () => {
+    expect(isPlausiblePhone('+1 415-555-2671')).toBe(true)
   })
   it('rejects an all-same-digit sequence', () => {
     expect(isPlausiblePhone('111-111-1111')).toBe(false)
@@ -179,6 +179,12 @@ describe('isPlausiblePhone', () => {
   it('rejects too-short and too-long sequences', () => {
     expect(isPlausiblePhone('123456')).toBe(false)
     expect(isPlausiblePhone('1234567890123456')).toBe(false)
+  })
+  it('rejects international formats outside the NA scope (aligned with the regex)', () => {
+    // The detector regex only emits NA-shaped matches, so the validator matches
+    // that scope: a hypothetical 12+ digit international number cannot be produced
+    // by the regex and is not accepted here either.
+    expect(isPlausiblePhone('+44 20 7946 0958')).toBe(false)
   })
 })
 

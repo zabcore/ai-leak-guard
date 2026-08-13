@@ -114,12 +114,15 @@ export function isValidDea(value: string): boolean {
 }
 
 /**
- * Cheap plausibility filter for a phone-shaped match: after stripping punctuation,
- * length must be 10–15 digits and not a single repeated digit (e.g. "1111111111").
+ * Cheap plausibility filter for a phone-shaped match. Scope matches the
+ * detector's regex (North American: 10 digits, or 11 with a leading `+1`
+ * country code) — kept aligned so a validator-accepted value can never
+ * fall outside what the regex is willing to match. Also rejects single
+ * repeated digit runs like "1111111111".
  */
 export function isPlausiblePhone(value: string): boolean {
   const digits = value.replace(/\D/g, '')
-  if (digits.length < 10 || digits.length > 15) return false
+  if (digits.length !== 10 && !(digits.length === 11 && digits[0] === '1')) return false
   if (/^(\d)\1+$/.test(digits)) return false
   return true
 }
