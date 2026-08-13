@@ -1,9 +1,11 @@
 # AI Leak Guard — Architecture
 
 ## Core principle
+
 Everything runs locally in the user's browser. No backend, no database, no telemetry, no user text ever leaves the device. One optional outbound call: daily fetch of a static rules JSON file from a CDN.
 
 ## Tech stack
+
 - **Language:** TypeScript
 - **Bundler:** Vite (with `vite-plugin-web-extension` or similar)
 - **Test runner:** Vitest
@@ -13,6 +15,7 @@ Everything runs locally in the user's browser. No backend, no database, no telem
 - **UI:** Vanilla TypeScript + HTML for popup, Shadow DOM for in-page toast (no React in V1 — bundle size matters for extensions)
 
 ## Project structure
+
 ```
 ai-leak-guard/
 ├── manifest.json                 # Chrome MV3 manifest
@@ -59,6 +62,7 @@ ai-leak-guard/
 ```
 
 ## Detection engine contract
+
 The detector is a **pure function**:
 
 ```typescript
@@ -74,7 +78,9 @@ function detect(text: string, rules: Rule[]): Finding[]
 This separation is critical. The detector must be unit-testable in CI without a browser.
 
 ## Detection rules (V1)
+
 Each rule has:
+
 - `id`: stable identifier
 - `label`: human-readable name shown in toast
 - `pattern`: RegExp
@@ -82,6 +88,7 @@ Each rule has:
 - `severity`: critical | high | medium
 
 V1 rules:
+
 - `aws_access_key`: `\bAKIA[0-9A-Z]{16}\b`
 - `github_pat`: `\b(ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{36,}\b`
 - `openai_key`: `\bsk-[A-Za-z0-9]{20,}\b`
@@ -94,21 +101,64 @@ V1 rules:
 - `credit_card`: 13–19 digit groups + Luhn validation
 - `generic_secret`: `(password|secret|token|api[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9+/=_-]{16,}` + entropy > 3.5
 
+## Detection taxonomy and combination scoring (V1.1)
+
+V1.1 layers a small taxonomy on top of the rule table so future detectors
+(clinical context, patient identifiers, provider IDs) can be reasoned about
+without hard-coding per-rule masking policy in the content script.
+
+**Categories** (`DetectorCategory`):
+
+- `IDENTITY` — patient-side identity signals
+- `HEALTHCARE_PATIENT_ID` — MRNs and other patient identifiers
+- `GOVERNMENT_FINANCIAL` — SSN, credit card, etc.
+- `PROVIDER_ID` — provider identifiers (NPI, DEA)
+- `CLINICAL_CONTEXT` — ICD/CPT codes, medications, procedures (context, not
+  patient PHI on its own)
+- `DEVELOPER_CREDENTIAL` — API keys, JWTs, private keys, generic secrets
+
+**Sensitivity levels** (`SensitivityLevel`): `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`.
+V1.1 uses only `CRITICAL`, `HIGH`, and `LOW`; `MEDIUM` is reserved for
+per-item preview control in a later release.
+
+Each rule declares a `category` and a `baseSensitivity`. After collecting
+findings, the engine runs `applyCombinationScoring(findings)` to compute each
+finding's `effectiveSensitivity`:
+
+- **Rule A** — findings whose category is not `CLINICAL_CONTEXT` keep their
+  `baseSensitivity`.
+- **Rule B** — `CLINICAL_CONTEXT` findings are `LOW` in V1.1 regardless of what
+  else is present (identifiers get masked; context stays visible).
+- **Rule C** — `LOW` is never promoted in V1.1 (V1.2 may escalate identifier
+  sensitivity when clinical context is present, but not the context finding
+  itself).
+
+The content script masks a finding when `effectiveSensitivity` is `CRITICAL`
+or `HIGH` (or unset — bare-Rule inputs preserve pre-V1.1 behavior). For the
+V1 rule set every finding lands at `CRITICAL` or `HIGH`, so V1.0 masking
+behavior is unchanged; the scoring layer is installed ahead of the healthcare
+detectors that ship in a subsequent PR.
+
+`detect()` returns `Finding[]` for backward compatibility; new callers can use
+`detectDetailed()` which returns `{ findings, hasCriticalOrHigh }`.
+
 ## Site adapter contract
+
 Each AI site has different input editors (contenteditable, ProseMirror, Lexical, etc.). The adapter interface:
 
 ```typescript
 interface SiteAdapter {
-  domain: string[];                    // ["chatgpt.com", "chat.openai.com"]
-  isInputElement(el: Element): boolean;
-  insertText(el: Element, text: string): boolean;  // returns success
-  replaceContents(el: Element, text: string): boolean;
+  domain: string[] // ["chatgpt.com", "chat.openai.com"]
+  isInputElement(el: Element): boolean
+  insertText(el: Element, text: string): boolean // returns success
+  replaceContents(el: Element, text: string): boolean
 }
 ```
 
 Default fallback uses `document.execCommand('insertText')` which still works on Chrome for contenteditable inputs even though it's deprecated. Site-specific adapters override when needed.
 
 ## Paste interception flow
+
 1. Content script attaches a **capture-phase** `paste` event listener on `document`
 2. When fired, read `clipboardData.getData('text/plain')`
 3. Pass to detector
@@ -121,7 +171,9 @@ Default fallback uses `document.execCommand('insertText')` which still works on 
    - Increment local counter
 
 ## Storage schema
+
 `chrome.storage.local`:
+
 ```typescript
 {
   counters: {
@@ -138,6 +190,7 @@ Default fallback uses `document.execCommand('insertText')` which still works on 
 ```
 
 ## Rules update mechanism
+
 - Background service worker has a `chrome.alarms` that fires every 12 hours
 - Fetches `https://cdn.aileakguard.com/rules/v1.json` (TBD — Cloudflare Pages or GitHub Pages)
 - Validates each pattern compiles and runs in <5ms against a fuzz string (anti-ReDoS)
@@ -146,13 +199,16 @@ Default fallback uses `document.execCommand('insertText')` which still works on 
 - This is **the only outbound network call** the extension makes
 
 ## Permissions (Manifest V3)
+
 Minimum required:
+
 - `storage` — for local counter and prefs
 - `clipboardRead` — for reading pasted text
 - `scripting` — for content scripts
 - `alarms` — for rules update schedule
 
 `host_permissions`:
+
 - `https://chatgpt.com/*`
 - `https://chat.openai.com/*`
 - `https://claude.ai/*`
@@ -163,6 +219,7 @@ Minimum required:
 No broad `<all_urls>` permission. Tight host list reduces Chrome Web Store review friction.
 
 ## Security considerations
+
 - Never use `eval()` or `new Function()` on remote rule patterns
 - Validate every remote regex against a fuzz string with a timeout before compiling
 - Toast UI uses Shadow DOM with `mode: 'closed'` so target sites can't restyle or read it
@@ -170,12 +227,14 @@ No broad `<all_urls>` permission. Tight host list reduces Chrome Web Store revie
 - No external scripts loaded at runtime (CSP-compliant by default)
 
 ## Performance budget
+
 - Detection on a typical paste (<5KB): under 5ms
 - Detection on a large paste (50KB): under 50ms (acceptable for paste interactions)
 - Extension bundle size: under 200KB total
 - Memory footprint: under 5MB resident
 
 ## What this architecture explicitly does NOT include in V1
+
 - React or any UI framework
 - Server backend
 - User authentication
