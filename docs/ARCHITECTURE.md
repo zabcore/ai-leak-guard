@@ -203,6 +203,53 @@ uses it if present and falls back to a label-derived form
 V1 rules leave `maskToken` unset, preserving their existing placeholders
 byte-for-byte.
 
+### Patient names + street addresses (V1.1 PR 3)
+
+Two more `IDENTITY` / `HIGH` detectors, both anchored — never free-prose:
+
+**`patient_name`** — fires only on `<patient-side label><separator><name>`.
+Labels: `Patient`, `Patient Name`, `Pt`, `Member`, `Insured`,
+`Subscriber`, `Guarantor`. The bare `Name` label from the original spec is
+intentionally omitted: `Provider Name: Alice Wong` would otherwise match
+`Name: Alice Wong` and silently mask a provider name; `Name:` alone is
+also weak signal (`Product Name:`, `File Name:`, `User Name:` are common
+non-medical forms). Provider labels (`Provider`, `Physician`, `Dr`,
+`Referring`) are excluded by this detector's scope — this is a
+detector-shape decision, not a universal privacy determination. Under
+HIPAA's Safe Harbor de-identification method, provider names are not
+required to be removed, but other privacy contexts (e.g. 42 CFR Part 2
+for SUD records, state-specific confidentiality statutes, or a product's
+own policy) may still call for masking them. The `NPI` and `DEA` rules
+detect provider identifiers — not provider names. Whether provider names
+should be masked at all is a separate policy call left to a future
+detector. Separator is REQUIRED (one of `:`, `-`, `–`, `=`) — a bare-label
+prefix like "the patient Sarah Khan reported…" would otherwise trigger.
+Value is 2–4 capitalized tokens (`First Last`, `First Middle Last`,
+`First M. Last`) OR `Last, First [Middle]`. Tokens allow apostrophes
+(`O'Brien`) and hyphens (`Smith-Jones`). Mask token: `[PATIENT_NAME]`.
+
+**`street_address`** — fires on EITHER a structural anchor (leading house
+number + capitalized street-name words + street-type suffix from a fixed
+set of ~18 suffixes + optional unit indicator) OR a label anchor (`Address`
+/ `Addr` / `Home Address` + required separator + rest of line). The
+leading house number is the discriminator for the structural form — it is
+what separates a real address from a street name mentioned in prose
+("We met on Main Street" → no fire). Mask token: `[ADDRESS]`.
+
+Both detectors are compiled with the `g` flag only (not `gi`) so
+case-sensitive `[A-Z]` classes actually discriminate — under `gi`, `[A-Z]`
+also matches `[a-z]` and the "must start with a capital" property that
+distinguishes names from prose evaporates. Case-insensitivity for the
+labels themselves is expressed inline: a small `ci()` helper expands each
+letter of a label alternative to a `[Xx]` character class, so `Patient`,
+`patient`, `PATIENT`, and any mixed-case variant all match.
+
+`patient_name` does NOT go through `contextualRule` — its value regex needs
+that case-sensitive discipline, and the helper's `gi` compilation is a
+poor fit. `contextualRule` remains the right tool for the identifier
+detectors (MRN, member ID, claim, patient ID, account, license, CPT, DOB)
+where labels and values are both alphanumeric identifiers.
+
 ## Site adapter contract
 
 Each AI site has different input editors (contenteditable, ProseMirror, Lexical, etc.). The adapter interface:

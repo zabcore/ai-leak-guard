@@ -93,6 +93,9 @@ describe('RULES taxonomy', () => {
       icd10: { category: 'clinical_context', baseSensitivity: 'low' },
       cpt: { category: 'clinical_context', baseSensitivity: 'low' },
       medication: { category: 'clinical_context', baseSensitivity: 'low' },
+      // V1.1 PR 3 — IDENTITY (names + addresses)
+      patient_name: { category: 'identity', baseSensitivity: 'high' },
+      street_address: { category: 'identity', baseSensitivity: 'high' },
     })
   })
 })

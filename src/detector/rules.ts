@@ -48,12 +48,26 @@ interface ContextualRuleConfig {
   isContextSignal?: boolean
   labelPattern: string
   valuePattern: string
+  // Overrides the default separator between the label and value. The default
+  // `[:#]?` (optional colon or hash) matches PR 2's identifier detectors, where
+  // labels like `MRN` / `Claim #` may appear with or without punctuation. Detectors
+  // like `patient_name` and `street_address` need a REQUIRED punctuation separator
+  // (`Patient:`, `Address -`, `Name =`) — otherwise a sentence fragment like
+  // "the patient Sarah Khan" would over-fire on a bare-label prefix. Callers pass
+  // the character class or pattern they want (unwrapped; the helper interpolates it
+  // between `\\s*` on either side).
+  separatorPattern?: string
   validateValue?: (value: string) => boolean
 }
 
 function contextualRule(cfg: ContextualRuleConfig): DetectorRule {
+  const separator = cfg.separatorPattern ?? '[:#]?'
+  // Wrap the separator in a non-capturing group so a caller-supplied alternation
+  // (e.g. `:|=`) cannot escape and become a top-level alternative of the outer
+  // pattern. Without the group, `label\s*:|=\s*(value)` reads as
+  // `(label\s*:)|(=\s*(value))` — matching a value after `=` with NO label.
   const pattern = new RegExp(
-    `\\b(?:${cfg.labelPattern})\\s*[:#]?\\s*(${cfg.valuePattern})\\b`,
+    `\\b(?:${cfg.labelPattern})\\s*(?:${separator})\\s*(${cfg.valuePattern})\\b`,
     'gi',
   )
   const valueExtractor = new RegExp(`(${cfg.valuePattern})`, 'i')
@@ -83,6 +97,16 @@ function contextualRule(cfg: ContextualRuleConfig): DetectorRule {
 // "Member ID John Doe" from wrongly capturing "John". The `i` flag on the outer
 // pattern makes the letters case-insensitive.
 const ALNUM_ID_WITH_DIGIT = '(?=[A-Z0-9-]*\\d)[A-Z0-9-]{4,20}'
+
+// Expands each ASCII letter in `s` to a case-insensitive character class so
+// the resulting regex fragment is case-INSENSITIVE without needing the `i`
+// flag. Used by patient_name / street_address, which compile with `g` only
+// (not `gi`) so their value patterns can rely on case-sensitive `[A-Z]` to
+// discriminate proper names / capitalized street words from prose. Non-letter
+// characters (whitespace, `\s`, `+`, etc.) are passed through unchanged.
+function ci(s: string): string {
+  return s.replace(/[A-Za-z]/g, (c) => `[${c.toUpperCase()}${c.toLowerCase()}]`)
+}
 
 // Medication dictionary is compiled into a single alternation; all entries are
 // plain lower-case words so no regex-escaping is needed.
@@ -249,6 +273,104 @@ export const RULES: DetectorRule[] = [
     maskToken: '[EMAIL]',
     pattern: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
   },
+
+  // ─── V1.1 PR 3: patient names + street addresses (contextual only) ────────
+  //
+  // Both detectors are label-anchored. Patient names have NO structural fallback
+  // (free-prose names are out of scope for V1.1 — the miss rate on unlabeled names
+  // is preferable to the false-positive rate any bare-name heuristic produces).
+  // Street addresses accept EITHER a label anchor OR a structural anchor (leading
+  // house number + street-type suffix). The house number is what separates a real
+  // address from a street name mentioned in prose ("We met on Main Street").
+  //
+  // Provider-side labels (`Provider`, `Physician`, `Dr`, `Referring`) are
+  // intentionally NOT in the patient_name label set: provider names are not PHI,
+  // and NPI/DEA already cover provider identifiers. Masking provider names would
+  // add noise without protecting anything.
+  //
+  // Separator is REQUIRED (`:`, `-`, `–`, `=`) — a bare-label prefix like
+  // "the patient Sarah Khan reported…" would otherwise over-fire.
+  //
+  // patient_name is compiled with the `g` flag only (NOT `gi`). We rely on
+  // case-sensitive value matching so a proper capitalized name token
+  // (e.g. `Sarah`, `O'Brien`, `Smith-Jones`) is distinguishable from an
+  // uppercase acronym or a lowercase word that follows it. Adding the `i` flag
+  // would collapse that distinction — `[A-Z]` would also match `[a-z]`, causing
+  // "Patient: seen today" to fire and "Patient: Sarah Khan DOB: 01/02/1980"
+  // to swallow `DOB` as if it were a name token. That is why we DO NOT use
+  // contextualRule here (which is `gi` by design for its identifier detectors):
+  // instead we pin case-INSENSITIVITY to the label alternatives explicitly by
+  // expanding each letter to a `[Xx]` character class via the `ci()` helper,
+  // so `Patient:`, `patient:`, and `PATIENT:` all match while the value
+  // remains case-sensitive.
+  //
+  // A NAME_WORD is `[A-Z]` followed by either at least one lowercase letter
+  // (`Sarah`, `Khan`), an apostrophe segment (`O'Brien`), or a hyphenated
+  // segment (`Smith-Jones`). An acronym like `DOB` fails because `[A-Z]` is
+  // not followed by any of those. A middle initial is `[A-Z]\.` (allowed as
+  // a non-terminal token only). Value = 2..4 tokens or `Last, First [Middle]`.
+  (() => {
+    // The bare `Name` alternative from the spec is intentionally OMITTED here:
+    // "Provider Name: Alice Wong" would otherwise match `Name: Alice Wong`
+    // (with `Provider ` sitting harmlessly to the left of the word boundary),
+    // silently masking a provider name. The require-`Patient` prefix in
+    // `Patient Name` disambiguates. `Name` alone is also weak signal —
+    // "Product Name:", "File Name:", "User Name:" are all common non-medical
+    // forms. Removing it costs one line of the issue's positive-example
+    // wishlist and buys precision on the primary risk (provider-side capture).
+    const label =
+      `${ci('Patient')}\\s+${ci('Name')}|` +
+      `${ci('Patient')}|${ci('Member')}|` +
+      `${ci('Insured')}|${ci('Subscriber')}|${ci('Guarantor')}|${ci('Pt')}`
+    const nameWord = "[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*"
+    const nameToken = `(?:${nameWord}|[A-Z]\\.)`
+    const value =
+      `(?:${nameWord},\\s+${nameWord}(?:\\s+${nameWord})?` +
+      `|(?:${nameToken}\\s+){1,3}${nameWord})`
+    return {
+      id: 'patient_name' as const,
+      label: 'Patient Name',
+      severity: 'high' as const,
+      category: DetectorCategory.IDENTITY,
+      baseSensitivity: SensitivityLevel.HIGH,
+      maskToken: '[PATIENT_NAME]',
+      pattern: new RegExp(`\\b(?:${label})\\s*[:=–-]\\s*${value}\\b`, 'g'),
+    }
+  })(),
+  (() => {
+    // Alternation of two forms, either sufficient:
+    //   1. STRUCTURAL — leading house number + 1..4 capitalized street-name words
+    //      + a suffix from a fixed set + optional unit indicator. The leading
+    //      `\d{1,6}` is the discriminator: "We met on Main Street" has no number
+    //      and MUST NOT fire.
+    //   2. LABELED — `Address` / `Addr` / `Home Address` + required separator +
+    //      rest of line (excluding line breaks). The required separator prevents
+    //      "Meeting Address in the room" from over-firing.
+    //
+    // Also compiled with `g` (no `i`): structural detection depends on the
+    // street-name words being capitalized so a lowercase-prose "we met at 123
+    // main street" does NOT trip the structural form. The labeled form's label
+    // alternatives are made case-INSENSITIVE via `ci()` (`Address`, `address`,
+    // `ADDRESS`, `Home Address`, `HOME ADDRESS` all match).
+    const suffixes =
+      'Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|' +
+      'Court|Ct|Way|Place|Pl|Terrace|Ter|Circle|Cir|Highway|Hwy'
+    const structural =
+      `\\d{1,6}\\s+(?:[A-Z][A-Za-z]{0,20}\\s+){1,4}(?:${suffixes})\\.?` +
+      `(?:,?\\s+(?:(?:Apt|Suite|Ste|Unit|#)\\s*[A-Za-z0-9-]+|\\d{1,5}[A-Za-z]?))?`
+    const labeled =
+      `(?:${ci('Home')}\\s+${ci('Address')}|${ci('Address')}|${ci('Addr')})` +
+      `\\s*[:=–-]\\s*[^\\n\\r]+`
+    return {
+      id: 'street_address' as const,
+      label: 'Street Address',
+      severity: 'high' as const,
+      category: DetectorCategory.IDENTITY,
+      baseSensitivity: SensitivityLevel.HIGH,
+      maskToken: '[ADDRESS]',
+      pattern: new RegExp(`\\b(?:${structural}|${labeled})`, 'g'),
+    }
+  })(),
 
   // ─── V1.1: HEALTHCARE_PATIENT_ID ──────────────────────────────────────────
   contextualRule({

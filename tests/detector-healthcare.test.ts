@@ -262,8 +262,8 @@ describe('no regression on the V1 detectors', () => {
     expect(ruleIdsIn('John Smith SSN 000-12-3456')).not.toContain('ssn')
   })
 
-  it('RULES now has the 11 V1 detectors plus 15 V1.1 additions = 26 total', () => {
-    expect(RULES).toHaveLength(26)
+  it('RULES has the 11 V1 detectors plus 15 V1.1 PR 2 + 2 V1.1 PR 3 = 28 total', () => {
+    expect(RULES).toHaveLength(28)
   })
 })
 
