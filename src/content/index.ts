@@ -55,11 +55,36 @@ function protectedPaste(target: Element, originalText: string, siteAdapter: Site
   maskInsertAndNotify(siteAdapter, target, maskedText, maskable, {
     count: maskable.length,
     labels,
-    onUndo: () => undoMask(siteAdapter, target, maskedSegments, maskable),
+    // Pass the exact maskedText we just inserted and the originalText we're
+    // undoing back to, so the undo can do a robust whole-field restore when
+    // the field is untouched — ProseMirror editors (ChatGPT / Claude) can
+    // transform pasted brackets in ways that break naive placeholder search
+    // in `textContent`.
+    onUndo: () =>
+      undoMask(siteAdapter, target, maskedSegments, maskable, {
+        maskedText,
+        originalText,
+      }),
   })
 }
 
-document.addEventListener(
+// One listener on `window` in the capture phase. Two reasons this beats
+// site-native paste handlers on ChatGPT-style ProseMirror editors:
+//   1. `window` is the outermost target in the DOM event flow — capture on
+//      window runs before capture on document / html / body / editor. A
+//      site handler attached in capture on document (or any inner element)
+//      fires AFTER us, so our stopImmediatePropagation / stopPropagation
+//      pair prevents theirs from ever running.
+//   2. Combined with `run_at: "document_start"` in the manifest, our
+//      listener is registered before the site's app script gets a chance
+//      to add its own — even on the same node, capture-phase listeners
+//      fire in registration order, so first-in wins on ties.
+//
+// Without both of these, ChatGPT's ProseMirror captured the paste first,
+// inserted the original text through its own model, and our subsequent
+// `protectedPaste` insertion landed on top → duplicate paste, original PHI
+// still visible.
+window.addEventListener(
   'paste',
   (event: ClipboardEvent): void => {
     try {
@@ -74,10 +99,11 @@ document.addEventListener(
       // V1.1 PR 4: preview-before-send. If a preview modal is already open
       // from an earlier paste, drop this event on the floor — the spec is
       // "additional paste events are ignored until the current modal
-      // resolves." preventDefault so the site doesn't insert the second
-      // paste behind the modal.
+      // resolves." preventDefault + stopImmediatePropagation so the site
+      // doesn't get to insert the second paste behind the modal.
       if (isPreviewModalOpen()) {
         event.preventDefault()
+        event.stopImmediatePropagation()
         event.stopPropagation()
         return
       }
@@ -88,7 +114,12 @@ document.addEventListener(
       const { findings, hasCriticalOrHigh } = detectDetailed(text)
       if (!hasCriticalOrHigh) return
 
+      // Stop the browser's default paste AND stop any other listeners
+      // (site-level or extension-level) from seeing this event. On ChatGPT
+      // this is what prevents ProseMirror from also inserting the original
+      // text through its own paste path.
       event.preventDefault()
+      event.stopImmediatePropagation()
       event.stopPropagation()
 
       const summary = buildPreviewSummary(text, findings)

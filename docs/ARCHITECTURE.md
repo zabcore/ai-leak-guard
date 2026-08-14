@@ -267,6 +267,31 @@ interface SiteAdapter {
 
 Default fallback uses `document.execCommand('insertText')` which still works on Chrome for contenteditable inputs even though it's deprecated. Site-specific adapters override when needed.
 
+## Paste interception ordering (why we listen on `window` at `document_start`)
+
+Content-script `run_at` is `document_start` and the paste listener is
+attached to `window` in the capture phase. Both are load-bearing on
+ChatGPT-style editors:
+
+- **`document_start`** — the site's own paste handler is often registered
+  by the app script at load. Content scripts default to `document_idle`,
+  which runs after those scripts. Capture-phase listeners on the same node
+  fire in registration order, so `document_idle` would let the site's
+  document-level capture handler run first and manually insert the paste
+  through its editor model (ChatGPT / ProseMirror) before ours ever fires.
+  At `document_start` we register first and can `stopImmediatePropagation`
+  to keep theirs from firing at all.
+- **`window` in capture** — the DOM event flow is
+  `window → document → html → … → target`. A listener on `window` in the
+  capture phase fires before any listener on `document` (or any inner
+  element) in _either_ phase. So even if some site attaches its paste
+  handler on `document` before we can, our `window` listener still wins.
+
+The combination is defensive: either mechanism alone was insufficient on
+ChatGPT — with the two together plus `stopImmediatePropagation`, the
+site never sees the paste event and cannot double-insert the original
+text behind our modal.
+
 ## Paste interception flow (V1.1 PR 4 — preview-before-send)
 
 **Behavior change vs V1.0:** V1.0 masked silently on paste and showed a

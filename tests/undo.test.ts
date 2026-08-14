@@ -160,6 +160,63 @@ describe('undoMask', () => {
     expect((await getCounters()).total).toBe(1)
   })
 
+  it('whole-field restore when current text matches maskedText (ProseMirror-safe path)', () => {
+    // When the field content still exactly equals what we inserted (user
+    // hasn't edited), undo does a whole-field replaceContents to the
+    // originalText — this is what makes undo work on ProseMirror editors
+    // that can transform brackets in placeholders so the per-placeholder
+    // search can't find them.
+    let restored: string | undefined
+    const outcome = undoMask(
+      fakeAdapter(true, (text) => {
+        restored = text
+      }),
+      textarea('Patient: [PATIENT_NAME], MRN: [MRN]'),
+      [segment('[PATIENT_NAME]', 'Jane Doe', 'patient_name'), segment('[MRN]', '12345678', 'mrn')],
+      [finding('patient_name'), finding('mrn')],
+      {
+        maskedText: 'Patient: [PATIENT_NAME], MRN: [MRN]',
+        originalText: 'Patient: Jane Doe, MRN: 12345678',
+      },
+    )
+    expect(outcome).toBe('restored')
+    expect(restored).toBe('Patient: Jane Doe, MRN: 12345678')
+  })
+
+  it('falls back to per-placeholder replacement when field has been edited since paste', () => {
+    let restored: string | undefined
+    const outcome = undoMask(
+      fakeAdapter(true, (text) => {
+        restored = text
+      }),
+      textarea('Patient: [PATIENT_NAME], MRN: [MRN] please help'),
+      [segment('[PATIENT_NAME]', 'Jane Doe', 'patient_name'), segment('[MRN]', '12345678', 'mrn')],
+      [finding('patient_name'), finding('mrn')],
+      {
+        maskedText: 'Patient: [PATIENT_NAME], MRN: [MRN]',
+        originalText: 'Patient: Jane Doe, MRN: 12345678',
+      },
+    )
+    expect(outcome).toBe('restored')
+    expect(restored).toBe('Patient: Jane Doe, MRN: 12345678 please help')
+  })
+
+  it('whole-field restore reports failed if the editor rejects the replace', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const outcome = undoMask(
+      fakeAdapter(false),
+      textarea('Patient: [PATIENT_NAME]'),
+      [segment('[PATIENT_NAME]', 'Jane Doe', 'patient_name')],
+      [finding('patient_name')],
+      {
+        maskedText: 'Patient: [PATIENT_NAME]',
+        originalText: 'Patient: Jane Doe',
+      },
+    )
+    expect(outcome).toBe('failed')
+    expect(warn).toHaveBeenCalledOnce()
+  })
+
   it('does not decrement counters on a partial restore', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     await incrementCounters([finding('ssn'), finding('ssn')])
