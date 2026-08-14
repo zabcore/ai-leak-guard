@@ -310,9 +310,17 @@ export const RULES: DetectorRule[] = [
   // not followed by any of those. A middle initial is `[A-Z]\.` (allowed as
   // a non-terminal token only). Value = 2..4 tokens or `Last, First [Middle]`.
   (() => {
+    // The bare `Name` alternative from the spec is intentionally OMITTED here:
+    // "Provider Name: Alice Wong" would otherwise match `Name: Alice Wong`
+    // (with `Provider ` sitting harmlessly to the left of the word boundary),
+    // silently masking a provider name. The require-`Patient` prefix in
+    // `Patient Name` disambiguates. `Name` alone is also weak signal —
+    // "Product Name:", "File Name:", "User Name:" are all common non-medical
+    // forms. Removing it costs one line of the issue's positive-example
+    // wishlist and buys precision on the primary risk (provider-side capture).
     const label =
       `${ci('Patient')}\\s+${ci('Name')}|` +
-      `${ci('Patient')}|${ci('Name')}|${ci('Member')}|` +
+      `${ci('Patient')}|${ci('Member')}|` +
       `${ci('Insured')}|${ci('Subscriber')}|${ci('Guarantor')}|${ci('Pt')}`
     const nameWord = "[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*"
     const nameToken = `(?:${nameWord}|[A-Z]\\.)`

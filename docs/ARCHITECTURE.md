@@ -208,8 +208,12 @@ byte-for-byte.
 Two more `IDENTITY` / `HIGH` detectors, both anchored — never free-prose:
 
 **`patient_name`** — fires only on `<patient-side label><separator><name>`.
-Labels: `Patient`, `Patient Name`, `Pt`, `Name`, `Member`, `Insured`,
-`Subscriber`, `Guarantor`. Provider labels (`Provider`, `Physician`, `Dr`,
+Labels: `Patient`, `Patient Name`, `Pt`, `Member`, `Insured`,
+`Subscriber`, `Guarantor`. The bare `Name` label from the original spec is
+intentionally omitted: `Provider Name: Alice Wong` would otherwise match
+`Name: Alice Wong` and silently mask a provider name; `Name:` alone is
+also weak signal (`Product Name:`, `File Name:`, `User Name:` are common
+non-medical forms). Provider labels (`Provider`, `Physician`, `Dr`,
 `Referring`) are excluded by this detector's scope — this is a
 detector-shape decision, not a universal privacy determination. Under
 HIPAA's Safe Harbor de-identification method, provider names are not

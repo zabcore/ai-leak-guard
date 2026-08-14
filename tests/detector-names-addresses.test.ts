@@ -41,10 +41,6 @@ describe('patient_name — anchor labels (positive)', () => {
     expect(firstOf('Pt: Sarah Khan', 'patient_name').value).toContain('Sarah Khan')
   })
 
-  it('fires on `Name: <name>`', () => {
-    expect(firstOf('Name: Sarah Khan', 'patient_name').value).toContain('Sarah Khan')
-  })
-
   it('fires on `Member: <name>`', () => {
     expect(firstOf('Member: Sarah Khan', 'patient_name').value).toContain('Sarah Khan')
   })
@@ -140,6 +136,23 @@ describe('patient_name — negatives (free prose, provider labels, wrong values)
 
   it('does NOT fire on `Referring: Dr. Alice Wong` (provider label excluded)', () => {
     expect(findingsFor('Referring: Dr. Alice Wong', 'patient_name')).toHaveLength(0)
+  })
+
+  it('does NOT fire on `Provider Name: Sarah Khan` (bare `Name` label omitted for this reason)', () => {
+    // The bare `Name` alternative from the issue spec was intentionally NOT
+    // included in the label pattern: it would otherwise match "Name: Sarah
+    // Khan" inside "Provider Name: Sarah Khan" and silently mask a provider
+    // name. `Patient Name`, `Patient`, `Member`, etc. are unambiguous
+    // patient-side labels and stay in.
+    expect(findingsFor('Provider Name: Sarah Khan', 'patient_name')).toHaveLength(0)
+  })
+
+  it('does NOT fire on `Physician Name: Alice Wong` (bare-Name exclusion)', () => {
+    expect(findingsFor('Physician Name: Alice Wong', 'patient_name')).toHaveLength(0)
+  })
+
+  it('does NOT fire on `File Name: report.pdf` (bare-Name exclusion, non-medical form)', () => {
+    expect(findingsFor('File Name: Report Draft', 'patient_name')).toHaveLength(0)
   })
 
   it('does NOT fire on `Dr. Alice Wong signed off` (no anchor at all)', () => {
