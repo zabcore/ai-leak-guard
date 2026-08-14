@@ -1,11 +1,12 @@
-import { detect, isMaskable } from '../detector/engine'
-import { RULES } from '../detector/rules'
+import { detectDetailed, isMaskable } from '../detector/engine'
 import { mask } from './masker'
-import { getAdapterForHost } from './adapters'
+import { getAdapterForHost, type SiteAdapter } from './adapters'
 import { maskInsertAndNotify } from './paste-flow'
 import { undoMask } from './undo'
 import { resolveInitialEnabled, createEnabledState } from './enabled-state'
 import { getPrefs } from '../shared/storage'
+import { buildPreviewSummary } from './preview-flow'
+import { showPreviewModal, isPreviewModalOpen } from './preview-modal'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -32,6 +33,32 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 })
 
+// Inserts arbitrary text through the site adapter (with an execCommand
+// fallback). Used for the `Paste as-is` outcome, where we're doing what a
+// native paste would do — no toast, no undo, no counter increment.
+function insertRaw(target: Element, text: string): boolean {
+  return adapter.insertText(target, text) || document.execCommand('insertText', false, text)
+}
+
+function protectedPaste(target: Element, originalText: string, siteAdapter: SiteAdapter): void {
+  const findings = detectDetailed(originalText).findings
+  const maskable = findings.filter(isMaskable)
+  if (maskable.length === 0) {
+    // Defensive: should not happen because the modal only opens when
+    // `hasCriticalOrHigh` is true, which implies at least one maskable
+    // finding. Fall back to a raw insert so nothing is silently dropped.
+    insertRaw(target, originalText)
+    return
+  }
+  const { text: maskedText, maskedSegments } = mask(originalText, maskable)
+  const labels = [...new Set(maskable.map((finding) => finding.label))]
+  maskInsertAndNotify(siteAdapter, target, maskedText, maskable, {
+    count: maskable.length,
+    labels,
+    onUndo: () => undoMask(siteAdapter, target, maskedSegments, maskable),
+  })
+}
+
 document.addEventListener(
   'paste',
   (event: ClipboardEvent): void => {
@@ -44,31 +71,39 @@ document.addEventListener(
       const target = event.target as Element | null
       if (target === null || !adapter.isPromptInput(target)) return
 
-      // V1.1: detect() now returns findings enriched with `effectiveSensitivity`.
-      // Only CRITICAL/HIGH findings get masked; anything LOW (e.g. clinical
-      // context in PR 2) stays visible. Bare-Rule findings without taxonomy
-      // fall through `isMaskable` as true, preserving pre-V1.1 behavior.
-      const maskable = detect(text, RULES).filter(isMaskable)
-      if (maskable.length === 0) return
+      // V1.1 PR 4: preview-before-send. If a preview modal is already open
+      // from an earlier paste, drop this event on the floor — the spec is
+      // "additional paste events are ignored until the current modal
+      // resolves." preventDefault so the site doesn't insert the second
+      // paste behind the modal.
+      if (isPreviewModalOpen()) {
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
+
+      // Decision is driven entirely by the engine's `hasCriticalOrHigh`. On
+      // clean input (or context-only LOW findings), the modal never opens
+      // and the native paste is allowed to proceed byte-for-byte.
+      const { findings, hasCriticalOrHigh } = detectDetailed(text)
+      if (!hasCriticalOrHigh) return
 
       event.preventDefault()
       event.stopPropagation()
 
-      const { text: maskedText, maskedSegments } = mask(text, maskable)
-
-      const labels = [...new Set(maskable.map((finding) => finding.label))]
-      const result = maskInsertAndNotify(adapter, target, maskedText, maskable, {
-        count: maskable.length,
-        labels,
-        // Undo restores only the placeholder spans (preserving anything typed
-        // after the paste) and reports success, so it is always safe to offer —
-        // no fragile edit-detection that could wrongly block it when the site
-        // fires its own DOM events after insertion.
-        onUndo: () => undoMask(adapter, target, maskedSegments, maskable),
+      const summary = buildPreviewSummary(text, findings)
+      void showPreviewModal({ summary, opener: target }).then((outcome) => {
+        if (outcome === 'protected') {
+          protectedPaste(target, text, adapter)
+          return
+        }
+        if (outcome === 'as-is') {
+          insertRaw(target, text)
+          return
+        }
+        // Cancel: insert nothing. Focus was already returned to `target` by
+        // the modal on close, so the input is ready for the next keystroke.
       })
-
-      // Both insertion paths failed: nothing was pasted and no toast shown.
-      if (!result.inserted) return
     } catch (err) {
       // Never break the user's paste flow; on any error let the original through.
       console.error('[AI Leak Guard] paste handler error:', err)

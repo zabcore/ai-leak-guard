@@ -40,7 +40,9 @@ ai-leak-guard/
 │   │   │   ├── perplexity.ts     # Perplexity-specific
 │   │   │   └── copilot.ts        # Microsoft Copilot-specific
 │   │   ├── masker.ts             # Apply masks to text given findings
-│   │   └── toast.ts              # Shadow DOM toast with Undo
+│   │   ├── preview-flow.ts       # Pure logic for the preview-before-send modal
+│   │   ├── preview-modal.ts      # Shadow DOM modal (V1.1 PR 4)
+│   │   └── toast.ts              # Shadow DOM confirmation toast with Undo
 │   ├── background/
 │   │   ├── index.ts              # Service worker entry
 │   │   └── rules-updater.ts      # Daily rules fetch from CDN
@@ -265,23 +267,52 @@ interface SiteAdapter {
 
 Default fallback uses `document.execCommand('insertText')` which still works on Chrome for contenteditable inputs even though it's deprecated. Site-specific adapters override when needed.
 
-## Paste interception flow
+## Paste interception flow (V1.1 PR 4 — preview-before-send)
 
-1. Content script attaches a **capture-phase** `paste` event listener on `document`
-2. When fired, read `clipboardData.getData('text/plain')`
-3. Pass to detector
-4. Filter the returned findings through `isMaskable` — this drops anything with
-   `effectiveSensitivity === LOW` (e.g. `CLINICAL_CONTEXT` findings from PR 2)
-   while keeping everything at `CRITICAL` or `HIGH`
-5. If the maskable list is empty, do nothing — let the original paste through
-   (even when the raw findings list is nonempty; unmaskable-only pastes must
-   not cancel the paste, show a toast, or increment the counter)
-6. If maskable findings exist:
-   - `e.preventDefault()` and `e.stopPropagation()`
-   - Compute masked text via `masker.ts` using only the maskable findings
-   - Use site adapter to insert masked text into active input
-   - Show toast with Undo (counts and labels come from the maskable set)
-   - Increment local counter for the maskable findings
+**Behavior change vs V1.0:** V1.0 masked silently on paste and showed a
+confirmation toast. V1.1 previews first — the user sees exactly what would
+be masked and chooses `Paste protected version`, `Paste as-is`, or cancel.
+Detection is unchanged; only the interaction is new.
+
+1. Content script attaches a **capture-phase** `paste` event listener on
+   `document`.
+2. When fired, read `clipboardData.getData('text/plain')`.
+3. If a preview modal is already on screen (from an earlier paste), call
+   `preventDefault` + `stopPropagation` and drop this event — the spec is
+   "additional paste events are ignored until the current modal resolves."
+4. Call `detectDetailed(text)`. If `hasCriticalOrHigh === false` (clean text
+   or context-only LOW findings), do nothing — let the native paste
+   proceed. This is the zero-friction path.
+5. If `hasCriticalOrHigh === true`:
+   - `e.preventDefault()` + `e.stopPropagation()`.
+   - Build a `PreviewSummary` via `preview-flow.ts` — it filters findings
+     through `isMaskable` (the same predicate that decides masking), groups
+     by human label with counts, and computes `mask(text, maskable).text`
+     as the redacted preview.
+   - Open the preview modal (`preview-modal.ts`) — Shadow DOM, closed root,
+     `role="dialog"`, `aria-modal="true"`, focus trapped, Escape cancels,
+     Enter activates the primary action.
+   - Resolve on user action:
+     - `Paste protected version` → insert the masked text through the site
+       adapter, increment counters, show the existing confirmation toast
+       with `Undo` (same code path as V1.0).
+     - `Paste as-is` → insert the original text unchanged; no toast, no
+       counter, no undo.
+     - Cancel (Escape / close / backdrop) → insert nothing; return focus
+       to the paste target as if the paste never happened.
+
+**Single source of truth for "will be masked."** The modal never re-derives
+sensitivity. `preview-flow.ts` calls the engine's `isMaskable(finding)`
+helper — the same one the actual masking path uses — so the "what will be
+masked" list, the redacted preview, and the inserted text can never drift.
+LOW / clinical-context findings are excluded by `isMaskable` and are
+therefore never surfaced anywhere in the modal.
+
+**Split of concerns:** `preview-flow.ts` is pure logic (decision + summary
+builder, no DOM) so it can be exercised by fast unit tests.
+`preview-modal.ts` is the Shadow DOM component and returns a promise that
+resolves to the outcome, keeping the paste-flow wiring simple and
+side-effect-free.
 
 ## Storage schema
 
