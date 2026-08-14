@@ -22,6 +22,12 @@ export interface PreviewModalOptions {
 const HOST_ATTR = 'data-ai-leak-guard-preview-modal'
 
 let openModalHost: HTMLElement | null = null
+// Reset callback installed by the active modal. Runs full teardown (removes
+// the document keydown listener, unmounts the host, resolves the promise as
+// 'cancel'). Used by `__resetPreviewModalForTests` so an aborted test cannot
+// leave a stale document-level listener that would fire against a modal
+// created by a later test.
+let activeCancel: (() => void) | null = null
 
 /** True while a preview modal is on screen. Used by the content script to
  * ignore a second paste event that arrives before the first modal resolves. */
@@ -259,6 +265,7 @@ export function showPreviewModal(opts: PreviewModalOptions): Promise<PreviewOutc
       document.removeEventListener('keydown', keyHandler, true)
       host.remove()
       openModalHost = null
+      activeCancel = null
       // Return focus to the paste target so the input is ready for the next
       // keystroke. Guard against the opener having been removed from the DOM
       // while the modal was open.
@@ -285,11 +292,19 @@ export function showPreviewModal(opts: PreviewModalOptions): Promise<PreviewOutc
         // focused button) is exactly what the user asked for. This mirrors
         // native dialog conventions and avoids a jarring "Enter always
         // protects" when the user has deliberately Tab'd to a different button.
+        //
+        // In BOTH branches we stopPropagation so the Enter never reaches the
+        // host page (ChatGPT / Claude / etc. would otherwise send the prompt
+        // in the middle of the user's sensitive-paste decision). Only the
+        // primary path also preventDefaults; the secondary/close path leaves
+        // the default action alone so the focused button still activates.
         const activeInShadow = shadow.activeElement as HTMLElement | null
         if (activeInShadow !== asIsBtn && activeInShadow !== close) {
           event.preventDefault()
           event.stopPropagation()
           finalize('protected')
+        } else {
+          event.stopPropagation()
         }
         return
       }
@@ -332,6 +347,13 @@ export function showPreviewModal(opts: PreviewModalOptions): Promise<PreviewOutc
 
     mount.appendChild(host)
     openModalHost = host
+    // Register the full teardown so `__resetPreviewModalForTests` can undo
+    // everything a live modal installed — most importantly the document-level
+    // keydown listener, which would otherwise linger past the test and could
+    // fire against a modal created by a later test.
+    activeCancel = () => {
+      finalize('cancel')
+    }
 
     // Focus the primary button so Enter naturally activates protected.
     protectedBtn.focus()
@@ -339,13 +361,14 @@ export function showPreviewModal(opts: PreviewModalOptions): Promise<PreviewOutc
 }
 
 /**
- * Test-only: unwinds any modal state left behind by an aborted test. Never
- * called by production code.
+ * Test-only: unwinds any modal state left behind by an aborted test. Runs
+ * the same teardown the live modal would run on cancel — removes the
+ * document keydown listener, unmounts the host, resolves the pending
+ * promise as 'cancel', and clears module state. Never called by production.
  */
 export function __resetPreviewModalForTests(): void {
-  if (openModalHost !== null) {
-    openModalHost.remove()
-    openModalHost = null
+  if (activeCancel !== null) {
+    activeCancel()
   }
   removeStrayModals()
 }
