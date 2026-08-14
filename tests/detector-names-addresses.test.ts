@@ -60,6 +60,18 @@ describe('patient_name — anchor labels (positive)', () => {
   it('fires on `Guarantor: <name>`', () => {
     expect(firstOf('Guarantor: Sarah Khan', 'patient_name').value).toContain('Sarah Khan')
   })
+
+  it('fires on ALL-CAPS label `PATIENT: <name>`', () => {
+    expect(firstOf('PATIENT: Sarah Khan', 'patient_name').value).toContain('Sarah Khan')
+  })
+
+  it('fires on ALL-CAPS `PATIENT NAME: <name>`', () => {
+    expect(firstOf('PATIENT NAME: Sarah Khan', 'patient_name').value).toContain('Sarah Khan')
+  })
+
+  it('fires on mixed-case `paTIent: <name>`', () => {
+    expect(firstOf('paTIent: Sarah Khan', 'patient_name').value).toContain('Sarah Khan')
+  })
 })
 
 describe('patient_name — value shapes (positive)', () => {
@@ -189,6 +201,16 @@ describe('street_address — positive (structural and labeled)', () => {
 
   it('fires on `Addr: 45 Elm Rd`', () => {
     expect(firstOf('Addr: 45 Elm Rd', 'street_address').value).toContain('45 Elm Rd')
+  })
+
+  it('fires on ALL-CAPS label `ADDRESS: 123 Main St`', () => {
+    expect(firstOf('ADDRESS: 123 Main St', 'street_address').value).toContain('123 Main St')
+  })
+
+  it('fires on ALL-CAPS `HOME ADDRESS: 500 Elm Drive`', () => {
+    expect(firstOf('HOME ADDRESS: 500 Elm Drive', 'street_address').value).toContain(
+      '500 Elm Drive',
+    )
   })
 
   it('fires on a structural address embedded mid-sentence', () => {

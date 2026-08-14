@@ -62,8 +62,12 @@ interface ContextualRuleConfig {
 
 function contextualRule(cfg: ContextualRuleConfig): DetectorRule {
   const separator = cfg.separatorPattern ?? '[:#]?'
+  // Wrap the separator in a non-capturing group so a caller-supplied alternation
+  // (e.g. `:|=`) cannot escape and become a top-level alternative of the outer
+  // pattern. Without the group, `label\s*:|=\s*(value)` reads as
+  // `(label\s*:)|(=\s*(value))` — matching a value after `=` with NO label.
   const pattern = new RegExp(
-    `\\b(?:${cfg.labelPattern})\\s*${separator}\\s*(${cfg.valuePattern})\\b`,
+    `\\b(?:${cfg.labelPattern})\\s*(?:${separator})\\s*(${cfg.valuePattern})\\b`,
     'gi',
   )
   const valueExtractor = new RegExp(`(${cfg.valuePattern})`, 'i')
@@ -93,6 +97,16 @@ function contextualRule(cfg: ContextualRuleConfig): DetectorRule {
 // "Member ID John Doe" from wrongly capturing "John". The `i` flag on the outer
 // pattern makes the letters case-insensitive.
 const ALNUM_ID_WITH_DIGIT = '(?=[A-Z0-9-]*\\d)[A-Z0-9-]{4,20}'
+
+// Expands each ASCII letter in `s` to a case-insensitive character class so
+// the resulting regex fragment is case-INSENSITIVE without needing the `i`
+// flag. Used by patient_name / street_address, which compile with `g` only
+// (not `gi`) so their value patterns can rely on case-sensitive `[A-Z]` to
+// discriminate proper names / capitalized street words from prose. Non-letter
+// characters (whitespace, `\s`, `+`, etc.) are passed through unchanged.
+function ci(s: string): string {
+  return s.replace(/[A-Za-z]/g, (c) => `[${c.toUpperCase()}${c.toLowerCase()}]`)
+}
 
 // Medication dictionary is compiled into a single alternation; all entries are
 // plain lower-case words so no regex-escaping is needed.
@@ -285,31 +299,37 @@ export const RULES: DetectorRule[] = [
   // "Patient: seen today" to fire and "Patient: Sarah Khan DOB: 01/02/1980"
   // to swallow `DOB` as if it were a name token. That is why we DO NOT use
   // contextualRule here (which is `gi` by design for its identifier detectors):
-  // instead we pin the case-insensitivity to the label alternatives explicitly
-  // via `[Xx]` character classes.
+  // instead we pin case-INSENSITIVITY to the label alternatives explicitly by
+  // expanding each letter to a `[Xx]` character class via the `ci()` helper,
+  // so `Patient:`, `patient:`, and `PATIENT:` all match while the value
+  // remains case-sensitive.
   //
   // A NAME_WORD is `[A-Z]` followed by either at least one lowercase letter
   // (`Sarah`, `Khan`), an apostrophe segment (`O'Brien`), or a hyphenated
   // segment (`Smith-Jones`). An acronym like `DOB` fails because `[A-Z]` is
   // not followed by any of those. A middle initial is `[A-Z]\.` (allowed as
   // a non-terminal token only). Value = 2..4 tokens or `Last, First [Middle]`.
-  {
-    id: 'patient_name',
-    label: 'Patient Name',
-    severity: 'high',
-    category: DetectorCategory.IDENTITY,
-    baseSensitivity: SensitivityLevel.HIGH,
-    maskToken: '[PATIENT_NAME]',
-    pattern:
-      /\b(?:[Pp]atient\s+[Nn]ame|[Pp]atient|[Nn]ame|[Mm]ember|[Ii]nsured|[Ss]ubscriber|[Gg]uarantor|[Pp]t)\s*[:=–-]\s*(?:[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*,\s+[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*(?:\s+[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*)?|(?:(?:[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*|[A-Z]\.)\s+){1,3}[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*)\b/g,
-  },
-  {
-    id: 'street_address',
-    label: 'Street Address',
-    severity: 'high',
-    category: DetectorCategory.IDENTITY,
-    baseSensitivity: SensitivityLevel.HIGH,
-    maskToken: '[ADDRESS]',
+  (() => {
+    const label =
+      `${ci('Patient')}\\s+${ci('Name')}|` +
+      `${ci('Patient')}|${ci('Name')}|${ci('Member')}|` +
+      `${ci('Insured')}|${ci('Subscriber')}|${ci('Guarantor')}|${ci('Pt')}`
+    const nameWord = "[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*"
+    const nameToken = `(?:${nameWord}|[A-Z]\\.)`
+    const value =
+      `(?:${nameWord},\\s+${nameWord}(?:\\s+${nameWord})?` +
+      `|(?:${nameToken}\\s+){1,3}${nameWord})`
+    return {
+      id: 'patient_name' as const,
+      label: 'Patient Name',
+      severity: 'high' as const,
+      category: DetectorCategory.IDENTITY,
+      baseSensitivity: SensitivityLevel.HIGH,
+      maskToken: '[PATIENT_NAME]',
+      pattern: new RegExp(`\\b(?:${label})\\s*[:=–-]\\s*${value}\\b`, 'g'),
+    }
+  })(),
+  (() => {
     // Alternation of two forms, either sufficient:
     //   1. STRUCTURAL — leading house number + 1..4 capitalized street-name words
     //      + a suffix from a fixed set + optional unit indicator. The leading
@@ -321,12 +341,28 @@ export const RULES: DetectorRule[] = [
     //
     // Also compiled with `g` (no `i`): structural detection depends on the
     // street-name words being capitalized so a lowercase-prose "we met at 123
-    // main street" does NOT trip the structural form. The labeled form embeds
-    // case variants into the label alternation (`[Aa]ddress`, `[Aa]ddr`,
-    // `[Hh]ome`).
-    pattern:
-      /\b(?:\d{1,6}\s+(?:[A-Z][A-Za-z]{0,20}\s+){1,4}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Way|Place|Pl|Terrace|Ter|Circle|Cir|Highway|Hwy)\.?(?:,?\s+(?:(?:Apt|Suite|Ste|Unit|#)\s*[A-Za-z0-9-]+|\d{1,5}[A-Za-z]?))?|(?:[Hh]ome\s+[Aa]ddress|[Aa]ddress|[Aa]ddr)\s*[:=–-]\s*[^\n\r]+)/g,
-  },
+    // main street" does NOT trip the structural form. The labeled form's label
+    // alternatives are made case-INSENSITIVE via `ci()` (`Address`, `address`,
+    // `ADDRESS`, `Home Address`, `HOME ADDRESS` all match).
+    const suffixes =
+      'Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|' +
+      'Court|Ct|Way|Place|Pl|Terrace|Ter|Circle|Cir|Highway|Hwy'
+    const structural =
+      `\\d{1,6}\\s+(?:[A-Z][A-Za-z]{0,20}\\s+){1,4}(?:${suffixes})\\.?` +
+      `(?:,?\\s+(?:(?:Apt|Suite|Ste|Unit|#)\\s*[A-Za-z0-9-]+|\\d{1,5}[A-Za-z]?))?`
+    const labeled =
+      `(?:${ci('Home')}\\s+${ci('Address')}|${ci('Address')}|${ci('Addr')})` +
+      `\\s*[:=–-]\\s*[^\\n\\r]+`
+    return {
+      id: 'street_address' as const,
+      label: 'Street Address',
+      severity: 'high' as const,
+      category: DetectorCategory.IDENTITY,
+      baseSensitivity: SensitivityLevel.HIGH,
+      maskToken: '[ADDRESS]',
+      pattern: new RegExp(`\\b(?:${structural}|${labeled})`, 'g'),
+    }
+  })(),
 
   // ─── V1.1: HEALTHCARE_PATIENT_ID ──────────────────────────────────────────
   contextualRule({

@@ -210,13 +210,19 @@ Two more `IDENTITY` / `HIGH` detectors, both anchored — never free-prose:
 **`patient_name`** — fires only on `<patient-side label><separator><name>`.
 Labels: `Patient`, `Patient Name`, `Pt`, `Name`, `Member`, `Insured`,
 `Subscriber`, `Guarantor`. Provider labels (`Provider`, `Physician`, `Dr`,
-`Referring`) are explicitly excluded — provider names are not PHI and are
-already covered by NPI/DEA. Separator is REQUIRED (one of `:`, `-`, `–`,
-`=`) — a bare-label prefix like "the patient Sarah Khan reported…" would
-otherwise trigger. Value is 2–4 capitalized tokens (`First Last`, `First
-Middle Last`, `First M. Last`) OR `Last, First [Middle]`. Tokens allow
-apostrophes (`O'Brien`) and hyphens (`Smith-Jones`). Mask token:
-`[PATIENT_NAME]`.
+`Referring`) are excluded by this detector's scope — this is a
+detector-shape decision, not a universal privacy determination. Under
+HIPAA's Safe Harbor de-identification method, provider names are not
+required to be removed, but other privacy contexts (e.g. 42 CFR Part 2
+for SUD records, state-specific confidentiality statutes, or a product's
+own policy) may still call for masking them. The `NPI` and `DEA` rules
+detect provider identifiers — not provider names. Whether provider names
+should be masked at all is a separate policy call left to a future
+detector. Separator is REQUIRED (one of `:`, `-`, `–`, `=`) — a bare-label
+prefix like "the patient Sarah Khan reported…" would otherwise trigger.
+Value is 2–4 capitalized tokens (`First Last`, `First Middle Last`,
+`First M. Last`) OR `Last, First [Middle]`. Tokens allow apostrophes
+(`O'Brien`) and hyphens (`Smith-Jones`). Mask token: `[PATIENT_NAME]`.
 
 **`street_address`** — fires on EITHER a structural anchor (leading house
 number + capitalized street-name words + street-type suffix from a fixed
@@ -230,8 +236,9 @@ Both detectors are compiled with the `g` flag only (not `gi`) so
 case-sensitive `[A-Z]` classes actually discriminate — under `gi`, `[A-Z]`
 also matches `[a-z]` and the "must start with a capital" property that
 distinguishes names from prose evaporates. Case-insensitivity for the
-labels themselves is expressed inline via character classes
-(`[Pp]atient`, `[Aa]ddress`).
+labels themselves is expressed inline: a small `ci()` helper expands each
+letter of a label alternative to a `[Xx]` character class, so `Patient`,
+`patient`, `PATIENT`, and any mixed-case variant all match.
 
 `patient_name` does NOT go through `contextualRule` — its value regex needs
 that case-sensitive discipline, and the helper's `gi` compilation is a
