@@ -287,24 +287,32 @@ export function showPreviewModal(opts: PreviewModalOptions): Promise<PreviewOutc
         return
       }
       if (event.key === 'Enter') {
-        // Enter activates the primary action UNLESS focus is on the secondary
-        // or close button — in that case the browser's default (activate the
-        // focused button) is exactly what the user asked for. This mirrors
-        // native dialog conventions and avoids a jarring "Enter always
-        // protects" when the user has deliberately Tab'd to a different button.
+        // Enter fires the primary action ONLY when the primary button itself
+        // has focus. When focus is on the secondary or close button we let
+        // the browser activate that specific button naturally (mirrors native
+        // dialog conventions — the user Tab'd there deliberately). When focus
+        // is anywhere else — the dialog wrapper, a non-tabbable element, or
+        // `null` because focus escaped the shadow root — we do nothing and
+        // pull focus back to the primary button so the next Enter behaves.
         //
-        // In BOTH branches we stopPropagation so the Enter never reaches the
+        // In every branch we stopPropagation so the Enter never reaches the
         // host page (ChatGPT / Claude / etc. would otherwise send the prompt
         // in the middle of the user's sensitive-paste decision). Only the
-        // primary path also preventDefaults; the secondary/close path leaves
-        // the default action alone so the focused button still activates.
+        // primary path also preventDefaults; the other paths leave the
+        // browser's default action alone so a focused button still activates.
         const activeInShadow = shadow.activeElement as HTMLElement | null
-        if (activeInShadow !== asIsBtn && activeInShadow !== close) {
+        if (activeInShadow === protectedBtn) {
           event.preventDefault()
           event.stopPropagation()
           finalize('protected')
-        } else {
+        } else if (activeInShadow === asIsBtn || activeInShadow === close) {
           event.stopPropagation()
+        } else {
+          // Focus is not on any modal button. Swallow Enter and recover the
+          // focus trap by pulling focus back to the primary action.
+          event.preventDefault()
+          event.stopPropagation()
+          protectedBtn.focus()
         }
         return
       }
