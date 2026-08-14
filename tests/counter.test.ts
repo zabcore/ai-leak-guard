@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { incrementCounters, decrementCounters, localDateKey } from '../src/shared/counter'
+import { incrementCounters, localDateKey } from '../src/shared/counter'
 import { getCounters } from '../src/shared/storage'
 import type { Finding, Severity } from '../src/detector/types'
 
@@ -68,29 +68,5 @@ describe('incrementCounters', () => {
     } finally {
       chrome.storage.local.set = originalSet
     }
-  })
-})
-
-describe('decrementCounters', () => {
-  it('reverses an increment', async () => {
-    await incrementCounters([finding('ssn'), finding('ssn')])
-    await decrementCounters([finding('ssn')])
-    const counters = await getCounters()
-    expect(counters.total).toBe(1)
-    expect(counters.byType.ssn).toBe(1)
-    expect(counters.byDay[today]).toBe(1)
-  })
-
-  it('never lets total go negative', async () => {
-    await decrementCounters([finding('ssn')])
-    expect((await getCounters()).total).toBe(0)
-  })
-
-  it('clamps byType at zero', async () => {
-    await incrementCounters([finding('ssn')])
-    await decrementCounters([finding('ssn'), finding('ssn')])
-    const counters = await getCounters()
-    expect(counters.total).toBe(0)
-    expect(counters.byType.ssn).toBe(0)
   })
 })

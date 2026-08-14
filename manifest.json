@@ -33,7 +33,7 @@
         "https://copilot.microsoft.com/*"
       ],
       "js": ["src/content/index.ts"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "action": {

@@ -40,7 +40,9 @@ ai-leak-guard/
 │   │   │   ├── perplexity.ts     # Perplexity-specific
 │   │   │   └── copilot.ts        # Microsoft Copilot-specific
 │   │   ├── masker.ts             # Apply masks to text given findings
-│   │   └── toast.ts              # Shadow DOM toast with Undo
+│   │   ├── preview-flow.ts       # Pure logic for the preview-before-send modal
+│   │   ├── preview-modal.ts      # Shadow DOM modal (V1.1 PR 4)
+│   │   └── toast.ts              # Shadow DOM confirmation toast (no Undo in V1.1)
 │   ├── background/
 │   │   ├── index.ts              # Service worker entry
 │   │   └── rules-updater.ts      # Daily rules fetch from CDN
@@ -265,23 +267,98 @@ interface SiteAdapter {
 
 Default fallback uses `document.execCommand('insertText')` which still works on Chrome for contenteditable inputs even though it's deprecated. Site-specific adapters override when needed.
 
-## Paste interception flow
+## Paste interception ordering (why we listen on `window` at `document_start`)
 
-1. Content script attaches a **capture-phase** `paste` event listener on `document`
-2. When fired, read `clipboardData.getData('text/plain')`
-3. Pass to detector
-4. Filter the returned findings through `isMaskable` — this drops anything with
-   `effectiveSensitivity === LOW` (e.g. `CLINICAL_CONTEXT` findings from PR 2)
-   while keeping everything at `CRITICAL` or `HIGH`
-5. If the maskable list is empty, do nothing — let the original paste through
-   (even when the raw findings list is nonempty; unmaskable-only pastes must
-   not cancel the paste, show a toast, or increment the counter)
-6. If maskable findings exist:
-   - `e.preventDefault()` and `e.stopPropagation()`
-   - Compute masked text via `masker.ts` using only the maskable findings
-   - Use site adapter to insert masked text into active input
-   - Show toast with Undo (counts and labels come from the maskable set)
-   - Increment local counter for the maskable findings
+Content-script `run_at` is `document_start` and the paste listener is
+attached to `window` in the capture phase. Both are load-bearing on
+ChatGPT-style editors:
+
+- **`window` in capture** — the DOM event flow for capture is
+  `window → document → html → … → target`. A capture-phase listener on
+  `window` runs before any capture-phase listener on `document` (or any
+  inner element) regardless of registration time — different
+  `EventTarget`s, different lists. Registration order only settles ties
+  _within the same target_. So a site handler attached in capture on
+  `document` (which is what ChatGPT's app does) always fires after our
+  `window` capture listener, and our `stopImmediatePropagation` prevents
+  it from ever running.
+- **`document_start`** — the only remaining hole is a site that ALSO
+  attaches its paste listener on `window` in the capture phase. There
+  the two live on the same `EventTarget`, so registration order decides
+  which one fires first. Content scripts default to `document_idle`,
+  which runs after the page's own scripts have already registered.
+  `document_start` runs the extension's code before the page's scripts,
+  so we register on `window` first and win that tie too.
+
+Result: with both together plus `stopImmediatePropagation` we cover
+both cases (site attaches on `document` — window-vs-document capture
+ordering wins; site attaches on `window` — registration-order wins),
+and no known site can slip a paste behind our modal.
+
+The combination is defensive: either mechanism alone was insufficient on
+ChatGPT — with the two together plus `stopImmediatePropagation`, the
+site never sees the paste event and cannot double-insert the original
+text behind our modal.
+
+## Paste interception flow (V1.1 PR 4 — preview-before-send)
+
+**Behavior change vs V1.0:** V1.0 masked silently on paste and showed a
+confirmation toast. V1.1 previews first — the user sees exactly what would
+be masked and chooses `Paste protected version`, `Paste as-is`, or cancel.
+Detection is unchanged; only the interaction is new.
+
+1. Content script attaches a **capture-phase** `paste` event listener on
+   `document`.
+2. When fired, read `clipboardData.getData('text/plain')`.
+3. If a preview modal is already on screen (from an earlier paste), call
+   `preventDefault` + `stopPropagation` and drop this event — the spec is
+   "additional paste events are ignored until the current modal resolves."
+4. Call `detectDetailed(text)`. If `hasCriticalOrHigh === false` (clean text
+   or context-only LOW findings), do nothing — let the native paste
+   proceed. This is the zero-friction path.
+5. If `hasCriticalOrHigh === true`:
+   - `e.preventDefault()` + `e.stopPropagation()`.
+   - Build a `PreviewSummary` via `preview-flow.ts` — it filters findings
+     through `isMaskable` (the same predicate that decides masking), groups
+     by human label with counts, and computes `mask(text, maskable).text`
+     as the redacted preview.
+   - Open the preview modal (`preview-modal.ts`) — Shadow DOM, closed root,
+     `role="dialog"`, `aria-modal="true"`, focus trapped, Escape cancels,
+     Enter activates the primary action.
+   - Resolve on user action:
+     - `Paste protected version` → insert the masked text through the site
+       adapter, increment counters, show a confirmation toast
+       (`N sensitive items masked (…)`, close (×) only, no Undo).
+     - `Paste as-is` → insert the original text unchanged; no toast, no
+       counter.
+     - Cancel (Escape / close / backdrop) → insert nothing; return focus
+       to the paste target as if the paste never happened.
+
+**No Undo in V1.1.** V1.0 shipped an Undo button on the confirmation
+toast. That mechanism was reliable on plain `<textarea>` inputs but did
+not work on the ProseMirror-based editors used by ChatGPT and Claude
+(the editor transforms pasted placeholder brackets so the
+`textContent`-based replacement can't find them). The preview-before-send
+modal already gives the user a deliberate pre-insertion decision — a
+subsequent Undo would be a second control that mostly fails and gives
+false confidence rather than adding safety. V1.1 therefore removes Undo
+entirely from the paste flow, along with the counter's `decrement`
+path that only Undo used. Reintroducing Undo (or a broader
+per-paste history / analytics view) is deferred to V1.2, if it lands
+at all.
+
+**Single source of truth for "will be masked."** The modal never re-derives
+sensitivity. `preview-flow.ts` calls the engine's `isMaskable(finding)`
+helper — the same one the actual masking path uses — so the "what will be
+masked" list, the redacted preview, and the inserted text can never drift.
+LOW / clinical-context findings are excluded by `isMaskable` and are
+therefore never surfaced anywhere in the modal.
+
+**Split of concerns:** `preview-flow.ts` is pure logic (decision + summary
+builder, no DOM) so it can be exercised by fast unit tests.
+`preview-modal.ts` is the Shadow DOM component and returns a promise that
+resolves to the outcome, keeping the paste-flow wiring simple and
+side-effect-free.
 
 ## Storage schema
 
