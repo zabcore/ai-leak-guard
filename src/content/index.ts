@@ -6,6 +6,7 @@ import { resolveInitialEnabled, createEnabledState } from './enabled-state'
 import { getPrefs } from '../shared/storage'
 import { buildPreviewSummary } from './preview-flow'
 import { showPreviewModal, isPreviewModalOpen } from './preview-modal'
+import { captureSelection, restoreSelection } from './selection'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -114,13 +115,21 @@ window.addEventListener(
       event.stopImmediatePropagation()
       event.stopPropagation()
 
+      // Snapshot the selection BEFORE opening the modal — the modal's
+      // primary-button focus wipes the editor's document selection, and
+      // without this the paste would append at the caret instead of
+      // replacing the user's selected text. See src/content/selection.ts.
+      const savedRange = captureSelection()
+
       const summary = buildPreviewSummary(text, findings)
       void showPreviewModal({ summary, opener: target }).then((outcome) => {
         if (outcome === 'protected') {
+          restoreSelection(target, savedRange)
           protectedPaste(target, text, adapter)
           return
         }
         if (outcome === 'as-is') {
+          restoreSelection(target, savedRange)
           insertRaw(target, text)
           return
         }
