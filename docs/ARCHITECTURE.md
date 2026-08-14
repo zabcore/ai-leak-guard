@@ -273,19 +273,27 @@ Content-script `run_at` is `document_start` and the paste listener is
 attached to `window` in the capture phase. Both are load-bearing on
 ChatGPT-style editors:
 
-- **`document_start`** — the site's own paste handler is often registered
-  by the app script at load. Content scripts default to `document_idle`,
-  which runs after those scripts. Capture-phase listeners on the same node
-  fire in registration order, so `document_idle` would let the site's
-  document-level capture handler run first and manually insert the paste
-  through its editor model (ChatGPT / ProseMirror) before ours ever fires.
-  At `document_start` we register first and can `stopImmediatePropagation`
-  to keep theirs from firing at all.
-- **`window` in capture** — the DOM event flow is
-  `window → document → html → … → target`. A listener on `window` in the
-  capture phase fires before any listener on `document` (or any inner
-  element) in _either_ phase. So even if some site attaches its paste
-  handler on `document` before we can, our `window` listener still wins.
+- **`window` in capture** — the DOM event flow for capture is
+  `window → document → html → … → target`. A capture-phase listener on
+  `window` runs before any capture-phase listener on `document` (or any
+  inner element) regardless of registration time — different
+  `EventTarget`s, different lists. Registration order only settles ties
+  _within the same target_. So a site handler attached in capture on
+  `document` (which is what ChatGPT's app does) always fires after our
+  `window` capture listener, and our `stopImmediatePropagation` prevents
+  it from ever running.
+- **`document_start`** — the only remaining hole is a site that ALSO
+  attaches its paste listener on `window` in the capture phase. There
+  the two live on the same `EventTarget`, so registration order decides
+  which one fires first. Content scripts default to `document_idle`,
+  which runs after the page's own scripts have already registered.
+  `document_start` runs the extension's code before the page's scripts,
+  so we register on `window` first and win that tie too.
+
+Result: with both together plus `stopImmediatePropagation` we cover
+both cases (site attaches on `document` — window-vs-document capture
+ordering wins; site attaches on `window` — registration-order wins),
+and no known site can slip a paste behind our modal.
 
 The combination is defensive: either mechanism alone was insufficient on
 ChatGPT — with the two together plus `stopImmediatePropagation`, the
