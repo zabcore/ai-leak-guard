@@ -42,7 +42,7 @@ ai-leak-guard/
 │   │   ├── masker.ts             # Apply masks to text given findings
 │   │   ├── preview-flow.ts       # Pure logic for the preview-before-send modal
 │   │   ├── preview-modal.ts      # Shadow DOM modal (V1.1 PR 4)
-│   │   └── toast.ts              # Shadow DOM confirmation toast with Undo
+│   │   └── toast.ts              # Shadow DOM confirmation toast (no Undo in V1.1)
 │   ├── background/
 │   │   ├── index.ts              # Service worker entry
 │   │   └── rules-updater.ts      # Daily rules fetch from CDN
@@ -327,12 +327,25 @@ Detection is unchanged; only the interaction is new.
      Enter activates the primary action.
    - Resolve on user action:
      - `Paste protected version` → insert the masked text through the site
-       adapter, increment counters, show the existing confirmation toast
-       with `Undo` (same code path as V1.0).
+       adapter, increment counters, show a confirmation toast
+       (`N sensitive items masked (…)`, close (×) only, no Undo).
      - `Paste as-is` → insert the original text unchanged; no toast, no
-       counter, no undo.
+       counter.
      - Cancel (Escape / close / backdrop) → insert nothing; return focus
        to the paste target as if the paste never happened.
+
+**No Undo in V1.1.** V1.0 shipped an Undo button on the confirmation
+toast. That mechanism was reliable on plain `<textarea>` inputs but did
+not work on the ProseMirror-based editors used by ChatGPT and Claude
+(the editor transforms pasted placeholder brackets so the
+`textContent`-based replacement can't find them). The preview-before-send
+modal already gives the user a deliberate pre-insertion decision — a
+subsequent Undo would be a second control that mostly fails and gives
+false confidence rather than adding safety. V1.1 therefore removes Undo
+entirely from the paste flow, along with the counter's `decrement`
+path that only Undo used. Reintroducing Undo (or a broader
+per-paste history / analytics view) is deferred to V1.2, if it lands
+at all.
 
 **Single source of truth for "will be masked."** The modal never re-derives
 sensitivity. `preview-flow.ts` calls the engine's `isMaskable(finding)`

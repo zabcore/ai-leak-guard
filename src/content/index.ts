@@ -2,7 +2,6 @@ import { detectDetailed, isMaskable } from '../detector/engine'
 import { mask } from './masker'
 import { getAdapterForHost, type SiteAdapter } from './adapters'
 import { maskInsertAndNotify } from './paste-flow'
-import { undoMask } from './undo'
 import { resolveInitialEnabled, createEnabledState } from './enabled-state'
 import { getPrefs } from '../shared/storage'
 import { buildPreviewSummary } from './preview-flow'
@@ -50,21 +49,14 @@ function protectedPaste(target: Element, originalText: string, siteAdapter: Site
     insertRaw(target, originalText)
     return
   }
-  const { text: maskedText, maskedSegments } = mask(originalText, maskable)
+  const { text: maskedText } = mask(originalText, maskable)
   const labels = [...new Set(maskable.map((finding) => finding.label))]
+  // V1.1 has NO undo path — the preview modal is the single decision
+  // point. The confirmation toast is a plain acknowledgement (count +
+  // labels), no Undo button.
   maskInsertAndNotify(siteAdapter, target, maskedText, maskable, {
     count: maskable.length,
     labels,
-    // Pass the exact maskedText we just inserted and the originalText we're
-    // undoing back to, so the undo can do a robust whole-field restore when
-    // the field is untouched — ProseMirror editors (ChatGPT / Claude) can
-    // transform pasted brackets in ways that break naive placeholder search
-    // in `textContent`.
-    onUndo: () =>
-      undoMask(siteAdapter, target, maskedSegments, maskable, {
-        maskedText,
-        originalText,
-      }),
   })
 }
 

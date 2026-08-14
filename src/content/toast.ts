@@ -1,11 +1,6 @@
-import type { UndoOutcome } from './undo'
-
 export interface ToastOptions {
   count: number
   labels: string[]
-  // Returns the undo outcome. 'restored' dismisses the toast; 'partial' and
-  // 'failed' keep it open with an explanatory message.
-  onUndo: () => UndoOutcome
   onDismiss?: () => void
 }
 
@@ -69,23 +64,6 @@ const STYLES = `
   .toast__text {
     flex: 1 1 auto;
   }
-  .toast__text--error {
-    color: #f87171;
-  }
-  .toast__undo {
-    flex: 0 0 auto;
-    padding: 6px 12px;
-    background: transparent;
-    color: #4ade80;
-    border: 1px solid #4ade80;
-    border-radius: 6px;
-    font: inherit;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .toast__undo:hover {
-    background: rgba(74, 222, 128, 0.12);
-  }
   .toast__close {
     flex: 0 0 auto;
     width: 24px;
@@ -105,10 +83,18 @@ const STYLES = `
   }
 `
 
-// Shows a Shadow DOM toast in the bottom-right corner. The shadow root uses
-// mode 'closed' so the host page cannot read or restyle it. Only one toast is
-// visible at a time — a new one dismisses the previous. The toast stays until
-// the user clicks Undo or the close (×) button; it does not auto-dismiss.
+// Shows a Shadow DOM confirmation toast in the bottom-right corner. The shadow
+// root is 'closed' so the host page cannot read or restyle it. Only one toast
+// is visible at a time — a new one dismisses the previous. The toast stays
+// until the user clicks the close (×) button; it does not auto-dismiss.
+//
+// V1.1: this is a pure confirmation surface — no Undo button. Undo would need
+// to work reliably across the five very different in-page editors (textarea
+// on Gemini/Perplexity, ProseMirror on ChatGPT / Claude, Lexical on Copilot);
+// on the contenteditable editors it does not, and shipping a control that
+// silently fails would undercut the trust the preview modal is trying to
+// build. The preview-before-send modal already gives the user a deliberate
+// pre-insertion decision, so Undo is not part of V1.1's safety model.
 export function showToast(opts: ToastOptions): ToastHandle {
   dismiss()
   removeStrayToasts()
@@ -132,24 +118,6 @@ export function showToast(opts: ToastOptions): ToastHandle {
   text.className = 'toast__text'
   text.textContent = `${opts.count} sensitive ${noun} masked (${opts.labels.join(', ')})`
 
-  const undo = document.createElement('button')
-  undo.className = 'toast__undo'
-  undo.type = 'button'
-  undo.textContent = 'Undo'
-  undo.addEventListener('click', () => {
-    const outcome = opts.onUndo()
-    if (outcome === 'restored') {
-      dismiss()
-      return
-    }
-    undo.disabled = true
-    text.className = 'toast__text toast__text--error'
-    text.textContent =
-      outcome === 'partial'
-        ? "Couldn't fully restore — some items were edited. Please check the field."
-        : "Couldn't undo automatically — please clear the field manually."
-  })
-
   const close = document.createElement('button')
   close.className = 'toast__close'
   close.type = 'button'
@@ -160,7 +128,7 @@ export function showToast(opts: ToastOptions): ToastHandle {
     dismiss()
   })
 
-  container.append(icon, text, undo, close)
+  container.append(icon, text, close)
   shadow.append(style, container)
 
   // Defensive: if the document has no body yet, fall back to the root element;
