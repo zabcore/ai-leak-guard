@@ -26,17 +26,11 @@ The following data is stored only in your browser, in `chrome.storage.local`, an
 
 - The local counter of sensitive items masked (e.g., "47 sensitive items masked")
 - Your on/off toggle preference
-- A cached copy of the detection rules
-- Timestamps of when rules were last updated
 
 This data is accessible only to the extension itself, on your device. Uninstalling the extension removes it.
 
 ## Outbound network requests
-AI Leak Guard makes exactly **one type of outbound request**, and only for one purpose:
-
-- **Daily rules fetch:** Once every 12 hours, the extension downloads a JSON file containing updated detection patterns from a static CDN. This is a one-way download. No data about you, your usage, your text, or your device is sent in this request beyond what your browser normally includes in any HTTPS request (user agent, IP at the network level — neither logged by us).
-
-That's the only outbound traffic. There is no analytics endpoint, no telemetry server, no error reporting service, no third-party SDK that phones home.
+AI Leak Guard makes **no outbound network requests**. Detection patterns are bundled with the extension and updated only through Chrome's normal extension-update mechanism (from the Chrome Web Store). There is no analytics endpoint, no telemetry server, no error reporting service, no third-party SDK that phones home.
 
 ## No accounts, no registration
 AI Leak Guard does not require an account, email address, or any registration to use. There is nothing to sign up for.
@@ -47,11 +41,8 @@ The extension does not load code, scripts, fonts, or assets from any third-party
 ## Permissions explained
 The extension requests the following Chrome permissions, and here's why each is needed:
 
-- **`storage`** — to save your local leak counter and on/off preference on your device
-- **`clipboardRead`** — to read the text you paste so we can check it for sensitive patterns before it reaches the AI tool. This data never leaves your browser.
-- **`scripting`** — to inject the content script that watches for paste events on AI tool websites
-- **`alarms`** — to schedule the daily rules update check
-- **Host permissions** — limited to the specific AI tool websites (ChatGPT, Claude, Gemini, Perplexity, Copilot). The extension does NOT have access to other websites you visit.
+- **`storage`** — to save your local counter of items masked and your on/off preference on your device
+- **Host permissions** — limited to the specific AI tool websites (ChatGPT, Claude, Gemini, Perplexity, Copilot). The extension does NOT have access to other websites you visit. The pasted text is read from the paste event's own clipboard data on those sites, which is why no separate `clipboardRead` permission is requested.
 
 ## Source code is open
 The full source code of AI Leak Guard is publicly available on GitHub. You can audit exactly what the extension does. If the code ever transmits user content, it will be visible there.

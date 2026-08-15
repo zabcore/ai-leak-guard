@@ -44,8 +44,7 @@ ai-leak-guard/
 │   │   ├── preview-modal.ts      # Shadow DOM modal (V1.1 PR 4)
 │   │   └── toast.ts              # Shadow DOM confirmation toast (no Undo in V1.1)
 │   ├── background/
-│   │   ├── index.ts              # Service worker entry
-│   │   └── rules-updater.ts      # Daily rules fetch from CDN
+│   │   └── service-worker.ts     # Service worker entry (bundled rules only)
 │   ├── popup/
 │   │   ├── index.html
 │   │   ├── popup.ts              # Counter display, on/off toggle
