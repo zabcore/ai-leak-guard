@@ -2,3 +2,9 @@ dist
 node_modules
 coverage
 package-lock.json
+
+# Kept verbatim — this is the exact copy pasted into the Chrome Web
+# Store listing form, so its line breaks and blank lines match what
+# the store renders. Prettier's autoformat would reflow the paragraphs
+# and change what's shipped.
+docs/STORE_LISTING.md

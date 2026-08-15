@@ -53,7 +53,7 @@ These are excluded because they produce too many false positives at V1's confide
 ## UX principles
 - Silent masking by default, not blocking modals
 - Toast notification with one-click Undo
-- Local counter visible in the popup ("X leaks prevented")
+- Local counter visible in the popup ("X sensitive items masked")
 - Never break the user's flow
 - Never break the AI site's input
 

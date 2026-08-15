@@ -11,7 +11,7 @@ Run time: about 15 minutes.
 3. Enable "Developer mode" (top right)
 4. Click "Load unpacked" → select the `dist/` folder
 5. Confirm the AI Leak Guard icon appears in the toolbar
-6. Click the icon — confirm the popup opens and shows "0 leaks prevented"
+6. Click the icon — confirm the popup opens and shows "0 sensitive items masked"
 
 ## Test payloads
 Use these fake-but-realistic values. **Never use real secrets.**

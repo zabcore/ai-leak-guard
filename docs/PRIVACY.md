@@ -24,7 +24,7 @@ AI Leak Guard does not collect, transmit, store, or have access to any of the fo
 ## What stays local on your device
 The following data is stored only in your browser, in `chrome.storage.local`, and is never sent anywhere:
 
-- The local leak counter (e.g., "47 leaks prevented")
+- The local counter of sensitive items masked (e.g., "47 sensitive items masked")
 - Your on/off toggle preference
 - A cached copy of the detection rules
 - Timestamps of when rules were last updated
