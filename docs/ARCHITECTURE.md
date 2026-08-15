@@ -2,7 +2,7 @@
 
 ## Core principle
 
-Everything runs locally in the user's browser. No backend, no database, no telemetry, no user text ever leaves the device. One optional outbound call: daily fetch of a static rules JSON file from a CDN.
+Everything runs locally in the user's browser. No backend, no database, no telemetry, no user text ever leaves the device. The extension makes no outbound network requests — detection rules ship bundled and update only through the Chrome Web Store.
 
 ## Tech stack
 
@@ -372,29 +372,23 @@ side-effect-free.
   },
   prefs: {
     enabled: boolean,
-    rulesUpdatedAt: number,            // timestamp
   },
-  rules: Rule[] | null,                // cached remote rules, null = use bundled
 }
 ```
 
 ## Rules update mechanism
 
-- Background service worker has a `chrome.alarms` that fires every 12 hours
-- Fetches `https://cdn.aileakguard.com/rules/v1.json` (TBD — Cloudflare Pages or GitHub Pages)
-- Validates each pattern compiles and runs in <5ms against a fuzz string (anti-ReDoS)
-- On success, caches in `chrome.storage.local.rules`
-- On failure, keeps the previously cached rules (or falls back to bundled)
-- This is **the only outbound network call** the extension makes
+- Detection rules are bundled with the extension (see `src/detector/rules.ts`).
+- Rule updates are delivered only through Chrome Web Store extension updates.
+- The extension does not fetch or cache remote rules at runtime, and makes no outbound network requests of any kind. A future remote-rules pipeline is out of V1.1 scope.
 
 ## Permissions (Manifest V3)
 
 Minimum required:
 
-- `storage` — for local counter and prefs
-- `clipboardRead` — for reading pasted text
-- `scripting` — for content scripts
-- `alarms` — for rules update schedule
+- `storage` — for the local counter and the on/off preference
+
+Pasted text is read from the paste event's own `clipboardData`, which does not require a `clipboardRead` permission. There is no `chrome.scripting` or `chrome.alarms` usage; content scripts are declared statically in `manifest.json`.
 
 `host_permissions`:
 
