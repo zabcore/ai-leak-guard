@@ -7,12 +7,20 @@
 //
 //   1. **DataTransfer replay on the origin input.** For a change event
 //      whose target was a discoverable `<input type="file">`, we build
-//      a fresh DataTransfer, assign its FileList back to `input.files`,
-//      and dispatch a synthetic bubbling `change`. The host's own
-//      change handler runs and starts the upload it would have started
-//      the first time. Works on ChatGPT / Claude / Perplexity light-DOM
-//      inputs (per the A0 matrix); may fail on Gemini's `rich-textarea`
-//      shadow root — see per-site notes in docs/ARCHITECTURE.md.
+//      a fresh DataTransfer and assign its FileList back to
+//      `input.files`. Some frameworks (React 18 controlled inputs are
+//      the notable example) synchronously dispatch a `change` on that
+//      assignment — the window-capture listener sees it, consumes the
+//      pass-through guard, and hands it to the host. When that
+//      happens we MUST NOT dispatch a second synthetic change: the
+//      guard is already spent, our second event would be
+//      re-intercepted, and the host could end up with two upload
+//      requests for one file. So we install a one-shot local listener
+//      that tells us whether assignment already fired change, and only
+//      dispatch our own change when it did not.
+//      Works on ChatGPT / Claude / Perplexity light-DOM inputs (per
+//      the A0 matrix); may fail on Gemini's `rich-textarea` shadow
+//      root — see per-site notes in docs/ARCHITECTURE.md.
 //
 //   2. **Pass-through-once fallback.** When DataTransfer replay fails
 //      (or the source event was a drop / paste without a discoverable
@@ -128,16 +136,31 @@ export function releaseFiles(state: ExtractedFiles): ReleaseOutcome {
 }
 
 function replayChangeViaDataTransfer(input: HTMLInputElement, files: readonly File[]): boolean {
+  // Arm the pass-through BEFORE writing to `input.files` — the
+  // assignment can synchronously trigger a `change` event on some
+  // frameworks (React's controlled-input wrapper is the notable one),
+  // and if we haven't armed yet the window-capture listener would
+  // re-intercept.
+  //
+  // If the assignment DOES synchronously dispatch a change, that event
+  // consumes the guard on its way through the window-capture listener
+  // and is what the host reacts to. We track that via a one-shot local
+  // listener; when the flag is set, we skip our own synthetic dispatch
+  // to avoid handing the site two upload events (and to avoid our
+  // second event being re-intercepted because the guard is now spent).
+  let dispatchedByAssignment = false
+  const observer = (): void => {
+    dispatchedByAssignment = true
+  }
   try {
     const dt = new DataTransfer()
     for (const f of files) dt.items.add(f)
-    // Arm the pass-through BEFORE writing to `input.files` — the
-    // assignment can synchronously trigger a `change` event on some
-    // frameworks (React's controlled-input wrapper is the notable one),
-    // and if we haven't armed yet the listener would re-intercept.
     armPassThroughOnce('change')
+    input.addEventListener('change', observer, { capture: false, once: true })
     input.files = dt.files
-    input.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
+    if (!dispatchedByAssignment) {
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }))
+    }
     return true
   } catch {
     // DataTransfer construction, input.files assignment, or the dispatch
@@ -145,5 +168,7 @@ function replayChangeViaDataTransfer(input: HTMLInputElement, files: readonly Fi
     // treats `input.files` as read-only in a given context. Fall back
     // to the pass-through-once flow.
     return false
+  } finally {
+    input.removeEventListener('change', observer, { capture: false })
   }
 }

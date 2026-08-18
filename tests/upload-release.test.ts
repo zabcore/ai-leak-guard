@@ -140,4 +140,53 @@ describe('releaseFiles', () => {
     releaseFiles({ kind: 'change', files: [file], originInput: input })
     expect(bypassedOnFirstChange).toBe(true)
   })
+
+  it('does NOT dispatch a second replay change when `input.files =` assignment already fires one (React-style controlled input)', () => {
+    // Simulates a React controlled input's synchronous change-on-set
+    // behavior by overriding the file input's `files` setter to fire
+    // a change event on assignment. The old release code dispatched
+    // its own change unconditionally on top, resulting in two
+    // upload events; the fixed code observes the sync dispatch and
+    // skips its own. Regression from CodeRabbit review of PR #26.
+    const input = document.createElement('input')
+    input.type = 'file'
+    document.body.appendChild(input)
+
+    // Grab the base descriptor installed by tests/setup.ts and layer
+    // a synchronous-change side-effect on the setter.
+    const baseDesc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files')
+    if (!baseDesc || !baseDesc.set || !baseDesc.get) throw new Error('no prototype files accessor')
+    const baseGet = baseDesc.get
+    const baseSet = baseDesc.set
+    Object.defineProperty(input, 'files', {
+      configurable: true,
+      get(): FileList | null {
+        return baseGet.call(this) as FileList | null
+      },
+      set(v: FileList | null): void {
+        baseSet.call(this, v)
+        input.dispatchEvent(new Event('change', { bubbles: true }))
+      },
+    })
+
+    // Simulate the window-capture listener consuming the guard on
+    // whichever change event reaches it. Count bypassed vs
+    // re-intercepted.
+    let bypassed = 0
+    let intercepted = 0
+    input.addEventListener('change', () => {
+      if (consumePassThroughIfArmed('change')) bypassed += 1
+      else intercepted += 1
+    })
+
+    const file = new File(['x'], 'a.pdf', { type: 'application/pdf' })
+    const outcome = releaseFiles({ kind: 'change', files: [file], originInput: input })
+
+    expect(outcome).toBe('released')
+    // Exactly one bypassed event (the sync one from assignment); no
+    // manual dispatch happens because releaseFiles saw the sync event
+    // and skipped the second dispatch.
+    expect(bypassed).toBe(1)
+    expect(intercepted).toBe(0)
+  })
 })

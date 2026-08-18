@@ -27,30 +27,45 @@ export interface FileMeta {
   readonly type: string
 }
 
-export interface FileInspection {
-  readonly files: readonly FileMeta[]
-  /**
-   * Findings that would be masked / redacted if this were the real
-   * inspector. A1 stub always returns `[]`; the placeholder modal
-   * consumes this as "N file(s) will be uploaded; content inspection
-   * not yet available".
-   */
+/**
+ * Per-file inspection result. Findings are associated with the source
+ * `FileMeta` so a multi-file inspection cannot produce
+ * "which file produced this finding?" ambiguity when the real
+ * inspector lands in A2. A1 always returns `findings: []` for each
+ * entry.
+ */
+export interface FileInspectionEntry {
+  readonly meta: FileMeta
   readonly findings: readonly Finding[]
 }
 
+export interface FileInspection {
+  readonly perFile: readonly FileInspectionEntry[]
+}
+
 /**
- * A1 stub. Returns metadata and an empty findings list without reading
- * any file bytes. Callers must not assume `findings` will remain empty
- * in later releases — the shape is the API contract, not the emptiness.
+ * Convenience aggregate — the flat list of findings across every file
+ * in the inspection. A2 UI code that just wants a count uses this;
+ * code that needs to attribute a finding to its source file walks
+ * `perFile` instead.
+ */
+export function aggregateFindings(inspection: FileInspection): readonly Finding[] {
+  const out: Finding[] = []
+  for (const entry of inspection.perFile) out.push(...entry.findings)
+  return out
+}
+
+/**
+ * A1 stub. Returns metadata and an empty findings list for each file
+ * without reading any file bytes. Callers must not assume the per-file
+ * findings arrays will remain empty in later releases — the shape is
+ * the API contract, not the emptiness.
  */
 export function inspectFiles(files: readonly File[]): FileInspection {
   return {
-    files: files.map((file) => ({
-      file,
-      name: file.name,
-      size: file.size,
-      type: file.type,
+    perFile: files.map((file) => ({
+      meta: { file, name: file.name, size: file.size, type: file.type },
+      findings: [],
     })),
-    findings: [],
   }
 }

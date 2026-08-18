@@ -13,9 +13,10 @@ import {
   extractFilesFromDrop,
   extractFilesFromPaste,
 } from './file-extraction'
-import { holdFiles } from './document-flow'
+import { holdFiles, type HoldResult } from './document-flow'
 import { isDocumentModalOpen } from './document-modal'
-import { consumePassThroughIfArmed } from './upload-release'
+import { clearFileInput, consumePassThroughIfArmed } from './upload-release'
+import { showReattachNudge } from './document-nudge'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -93,6 +94,28 @@ function documentFlowActive(): boolean {
   return true
 }
 
+// After a document-flow hold resolves, act on the outcome:
+//   - upload-anyway + released           → nothing extra to do; the
+//     original event was replayed and the host is uploading.
+//   - upload-anyway + needs-user-reattach → the DataTransfer replay
+//     wasn't available (drop / paste / closed-shadow-root); the
+//     pass-through-once guard is armed, so we show a small nudge
+//     telling the user to re-attach so the next selection reaches
+//     the host untouched.
+//   - cancel                              → nothing was uploaded and
+//     the origin input (if any) was already cleared by the flow.
+function handleHoldResult(result: HoldResult, kind: 'change' | 'drop' | 'paste'): void {
+  if (result.outcome === 'cancel') return
+  if (result.release !== 'needs-user-reattach') return
+  const nudge =
+    kind === 'change'
+      ? 'Attachment released. Please pick the file again to send it to the site.'
+      : kind === 'drop'
+        ? 'Attachment released. Please drop the file again to send it to the site.'
+        : 'Attachment released. Please paste the image again to send it to the site.'
+  showReattachNudge(nudge)
+}
+
 // One listener on `window` in the capture phase. Two reasons this beats
 // site-native paste handlers on ChatGPT-style ProseMirror editors:
 //   1. `window` is the outermost target in the DOM event flow — capture on
@@ -133,7 +156,9 @@ window.addEventListener(
             event.stopImmediatePropagation()
             event.stopPropagation()
             const target = event.target as Element | null
-            void holdFiles(extracted, target)
+            void holdFiles(extracted, target).then((result) => {
+              handleHoldResult(result, 'paste')
+            })
             return
           }
         }
@@ -218,7 +243,16 @@ window.addEventListener(
       if (consumePassThroughIfArmed('change')) return
       if (isDocumentModalOpen() || isPreviewModalOpen()) {
         // A second file interaction while the first is unresolved is
-        // dropped on the floor — same policy as V1.1 paste.
+        // dropped on the floor — same policy as V1.1 paste. Also
+        // clear the origin input so the user can re-select the SAME
+        // file after the modal closes: browsers suppress the change
+        // event when a file input's value is unchanged, so leaving
+        // the ignored selection in place would silently swallow the
+        // next attempt to attach that same file.
+        const t = event.target
+        if (t instanceof HTMLInputElement && t.type === 'file') {
+          clearFileInput(t)
+        }
         event.preventDefault()
         event.stopImmediatePropagation()
         event.stopPropagation()
@@ -230,7 +264,9 @@ window.addEventListener(
       event.stopImmediatePropagation()
       event.stopPropagation()
       const opener = (event.target as Element | null) ?? null
-      void holdFiles(extracted, opener)
+      void holdFiles(extracted, opener).then((result) => {
+        handleHoldResult(result, 'change')
+      })
     } catch (err) {
       console.error('[AI Leak Guard] change (file) handler error:', err)
     }
@@ -261,7 +297,9 @@ window.addEventListener(
       event.stopImmediatePropagation()
       event.stopPropagation()
       const opener = (event.target as Element | null) ?? null
-      void holdFiles(extracted, opener)
+      void holdFiles(extracted, opener).then((result) => {
+        handleHoldResult(result, 'drop')
+      })
     } catch (err) {
       console.error('[AI Leak Guard] drop handler error:', err)
     }
