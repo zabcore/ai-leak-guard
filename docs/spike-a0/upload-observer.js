@@ -103,19 +103,15 @@
   const t0 = performance.now()
   const rel = () => `+${Math.round(performance.now() - t0)}ms`
 
+  // Element-shape only: tag name and nothing else. `id`, `className`,
+  // `role`, and `name` are all page-controlled and can carry account,
+  // account-scoped, or document-identifying strings (e.g. an `aria-label`
+  // that embeds a filename or an `id` derived from a user identifier).
+  // Since the runbook says the observer output is safe to paste into a
+  // PR, this function must not surface any of them.
   const describe = (node) => {
     if (!(node instanceof Element)) return String(node)
-    const bits = [node.tagName.toLowerCase()]
-    if (node.id) bits.push(`#${node.id}`)
-    if (node.className && typeof node.className === 'string') {
-      const cls = node.className.trim().split(/\s+/).slice(0, 2).join('.')
-      if (cls) bits.push(`.${cls}`)
-    }
-    const role = node.getAttribute?.('role')
-    if (role) bits.push(`[role=${role}]`)
-    const name = node.getAttribute?.('name')
-    if (name) bits.push(`[name=${name}]`)
-    return bits.join('')
+    return node.tagName.toLowerCase()
   }
 
   // NOTE: `File.name` is INTENTIONALLY omitted here. See the runbook in
@@ -211,33 +207,47 @@
   // Capture-phase window listeners so we see events during the window
   // capture phase. Passive: no preventDefault / stopPropagation.
   //
-  // For change/input we log EVERY event that reaches window and then
-  // conditionally attach file metadata — this is what lets the reviewer
-  // distinguish "no change event reached window" (a truly closed seam)
-  // from "change event reached window, target retargeted to shadow host
-  // by a closed shadow root" (still an interception seam; replay is a
-  // separate question). The `targetKnown` flag makes the distinction
-  // explicit in the log.
+  // For change/input we log two shapes:
+  //   1. `source: "file-input"` — a real, light-DOM `<input type="file">`
+  //      fired. `files` carries the summary; interception AND replay are
+  //      on the table.
+  //   2. `source: "unknown-non-file-target"` — an event reached window
+  //      whose target is NOT a file input and does NOT match any element
+  //      the observer can identify (textareas, selects, contenteditables,
+  //      or a shadow-host retargeting all look the same at this layer).
+  //      This bucket is deliberately unresolved: it might indicate a
+  //      closed-shadow file selection (Gemini's `<rich-textarea>`), but
+  //      it might equally be the user tabbing through a form or typing
+  //      into a textarea. The reviewer resolves it by correlating the
+  //      log line with (a) the picker action they just performed and
+  //      (b) an upload request in the Network tab firing in the same
+  //      window. Do NOT infer closed-shadow origin from these lines
+  //      alone; `composedPath()` cannot prove it.
+  //   3. Everything else — non-file inputs, form fields with a known
+  //      light-DOM target — is dropped as noise.
   const logChangeLike = (kind) => (ev) => {
     const t = ev.target
     const targetKnown = t instanceof HTMLInputElement && t.type === 'file'
-    // Skip generic non-file change/input noise (form fields, contentedit-
-    // ables, etc.) EXCEPT when target has been retargeted to a shadow
-    // host — in that case we can't tell if the underlying dispatch was a
-    // file input, so log it too so the reviewer can pair it with the
-    // Network tab.
     const path = ev.composedPath()
-    const isRetargetedFromClosedRoot =
+    // A "candidate" for possible closed-shadow attribution is only ever
+    // an event whose top-of-composed-path IS its own target (retargeting
+    // signature) AND whose target is not itself an HTMLInputElement.
+    // That includes real closed-shadow retargeting to a shadow host, but
+    // also every ordinary textarea / select / contenteditable change; the
+    // observer cannot distinguish those two without cross-referencing the
+    // reviewer's action + Network tab.
+    const hasUnknownNonFileTarget =
       !targetKnown && path.length > 0 && path[0] === t && !(t instanceof HTMLInputElement)
-    if (!targetKnown && !isRetargetedFromClosedRoot) return
+    if (!targetKnown && !hasUnknownNonFileTarget) return
 
     console.log(`[spike-a0] ${rel()} ${kind}`, {
       phase: ev.eventPhase, // reflects THIS listener; always 1 (CAPTURING)
       currentTarget: describe(ev.currentTarget), // always window
       target: describe(t),
       targetKnown,
+      source: targetKnown ? 'file-input' : 'unknown-non-file-target',
       multiple: targetKnown ? t.multiple : null,
-      files: targetKnown ? summarizeFiles(t.files) : '<unavailable — retargeted to shadow host>',
+      files: targetKnown ? summarizeFiles(t.files) : null,
       composedPathHead: path.slice(0, 6).map(describe),
     })
   }
