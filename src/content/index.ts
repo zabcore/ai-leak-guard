@@ -7,10 +7,32 @@ import { getPrefs } from '../shared/storage'
 import { buildPreviewSummary } from './preview-flow'
 import { showPreviewModal, isPreviewModalOpen } from './preview-modal'
 import { captureSelection, restoreSelection } from './selection'
+import { isDocumentProtectionEnabled } from './document-flag'
+import {
+  extractFilesFromChange,
+  extractFilesFromDrop,
+  extractFilesFromPaste,
+} from './file-extraction'
+import { holdFiles } from './document-flow'
+import { isDocumentModalOpen } from './document-modal'
+import { consumePassThroughIfArmed } from './upload-release'
 
 const MIN_TEXT_LENGTH = 8
 
 const adapter = getAdapterForHost(globalThis.location.hostname)
+
+// V1.2 A1: sites in scope for document interception. Copilot is
+// explicitly deferred — the paste-flow adapter still handles Copilot,
+// but no file-interception listeners fire there. Fallback (unknown
+// host) is also excluded so a stray content-script injection on a
+// non-matched page cannot open the document modal.
+const DOCUMENT_PROTECTION_SITES: ReadonlySet<string> = new Set([
+  'chatgpt',
+  'claude',
+  'gemini',
+  'perplexity',
+])
+const isDocumentProtectionInScope = DOCUMENT_PROTECTION_SITES.has(adapter.id)
 
 // Default to disabled until the stored preference is confirmed. This avoids
 // masking during the brief startup window if the user had turned the extension
@@ -61,6 +83,16 @@ function protectedPaste(target: Element, originalText: string, siteAdapter: Site
   })
 }
 
+// V1.2 A1: is the current call a candidate for the document flow? The
+// checks are stacked from cheapest-to-strictest so we bail out fast on
+// the common path where the feature is off.
+function documentFlowActive(): boolean {
+  if (!isDocumentProtectionEnabled()) return false
+  if (!isDocumentProtectionInScope) return false
+  if (!enabledState.isEnabled()) return false
+  return true
+}
+
 // One listener on `window` in the capture phase. Two reasons this beats
 // site-native paste handlers on ChatGPT-style ProseMirror editors:
 //   1. `window` is the outermost target in the DOM event flow — capture on
@@ -83,6 +115,30 @@ window.addEventListener(
     try {
       if (!enabledState.isEnabled()) return
 
+      // V1.2 A1: file paths first, when the document-protection flag is
+      // ON. A pasted image / dropped-into-clipboard file lives in
+      // `clipboardData.files`; the V1.1 paste handler only ever read
+      // `text/plain`, so those files pass straight through to the host
+      // today. When the flag is off this branch is a no-op, preserving
+      // that byte-for-byte behavior.
+      if (documentFlowActive()) {
+        if (consumePassThroughIfArmed('paste')) {
+          // Post-Upload-anyway re-paste: let the host see it untouched.
+          return
+        }
+        if (!isDocumentModalOpen() && !isPreviewModalOpen()) {
+          const extracted = extractFilesFromPaste(event)
+          if (extracted !== null) {
+            event.preventDefault()
+            event.stopImmediatePropagation()
+            event.stopPropagation()
+            const target = event.target as Element | null
+            void holdFiles(extracted, target)
+            return
+          }
+        }
+      }
+
       const text = event.clipboardData?.getData('text/plain') ?? ''
       if (text.length < MIN_TEXT_LENGTH) return
 
@@ -94,7 +150,7 @@ window.addEventListener(
       // "additional paste events are ignored until the current modal
       // resolves." preventDefault + stopImmediatePropagation so the site
       // doesn't get to insert the second paste behind the modal.
-      if (isPreviewModalOpen()) {
+      if (isPreviewModalOpen() || isDocumentModalOpen()) {
         event.preventDefault()
         event.stopImmediatePropagation()
         event.stopPropagation()
@@ -142,4 +198,73 @@ window.addEventListener(
     }
   },
   true, // capture phase: run before the site's own handlers
+)
+
+// V1.2 A1: file-picker interception. Same window-capture +
+// stopImmediatePropagation pattern as paste — see the paste handler
+// above for the ordering rationale (window beats document beats editor;
+// document_start beats page scripts on the same target). When
+// documentFlowActive() returns false — the feature flag is off, the
+// site is not in scope, or the user has toggled the extension off —
+// this listener is a strict no-op and native change events proceed
+// unchanged.
+window.addEventListener(
+  'change',
+  (event: Event): void => {
+    try {
+      if (!documentFlowActive()) return
+      // Post-Upload-anyway replay path: exactly one change event slips
+      // through untouched so the host runs its normal upload flow.
+      if (consumePassThroughIfArmed('change')) return
+      if (isDocumentModalOpen() || isPreviewModalOpen()) {
+        // A second file interaction while the first is unresolved is
+        // dropped on the floor — same policy as V1.1 paste.
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        event.stopPropagation()
+        return
+      }
+      const extracted = extractFilesFromChange(event)
+      if (extracted === null) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      event.stopPropagation()
+      const opener = (event.target as Element | null) ?? null
+      void holdFiles(extracted, opener)
+    } catch (err) {
+      console.error('[AI Leak Guard] change (file) handler error:', err)
+    }
+  },
+  true,
+)
+
+// V1.2 A1: drag-and-drop interception. `preventDefault` on `dragover`
+// is required for `drop` to fire on a target in the first place; we
+// leave the browser's default alone on dragover so the host's own drop
+// zones still light up as the user drags, and only stop propagation on
+// the drop itself.
+window.addEventListener(
+  'drop',
+  (event: DragEvent): void => {
+    try {
+      if (!documentFlowActive()) return
+      if (consumePassThroughIfArmed('drop')) return
+      if (isDocumentModalOpen() || isPreviewModalOpen()) {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        event.stopPropagation()
+        return
+      }
+      const extracted = extractFilesFromDrop(event)
+      if (extracted === null) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      event.stopPropagation()
+      const opener = (event.target as Element | null) ?? null
+      void holdFiles(extracted, opener)
+    } catch (err) {
+      console.error('[AI Leak Guard] drop handler error:', err)
+    }
+  },
+  true,
 )
