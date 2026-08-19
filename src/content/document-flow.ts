@@ -57,10 +57,14 @@ export async function holdFiles(
   opener: Element | null,
   deps: HoldDeps = defaultDeps,
 ): Promise<HoldResult> {
-  // A1: inspector is a stub. Called for shape only; findings are always
-  // empty. Kept in the flow so A2 can plug the real inspector into the
-  // same seam without touching this orchestrator.
-  inspectFiles(state.files)
+  // A2: inspector now extracts local text per file (PDF text-layer,
+  // Office XML, plaintext). Detection is still stubbed
+  // (`findings: []`) — plugged in by A3. Awaited so that any
+  // extractor timeout / size-cap decision is settled before the
+  // modal opens, and so text is in-hand for A3's later use. The
+  // inspector never rejects; hostile files are captured as
+  // `extraction.status === 'unable_to_inspect'`.
+  await inspectFiles(state.files)
 
   const outcome = await deps.showModal({
     fileCount: state.files.length,

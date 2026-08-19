@@ -56,5 +56,18 @@
       "48": "icons/icon48.png"
     },
     "default_popup": "src/popup/index.html"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/pdf.worker*.js", "assets/pdf.worker*.js.map"],
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*",
+        "https://copilot.microsoft.com/*"
+      ]
+    }
+  ]
 }

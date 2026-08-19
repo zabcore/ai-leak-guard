@@ -670,6 +670,103 @@ ChatGPT is the primary consumer today; other sites currently use
 `<input type="file">` and are unaffected. Copilot document
 protection remains deferred per A1's scope.
 
+## Local document text extraction (V1.2 A2 — flagged OFF)
+
+A1 held files but never read their contents. A2 adds the extraction
+layer that turns a held file's bytes → plain text so A3 can run the
+existing detector over that text. **A2 does NOT run detection**
+(`file-inspector.ts` still returns `findings: []`) and does NOT
+change the UI. It replaces the A1 stub inspector with a real
+`extractText(file)` step and defines the honest `unable_to_inspect`
+state that A4 will surface.
+
+**Gate B decision: NO OCR.** Extract the _text layer_. Files without
+one (scanned PDFs, images, encrypted docs) get `unable_to_inspect`,
+never a silent pass.
+
+**Files:**
+
+- `src/content/extraction/extract.ts` — public `extractText(file)`;
+  format sniffing (magic-bytes first, extension/MIME as tiebreaker);
+  20 MB size cap; 10 s per-file timeout via `Promise.race`; global
+  try/catch that classifies errors into `encrypted / no-text-layer /
+too-large / timeout / unsupported-type / parse-error / empty`.
+  `extractText` NEVER throws.
+- `src/content/extraction/formats/pdf.ts` — pdf.js text-layer
+  extraction. Security posture: `isEvalSupported: false`,
+  `disableFontFace: true`, `useSystemFonts: false`,
+  `disableAutoFetch: true`, `disableStream: true`. Worker is
+  BUNDLED LOCALLY (Vite `?worker` suffix — see
+  `manifest.web_accessible_resources`).
+- `src/content/extraction/formats/xlsx.ts` — SheetJS `read` +
+  per-sheet `sheet_to_csv`. Macros are never executed (SheetJS
+  ignores the `vbaProject` stream).
+- `src/content/extraction/formats/docx.ts` — jszip → `word/document.xml`
+  → primitive `<w:t>` scan with `<w:p>` / `<w:br>` breaks; no
+  mammoth, no HTML conversion.
+- `src/content/extraction/formats/pptx.ts` — jszip → `ppt/slides/slide*.xml`
+  in numeric order (`slide1` before `slide10`) → `<a:t>` scan.
+- `src/content/extraction/formats/text.ts` — `file.text()` for
+  `.txt`, `.md`, `.csv` (and anything the sniffer routes as text).
+
+**Lazy loading (bundle discipline).** Every format module is loaded
+via dynamic `import('./formats/...')` from `extract.ts`. The main
+content bundle (`dist/assets/index.ts-*.js`) stays lean:
+
+```text
+main content bundle              ~40 KB (was ~36 KB pre-A2)
+pdfjs-dist chunk                 ~427 KB (loaded only on a PDF)
+pdf.worker chunk                ~1187 KB (loaded only on a PDF)
+xlsx chunk                       ~332 KB (loaded only on an .xlsx)
+jszip chunk                       ~97 KB (loaded only on docx/pptx)
+docx / pptx / text extractors      <2 KB each (jszip pulled in on demand)
+```
+
+A lint-style test (`tests/extraction/lazy-load.test.ts`) enforces
+this by rejecting a top-level `import ... from 'pdfjs-dist' | 'xlsx' | 'jszip'`
+in any file on the main content-script path (`content/index.ts`,
+`document-flow.ts`, `file-inspector.ts`, `extraction/extract.ts`).
+Flag-OFF / paste-only sessions never load any of these chunks.
+
+**Zero-network invariant.** A dedicated test
+(`tests/extraction/no-network.test.ts`) stubs `fetch` and
+`XMLHttpRequest.prototype.open` to throw, runs `extractText` across
+every format, and asserts neither was ever called. pdf.js runs
+locally with the bundled worker and no font fetching. No parser has
+a CDN dependency at runtime.
+
+**Guards.**
+
+- `MAX_EXTRACTION_BYTES = 20 MB` — enforced BEFORE the sniffer or
+  any parser is invoked (a hostile 500 MB "pdf" cannot force pdfjs
+  to allocate anything).
+- `EXTRACTION_TIMEOUT_MS = 10 s` — races the parser via
+  `Promise.race`; on timeout, the parser's promise is orphaned and
+  its ArrayBuffer references drop as soon as it settles.
+- Every extractor is wrapped in try/catch; classified errors
+  (`EXTRACTOR_ERROR_ENCRYPTED`, `EXTRACTOR_ERROR_NO_TEXT_LAYER`)
+  become `encrypted` / `no-text-layer`, everything else becomes
+  `parse-error`.
+
+**In-memory only.** Extracted text is attached to the
+`FileInspectionEntry` returned by `inspectFiles` and never leaves
+memory: no `chrome.storage.local` writes, no `postMessage` payload
+(the A1.1 FSA channel already carries metadata only), no DOM
+insertion. The A5 event log stays metadata-only.
+
+**Inspector wiring (unchanged shape, new async).** Both the FSA
+picker path (`fsa-isolated.ts` → `document-flow.holdFiles`) and the
+change / drop / paste paths (`content/index.ts` → `holdFiles`) funnel
+through `inspectFiles`. Making the inspector async gives both paths
+extraction "for free" with no additional plumbing in the
+orchestrators. Detection over the extracted text is A3's job.
+
+**Manifest.** No new permissions. `web_accessible_resources` gains
+`assets/pdf.worker*.js` (wildcarded because the chunk hash changes
+per build) so the pdf.js worker is loadable by the content script.
+`verify:sw` and the "does not collect data" declaration are
+re-verified.
+
 ## What this architecture explicitly does NOT include in V1
 
 - React or any UI framework
