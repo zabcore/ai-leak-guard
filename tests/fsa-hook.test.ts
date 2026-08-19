@@ -378,7 +378,7 @@ describe('askOverPort — port-scoped hold-request / hold-decision', () => {
     const decisionPromise = askOverPort(channel.port2, [
       { name: 'a.pdf', size: 1, type: 'application/pdf' },
     ])
-    await flush()
+    for (let i = 0; i < 20 && capturedId === null; i++) await flush()
     expect(capturedId).not.toBeNull()
 
     // Post an unrelated decision — must be ignored.
@@ -426,7 +426,11 @@ describe('askOverPort — port-scoped hold-request / hold-decision', () => {
     const decisionPromise = askOverPort(channel.port2, [
       { name: 'sensitive.pdf', size: 1, type: 'application/pdf' },
     ])
-    await flush()
+    // jsdom's MessageChannel dispatch timing isn't guaranteed on
+    // one microtask flush — some environments (Node 24 in CI) need
+    // a few event-loop turns before port1.onmessage fires. Poll
+    // instead of asserting on a single flush.
+    for (let i = 0; i < 20 && capturedId === null; i++) await flush()
     expect(capturedId).not.toBeNull()
 
     // Forge a decision with the observed id on window.postMessage.

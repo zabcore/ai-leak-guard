@@ -54,7 +54,9 @@ describe('holdFiles', () => {
       }),
     )
     expect(release).toHaveBeenCalledOnce()
-    expect(result).toEqual({ outcome: 'upload-anyway', release: 'released' })
+    expect(result.outcome).toBe('upload-anyway')
+    if (result.outcome === 'upload-anyway') expect(result.release).toBe('released')
+    expect(result.inspection.perFile).toHaveLength(1)
   })
 
   it('on Cancel → clears the origin input for a change event', async () => {
@@ -72,7 +74,8 @@ describe('holdFiles', () => {
     )
     expect(clearInput).toHaveBeenCalledOnce()
     expect(clearInput.mock.calls[0][0]).toBe(input)
-    expect(result).toEqual({ outcome: 'cancel' })
+    expect(result.outcome).toBe('cancel')
+    expect(result.inspection.perFile).toHaveLength(1)
   })
 
   it('on Cancel with a drop event → does NOT try to clear an input (there is none)', async () => {
@@ -104,6 +107,8 @@ describe('holdFiles', () => {
     )
     expect(release).toHaveBeenCalledOnce()
     expect(clearInput).not.toHaveBeenCalled()
-    expect(result).toEqual({ outcome: 'upload-anyway', release: 'needs-user-reattach' })
+    expect(result.outcome).toBe('upload-anyway')
+    if (result.outcome === 'upload-anyway') expect(result.release).toBe('needs-user-reattach')
+    expect(result.inspection.perFile).toHaveLength(1)
   })
 })
