@@ -324,6 +324,45 @@ describe('zip-read — OPC-mandated encodings (UTF-8 + UTF-16)', () => {
   })
 })
 
+describe('zip-read — AbortSignal propagation (fourth-round CR)', () => {
+  // Without signal wiring, docx/pptx extraction would keep JSZip
+  // decompressing after `extract.ts`'s 10 s timeout fires. The
+  // caller returns the timeout result to its caller but JSZip
+  // continues appending chunks in the background — CPU / memory
+  // don't get released until the entry either completes or crosses
+  // the cap. Passing the signal through lets us pause the stream
+  // and settle immediately when the deadline hits.
+
+  it('readEntryBoundedText settles as aborted when signal fires mid-stream', async () => {
+    const { readEntryBoundedText } = await import('../../src/content/extraction/formats/zip-read')
+    const zip = new JSZip()
+    zip.file('a.txt', 'x'.repeat(4096))
+    const buf = await zip.generateAsync({ type: 'arraybuffer' })
+    const loaded = await JSZip.loadAsync(buf)
+    const entry = loaded.file('a.txt')!
+    const ac = new AbortController()
+    // Fire the abort on the next microtask so at least one data
+    // chunk has a chance to arrive first.
+    void Promise.resolve().then(() => ac.abort())
+    const result = await readEntryBoundedText(entry, { cap: 1024 * 1024, signal: ac.signal })
+    expect(result.kind).toBe('aborted')
+  })
+
+  it('returns aborted immediately when the signal is already aborted', async () => {
+    const { readEntryBoundedText } = await import('../../src/content/extraction/formats/zip-read')
+    const zip = new JSZip()
+    zip.file('a.txt', 'hi')
+    const buf = await zip.generateAsync({ type: 'arraybuffer' })
+    const loaded = await JSZip.loadAsync(buf)
+    const entry = loaded.file('a.txt')!
+    const ac = new AbortController()
+    ac.abort()
+    const result = await readEntryBoundedText(entry, { cap: 1024, signal: ac.signal })
+    expect(result.kind).toBe('aborted')
+    if (result.kind === 'aborted') expect(result.bytesRead).toBe(0)
+  })
+})
+
 describe('pdf extractor — cleanup on load failure (second-round CR)', () => {
   // Previous split-try structure skipped safeDestroy(loadingTask)
   // when the initial loadingTask.promise rejected with anything

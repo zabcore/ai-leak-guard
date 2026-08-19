@@ -36,12 +36,20 @@ export interface BoundedReadOptions {
    * small.
    */
   readonly failClosedIfUnknownSize?: boolean
+  /**
+   * Extraction-level cancellation (from `extract.ts`'s 10 s timer).
+   * When aborted mid-stream we pause the jszip reader and settle
+   * with `{ kind: 'aborted' }` so a hostile OOXML entry can't keep
+   * consuming CPU / memory after the request deadline has passed.
+   */
+  readonly signal?: AbortSignal
 }
 
 export type BoundedReadResult =
   | { readonly kind: 'text'; readonly text: string; readonly bytesRead: number }
   | { readonly kind: 'over-cap'; readonly bytesRead: number }
   | { readonly kind: 'stream-error'; readonly err: unknown }
+  | { readonly kind: 'aborted'; readonly bytesRead: number }
 
 /**
  * The private `_data` shape jszip carries on entries loaded from a
@@ -83,6 +91,12 @@ export function readEntryBoundedText(
     return Promise.resolve({ kind: 'over-cap', bytesRead: declared })
   }
 
+  // Fast path: if the caller has already aborted before we even
+  // create the stream, don't touch jszip.
+  if (opts.signal?.aborted) {
+    return Promise.resolve({ kind: 'aborted', bytesRead: 0 })
+  }
+
   return new Promise((resolve) => {
     // JSZip's stream helper: `.on('data', ...)` yields decompressed
     // chunks; `.on('error')` / `.on('end')` terminate. `resume()`
@@ -98,6 +112,7 @@ export function readEntryBoundedText(
     let bytesRead = 0
     let settled = false
     const chunks: Uint8Array[] = []
+    let onAbort: (() => void) | null = null
 
     const settle = (result: BoundedReadResult): void => {
       if (settled) return
@@ -107,7 +122,21 @@ export function readEntryBoundedText(
       } catch {
         // Ignore — settle path must never throw.
       }
+      if (onAbort && opts.signal) {
+        opts.signal.removeEventListener('abort', onAbort)
+      }
       resolve(result)
+    }
+
+    // Wire the extraction timeout: on abort, pause the jszip stream
+    // and settle immediately. Without this, docx/pptx would keep
+    // decompressing past the 10 s deadline (PDF already gets the
+    // signal via its own path).
+    if (opts.signal) {
+      onAbort = (): void => {
+        settle({ kind: 'aborted', bytesRead })
+      }
+      opts.signal.addEventListener('abort', onAbort, { once: true })
     }
 
     stream.on('data', (chunk: Uint8Array) => {
@@ -151,10 +180,11 @@ export function readEntryBoundedText(
  *   otherwise → UTF-8 (the common case; MS Word / PowerPoint write
  *               UTF-8 without a BOM)
  *
- * `TextDecoder`'s default (`ignoreBOM: false`) STRIPS the BOM from
- * the output — that is what we want so the extracted text doesn't
- * start with a stray U+FEFF that could confuse the `<w:t>` /
- * `<a:t>` regexes.
+ * `TextDecoder` with `ignoreBOM: false` (the constructor default)
+ * STRIPS the BOM from the output — that's the behaviour we want so
+ * the extracted text doesn't start with a stray U+FEFF that could
+ * confuse the `<w:t>` / `<a:t>` regexes. (For contrast: passing
+ * `ignoreBOM: true` would PRESERVE the BOM in the output.)
  *
  * Exported for direct unit-testing.
  */

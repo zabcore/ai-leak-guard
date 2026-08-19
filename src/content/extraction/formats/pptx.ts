@@ -26,7 +26,14 @@ export const MAX_UNCOMPRESSED_ENTRY_BYTES = 40 * 1024 * 1024
 // many entries to sneak past the per-entry cap is not.
 export const MAX_TOTAL_UNCOMPRESSED_BYTES = 80 * 1024 * 1024
 
-export async function extractPptx(file: File): Promise<FormatOutput> {
+export interface ExtractPptxOptions {
+  readonly signal?: AbortSignal
+}
+
+export async function extractPptx(
+  file: File,
+  opts: ExtractPptxOptions = {},
+): Promise<FormatOutput> {
   const buf = await file.arrayBuffer()
   const zip = await JSZip.loadAsync(buf)
   const slideNames = Object.keys(zip.files)
@@ -38,6 +45,7 @@ export async function extractPptx(file: File): Promise<FormatOutput> {
   const parts: string[] = []
   let totalBytes = 0
   for (const name of slideNames) {
+    if (opts.signal?.aborted) return { kind: 'reason', reason: 'timeout' }
     const entry = zip.file(name)
     if (!entry) continue
     // Shrink the cap for this entry so a slide can't push the
@@ -51,9 +59,13 @@ export async function extractPptx(file: File): Promise<FormatOutput> {
     const read = await readEntryBoundedText(entry, {
       cap: perEntryCap,
       failClosedIfUnknownSize: true,
+      signal: opts.signal,
     })
     if (read.kind === 'over-cap') {
       return { kind: 'reason', reason: 'too-large' }
+    }
+    if (read.kind === 'aborted') {
+      return { kind: 'reason', reason: 'timeout' }
     }
     if (read.kind === 'stream-error') {
       return { kind: 'reason' }

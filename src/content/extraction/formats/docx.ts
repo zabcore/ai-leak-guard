@@ -29,7 +29,14 @@ import { readEntryBoundedText } from './zip-read'
 // that a zip bomb aiming for GB expansion is rejected mid-stream.
 export const MAX_UNCOMPRESSED_ENTRY_BYTES = 40 * 1024 * 1024
 
-export async function extractDocx(file: File): Promise<FormatOutput> {
+export interface ExtractDocxOptions {
+  readonly signal?: AbortSignal
+}
+
+export async function extractDocx(
+  file: File,
+  opts: ExtractDocxOptions = {},
+): Promise<FormatOutput> {
   const buf = await file.arrayBuffer()
   const zip = await JSZip.loadAsync(buf)
   const docEntry = zip.file('word/document.xml')
@@ -42,9 +49,16 @@ export async function extractDocx(file: File): Promise<FormatOutput> {
   const read = await readEntryBoundedText(docEntry, {
     cap: MAX_UNCOMPRESSED_ENTRY_BYTES,
     failClosedIfUnknownSize: true,
+    signal: opts.signal,
   })
   if (read.kind === 'over-cap') {
     return { kind: 'reason', reason: 'too-large' }
+  }
+  if (read.kind === 'aborted') {
+    // Timer wins the race in extract.ts anyway; return a reason so
+    // the format layer contributes nothing else to the settled
+    // promise the caller ignores.
+    return { kind: 'reason', reason: 'timeout' }
   }
   if (read.kind === 'stream-error') {
     return { kind: 'reason' }

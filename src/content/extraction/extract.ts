@@ -195,11 +195,11 @@ async function runExtractor(
       }
       case 'docx': {
         const mod = await import('./formats/docx')
-        return finalize(await mod.extractDocx(file), meta)
+        return finalize(await mod.extractDocx(file, { signal }), meta)
       }
       case 'pptx': {
         const mod = await import('./formats/pptx')
-        return finalize(await mod.extractPptx(file), meta)
+        return finalize(await mod.extractPptx(file, { signal }), meta)
       }
       case 'text':
       case 'csv': {
