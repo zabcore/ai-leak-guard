@@ -61,6 +61,8 @@ web_modules/
 
 # Output of 'npm pack'
 *.tgz
+# Exception: keep vendored dependencies (e.g. patched SheetJS CDN tarball).
+!vendor/*.tgz
 
 # Yarn Integrity file
 .yarn-integrity
