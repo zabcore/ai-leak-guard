@@ -46,9 +46,14 @@ ai-leak-guard/
 │   │   ├── document-flag.ts      # V1.2 A1 feature-flag guard (default OFF)
 │   │   ├── document-flow.ts      # V1.2 A1 hold state machine
 │   │   ├── document-modal.ts     # V1.2 A1 placeholder confirm modal
+│   │   ├── document-nudge.ts     # V1.2 A1 re-attach nudge (Shadow DOM one-liner)
 │   │   ├── file-extraction.ts    # V1.2 A1 File[] extraction from change/drop/paste
 │   │   ├── file-inspector.ts     # V1.2 A1 inspector STUB (no parsing, no findings)
-│   │   └── upload-release.ts     # V1.2 A1 DataTransfer replay + pass-through-once
+│   │   ├── upload-release.ts     # V1.2 A1 DataTransfer replay + pass-through-once
+│   │   ├── fsa-isolated.ts       # V1.2 A1.1 isolated-world FSA hold-request handler
+│   │   └── main-world/
+│   │       ├── fsa-hook.ts       # V1.2 A1.1 MAIN-world showOpenFilePicker wrapper
+│   │       └── fsa-messages.ts   # V1.2 A1.1 cross-world message shapes + validators
 │   ├── background/
 │   │   └── service-worker.ts     # Service worker entry (bundled rules only)
 │   ├── popup/
@@ -524,6 +529,146 @@ add reads through a controlled seam; the plumbing shape stays fixed.
 - No final UX — the placeholder modal is intentionally minimal.
 - No popup control for the flag — the flag is compile-time only in
   A1. The popup toggle lands with A3.
+
+## FSA picker interception (V1.2 A1.1 — flagged OFF)
+
+A1's `change` / `drop` / `paste` seams cover the DOM event surface,
+but they miss the **File System Access** picker
+(`window.showOpenFilePicker()`) — the API ChatGPT's `+` → "Add photos
+& files" invokes. `showOpenFilePicker` is a plain function call on
+the page's own `window`, so no DOM event fires and the isolated
+content script cannot see it.
+
+A1.1 adds a **MAIN-world content script** that wraps the picker on
+the page's own window. When the wrapper is called it awaits the
+native picker (which pops the OS dialog just like it always has),
+extracts file metadata, hands the decision to the isolated world
+through `window.postMessage`, and either returns the ORIGINAL
+handles (upload-anyway) or throws the exact `AbortError` the native
+picker throws on cancel. Same flag, same modal, same silent-release
+model as A1: **document protection warns, never blocks**.
+
+**The two-script layout:**
+
+- `manifest.json` adds a second `content_scripts` entry with
+  `"world": "MAIN"` and `"run_at": "document_start"` running
+  `src/content/main-world/fsa-hook.ts`. `document_start` is
+  load-bearing: ChatGPT captures a reference to the ORIGINAL
+  `showOpenFilePicker` early, and the wrapper must be installed
+  before that snapshot happens. `world: "MAIN"` needs no new
+  permission (Chrome 111+ MV3).
+- The existing isolated-world content script installs
+  `installFsaMessageHandler`, which owns the private `MessageChannel`
+  (see below) and turns port-borne `hold-request` messages into
+  decisions. Same one-modal-at-a-time policy: another modal already
+  open → reply `cancel`.
+
+**Port-scoped wire contract (`src/content/main-world/fsa-messages.ts`).**
+Hold-request and hold-decision traffic runs over a `MessagePort` the
+isolated world creates and transfers to MAIN once at load — not over
+`window.postMessage`. This closes the trivial "a page script
+observes a `hold-request` on window, copies its `id`, and posts a
+matching forged `hold-decision` on window" bypass: neither direction
+is observable on window after the handshake, and a page script cannot
+post a decision on the port because it has no reference to it. The
+port is **not reachable via window messaging** post-handshake — see
+the caveat below for what that does and does not mean.
+
+Handshake (window.postMessage — one round trip, at load):
+
+```text
+MAIN     → { source:'alg-fsa-hello' }             (window.postMessage)
+isolated → { source:'alg-fsa-port-handoff' }      (window.postMessage + [port2] in transfer list)
+```
+
+Steady state (port only — page scripts cannot observe or post here):
+
+```text
+MAIN     → { source:'alg-fsa', kind:'hold-request',  id, files:[{name,size,type}] }   (port2.postMessage)
+isolated ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-anyway'|'cancel' } (port1.postMessage)
+```
+
+- The isolated world creates the `MessageChannel` on install, keeps
+  `port1`, and transfers `port2` on the FIRST valid hello. Subsequent
+  hellos are dropped (a `MessagePort` can only be transferred once).
+- `id` correlates request and reply so concurrent pickers on the
+  same page cannot cross wires.
+- Both directions validate the shape with dedicated predicates
+  (`isFsaHello`, `isFsaPortHandoff`, `isFsaHoldRequest`,
+  `isFsaHoldDecision`). Handshake messages also require
+  `event.source === window` so a cross-frame post cannot request the
+  port. Foreign / malformed messages are ignored — a page can't forge
+  a decision to bypass the modal, and can't forge a request to open
+  it out of nowhere.
+- **Metadata only** across the world boundary. No `File` / `Blob` /
+  bytes / handles are ever posted. The `File` object stays inside
+  the MAIN world, and the handles the site cares about are the
+  originals we return unchanged on `upload-anyway`. This keeps A1's
+  "hold references only, don't read contents" invariant intact
+  across the world boundary too.
+
+**Threat model — MAIN-world limits and handshake race.** The MAIN-world
+script shares a JavaScript realm with the page (that is what makes
+patching `window.showOpenFilePicker` visible to ChatGPT in the first
+place). Two consequences follow:
+
+1. **First-hello-hijack**: `window.postMessage(handoff, origin, [port2])`
+   exposes the transferred `port2` through `MessageEvent.ports` to any
+   window `message` listener. A page script that posts its own
+   `alg-fsa-hello` before our MAIN hook does can claim the one-shot
+   `port2` (MessagePort transfer is first-come-first-served). The
+   isolated handler then has no port to hand our hook, and every
+   subsequent picker call would hang were it not for the fail-open
+   below.
+2. **Realm patching**: a hostile page could patch `MessageChannel`,
+   `postMessage`, `addEventListener`, etc. before our MAIN-world
+   script runs. No cryptographic defence exists at this layer — a
+   shared JS realm precludes it.
+
+**Fail-open on handshake failure.** `requestPort` in
+`src/content/main-world/fsa-hook.ts` runs a bounded
+`FSA_HANDSHAKE_TIMEOUT_MS` (2 s) timer. On timeout — hijack, isolated
+never loaded, or the extension disabled mid-load — `askIsolatedWorld`
+returns `'upload-anyway'` and the wrapper releases the original
+handles. A subsequent picker call gets a fresh handshake attempt.
+`askOverPort` runs a longer `FSA_DECISION_TIMEOUT_MS` (120 s) as a
+safety net for isolated-world outages that happen after handshake,
+also fail-open. This is what keeps document protection at **warn,
+never block** even in adversarial conditions: a broken or hijacked
+extension MUST NOT hang the user's picker or throw a spurious
+`AbortError`.
+
+The private-port design still eliminates the trivial forge-on-window
+bypass and prevents in-flight decision snooping. It does not claim
+bypass-proof status against a hostile site.
+
+**Flag-OFF invariant.** MAIN world cannot read the isolated-world
+flag directly (separate JavaScript contexts), so the wrapper always
+sends a `hold-request`. When the flag is OFF (or the extension is
+globally disabled), the isolated-world handler replies
+`upload-anyway` immediately without opening a modal. The wrapper
+returns the original handles and the site sees a native picker
+call. A dedicated guard test asserts this end-to-end.
+
+**Silent release, no re-attach.** Upload-anyway returns the exact
+handles the native picker returned — the site cannot tell we were
+in the loop, and there is no re-attach nudge here (unlike the
+`drop` / `paste` A1 fallback paths, which arm the pass-through
+guard). Cancel throws `new DOMException('The user aborted a request.', 'AbortError')`,
+which is byte-for-byte what the native picker throws on cancel;
+consumers handle it exactly as they already do.
+
+**Double-wrap guard.** The wrapper marks itself with
+`__algWrapped = true`; a second `installFsaHook` call is a no-op.
+Prevents nested wrapping if the MAIN-world script is re-injected
+(dev hot reload, defensive re-runs).
+
+**Sites in scope.** The MAIN-world entry is registered against the
+same 5-site host list as the isolated content script. In practice
+the wrapper only fires on sites that call `showOpenFilePicker` —
+ChatGPT is the primary consumer today; other sites currently use
+`<input type="file">` and are unaffected. Copilot document
+protection remains deferred per A1's scope.
 
 ## What this architecture explicitly does NOT include in V1
 

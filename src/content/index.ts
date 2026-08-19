@@ -14,9 +14,10 @@ import {
   extractFilesFromPaste,
 } from './file-extraction'
 import { holdFiles, type HoldResult } from './document-flow'
-import { isDocumentModalOpen } from './document-modal'
+import { isDocumentModalOpen, showDocumentModal } from './document-modal'
 import { clearFileInput, consumePassThroughIfArmed } from './upload-release'
 import { showReattachNudge } from './document-nudge'
+import { installFsaMessageHandler } from './fsa-isolated'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -115,6 +116,20 @@ function handleHoldResult(result: HoldResult, kind: 'change' | 'drop' | 'paste')
         : 'Attachment released. Please paste the image again to send it to the site.'
   showReattachNudge(nudge)
 }
+
+// V1.2 A1.1: FSA (`window.showOpenFilePicker`) picker interception.
+// The MAIN-world hook (`src/content/main-world/fsa-hook.ts`, wired as
+// a separate content_scripts entry) wraps the picker on the page's
+// window and posts `hold-request` metadata over `window.postMessage`;
+// this handler owns the flag / modal / decision half of the dance
+// and posts a `hold-decision` reply. The MAIN-world wrapper always
+// asks — so when the flag is OFF we can answer `upload-anyway`
+// immediately and the site sees a byte-for-byte native picker.
+installFsaMessageHandler(window, {
+  isActive: () => documentFlowActive(),
+  isAnotherModalOpen: () => isDocumentModalOpen() || isPreviewModalOpen(),
+  showModal: (opts) => showDocumentModal({ fileCount: opts.fileCount, opener: null }),
+})
 
 // One listener on `window` in the capture phase. Two reasons this beats
 // site-native paste handlers on ChatGPT-style ProseMirror editors:
