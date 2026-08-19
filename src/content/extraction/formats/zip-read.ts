@@ -130,13 +130,46 @@ export function readEntryBoundedText(
         merged.set(c, offset)
         offset += c.byteLength
       }
-      const text = new TextDecoder('utf-8', { fatal: false }).decode(merged)
-      settle({ kind: 'text', text, bytesRead })
+      settle({ kind: 'text', text: decodeXmlBytes(merged), bytesRead })
     })
 
     // JSZip's stream is paused by default; kick it.
     stream.resume()
   })
+}
+
+/**
+ * Decode bounded ZIP-entry bytes as XML text, handling the encodings
+ * the Open Packaging Conventions (§10.1.2 / ECMA-376 Part 2) permit
+ * for XML parts: **UTF-8 or UTF-16**. Anything else is forbidden by
+ * OPC, so we don't attempt more exotic detection.
+ *
+ * BOM-first dispatch:
+ *   FF FE     → UTF-16 LE
+ *   FE FF     → UTF-16 BE
+ *   EF BB BF  → UTF-8 (BOM stripped)
+ *   otherwise → UTF-8 (the common case; MS Word / PowerPoint write
+ *               UTF-8 without a BOM)
+ *
+ * `TextDecoder`'s default (`ignoreBOM: false`) STRIPS the BOM from
+ * the output — that is what we want so the extracted text doesn't
+ * start with a stray U+FEFF that could confuse the `<w:t>` /
+ * `<a:t>` regexes.
+ *
+ * Exported for direct unit-testing.
+ */
+export function decodeXmlBytes(bytes: Uint8Array): string {
+  const encoding = detectEncoding(bytes)
+  return new TextDecoder(encoding, { fatal: false }).decode(bytes)
+}
+
+function detectEncoding(bytes: Uint8Array): 'utf-8' | 'utf-16le' | 'utf-16be' {
+  if (bytes.length >= 2) {
+    if (bytes[0] === 0xff && bytes[1] === 0xfe) return 'utf-16le'
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) return 'utf-16be'
+  }
+  // UTF-8 BOM is EF BB BF; `ignoreBOM: true` on the decoder strips it.
+  return 'utf-8'
 }
 
 interface JszipStream<T> {

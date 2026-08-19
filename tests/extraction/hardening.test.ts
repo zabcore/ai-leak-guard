@@ -225,6 +225,105 @@ describe('zip-read — streaming cap enforcement (second-round CR)', () => {
   })
 })
 
+describe('zip-read — OPC-mandated encodings (UTF-8 + UTF-16)', () => {
+  // ECMA-376 Part 2 (OPC) mandates that XML parts inside an OOXML
+  // package are encoded as UTF-8 or UTF-16. `decodeXmlBytes` sniffs
+  // the BOM and dispatches to the right TextDecoder. Missing this in
+  // the earlier commit meant a UTF-16 docx/pptx would come out as
+  // NULs + replacement chars, and the `<w:t>` / `<a:t>` regex would
+  // find nothing.
+
+  it('decodeXmlBytes handles UTF-8 without a BOM (the common case)', async () => {
+    const { decodeXmlBytes } = await import('../../src/content/extraction/formats/zip-read')
+    const bytes = new TextEncoder().encode('<w:t>hello</w:t>')
+    expect(decodeXmlBytes(bytes)).toBe('<w:t>hello</w:t>')
+  })
+
+  it('decodeXmlBytes strips the UTF-8 BOM', async () => {
+    const { decodeXmlBytes } = await import('../../src/content/extraction/formats/zip-read')
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf])
+    const body = new TextEncoder().encode('<w:t>x</w:t>')
+    const combined = new Uint8Array(bom.length + body.length)
+    combined.set(bom, 0)
+    combined.set(body, bom.length)
+    const out = decodeXmlBytes(combined)
+    // No leading U+FEFF.
+    expect(out.charCodeAt(0)).toBe('<'.charCodeAt(0))
+    expect(out).toBe('<w:t>x</w:t>')
+  })
+
+  it('decodeXmlBytes decodes UTF-16 LE (BOM: FF FE)', async () => {
+    const { decodeXmlBytes } = await import('../../src/content/extraction/formats/zip-read')
+    const src = '<w:t>UTF16LE_SENTINEL</w:t>'
+    // Encode as UTF-16LE with BOM.
+    const buf = new Uint8Array(2 + src.length * 2)
+    buf[0] = 0xff
+    buf[1] = 0xfe
+    for (let i = 0; i < src.length; i++) {
+      const cp = src.charCodeAt(i)
+      buf[2 + i * 2] = cp & 0xff
+      buf[2 + i * 2 + 1] = (cp >> 8) & 0xff
+    }
+    expect(decodeXmlBytes(buf)).toBe(src)
+  })
+
+  it('decodeXmlBytes decodes UTF-16 BE (BOM: FE FF)', async () => {
+    const { decodeXmlBytes } = await import('../../src/content/extraction/formats/zip-read')
+    const src = '<a:t>UTF16BE_SENTINEL</a:t>'
+    const buf = new Uint8Array(2 + src.length * 2)
+    buf[0] = 0xfe
+    buf[1] = 0xff
+    for (let i = 0; i < src.length; i++) {
+      const cp = src.charCodeAt(i)
+      buf[2 + i * 2] = (cp >> 8) & 0xff
+      buf[2 + i * 2 + 1] = cp & 0xff
+    }
+    expect(decodeXmlBytes(buf)).toBe(src)
+  })
+
+  it('docx extractor pulls text from a UTF-16 LE document.xml', async () => {
+    const src = `<?xml version="1.0" encoding="UTF-16"?><w:document><w:body><w:p><w:r><w:t>UTF16LE_DOCX_SENTINEL</w:t></w:r></w:p></w:body></w:document>`
+    const buf = new Uint8Array(2 + src.length * 2)
+    buf[0] = 0xff
+    buf[1] = 0xfe
+    for (let i = 0; i < src.length; i++) {
+      const cp = src.charCodeAt(i)
+      buf[2 + i * 2] = cp & 0xff
+      buf[2 + i * 2 + 1] = (cp >> 8) & 0xff
+    }
+    const zip = new JSZip()
+    zip.file('word/document.xml', buf, { binary: true })
+    const bytes = await zip.generateAsync({ type: 'arraybuffer' })
+    const file = new File([bytes], 'utf16.docx', {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    })
+    const result = await extractText(file)
+    expect(result.status).toBe('extracted')
+    expect(result.text).toContain('UTF16LE_DOCX_SENTINEL')
+  })
+
+  it('pptx extractor pulls text from a UTF-16 BE slide.xml', async () => {
+    const src = `<?xml version="1.0" encoding="UTF-16"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:p><a:r><a:t>UTF16BE_PPTX_SENTINEL</a:t></a:r></a:p></p:sld>`
+    const buf = new Uint8Array(2 + src.length * 2)
+    buf[0] = 0xfe
+    buf[1] = 0xff
+    for (let i = 0; i < src.length; i++) {
+      const cp = src.charCodeAt(i)
+      buf[2 + i * 2] = (cp >> 8) & 0xff
+      buf[2 + i * 2 + 1] = cp & 0xff
+    }
+    const zip = new JSZip()
+    zip.file('ppt/slides/slide1.xml', buf, { binary: true })
+    const bytes = await zip.generateAsync({ type: 'arraybuffer' })
+    const file = new File([bytes], 'utf16.pptx', {
+      type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    })
+    const result = await extractText(file)
+    expect(result.status).toBe('extracted')
+    expect(result.text).toContain('UTF16BE_PPTX_SENTINEL')
+  })
+})
+
 describe('pdf extractor — cleanup on load failure (second-round CR)', () => {
   // Previous split-try structure skipped safeDestroy(loadingTask)
   // when the initial loadingTask.promise rejected with anything
