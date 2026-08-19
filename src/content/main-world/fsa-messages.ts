@@ -37,6 +37,34 @@ export interface FsaHoldDecision {
 
 export type FsaMessage = FsaHoldRequest | FsaHoldDecision
 
+// ─── Handshake (window.postMessage only) ────────────────────────────────
+// The MAIN-world wrapper asks the isolated world for a private
+// `MessagePort` at load. This is the ONLY exchange that flows over
+// the shared `window.postMessage` bus; every subsequent hold-request /
+// hold-decision travels on the returned port, which page scripts
+// cannot access (see `docs/ARCHITECTURE.md` — "FSA picker
+// interception"). The handshake is deliberately tiny: hello (no
+// payload) / port-handoff (port is on the transfer list).
+
+export const FSA_HELLO_SOURCE = 'alg-fsa-hello'
+export const FSA_PORT_HANDOFF_SOURCE = 'alg-fsa-port-handoff'
+
+export interface FsaHello {
+  readonly source: typeof FSA_HELLO_SOURCE
+}
+
+export interface FsaPortHandoff {
+  readonly source: typeof FSA_PORT_HANDOFF_SOURCE
+}
+
+export function isFsaHello(x: unknown): x is FsaHello {
+  return isPlainObject(x) && x.source === FSA_HELLO_SOURCE
+}
+
+export function isFsaPortHandoff(x: unknown): x is FsaPortHandoff {
+  return isPlainObject(x) && x.source === FSA_PORT_HANDOFF_SOURCE
+}
+
 // ─── Validation ─────────────────────────────────────────────────────────
 // The isolated world MUST reject anything that fails these predicates
 // so foreign scripts on the page cannot forge a decision (which would

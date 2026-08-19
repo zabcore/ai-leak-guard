@@ -10,11 +10,14 @@
 // a reference to the original function.
 //
 // The MAIN-world script deliberately contains NO app logic — it only
-// wraps the picker and talks to the isolated world through
-// `window.postMessage`, using the shared contract in
-// `fsa-messages.ts`. All hold / modal / flag decisions live in the
-// isolated world, which stays the single source of truth for the
-// V1.2 document-protection surface.
+// wraps the picker and talks to the isolated world through an
+// EXTENSION-PRIVATE `MessagePort`. A public `window.postMessage`
+// carries only the one-shot `alg-fsa-hello` at load; the port
+// (handed to us via `alg-fsa-port-handoff` with a transfer list) is
+// the sole channel for hold-request / hold-decision traffic. Page
+// scripts cannot obtain a reference to a `MessagePort` transferred
+// via someone else's postMessage, so they can neither read requests
+// nor forge decisions once the handshake completes.
 //
 // Metadata-only. Never posts `File` objects, `Blob`s, or bytes across
 // the world boundary — only `{ name, size, type }` per file. That
@@ -22,10 +25,13 @@
 // A1 established (see `docs/ARCHITECTURE.md`).
 
 import {
+  FSA_HELLO_SOURCE,
   FSA_MESSAGE_SOURCE,
   isFsaHoldDecision,
+  isFsaPortHandoff,
   type FsaDecision,
   type FsaFileMetadata,
+  type FsaHello,
   type FsaHoldRequest,
 } from './fsa-messages'
 
@@ -100,45 +106,103 @@ export function createWrappedPicker(
 }
 
 /**
- * postMessage-based `askDecision` implementation used by the
- * production install below. Sends a `hold-request` and resolves with
- * the matching `hold-decision`.
+ * Request the extension-private `MessagePort` from the isolated world
+ * exactly once per document. The handshake is:
  *
- * The listener validates every incoming message with
- * `isFsaHoldDecision` (rejecting foreign / malformed messages) and
- * requires the id to match this specific request, so concurrent
- * pickers on the same page cannot cross wires.
+ *   MAIN   → { source: 'alg-fsa-hello' }        (window.postMessage)
+ *   MAIN   ← { source: 'alg-fsa-port-handoff' } (window.postMessage + [port] transfer)
+ *
+ * The port then carries every hold-request / hold-decision. Because
+ * `MessagePort` is transferred (not cloned), page scripts observing
+ * the port-handoff on window still cannot obtain a usable reference —
+ * only the receiving JavaScript context (our MAIN-world script) ends
+ * up with the actual port.
+ *
+ * Exported for tests. Callers should treat the returned promise as
+ * "resolves the first time isolated hands us a port; may hang forever
+ * if the isolated content script never loads" — see `askIsolatedWorld`
+ * for the timeout / cancel semantics wrapped around it.
  */
-export function askIsolatedWorld(
-  target: Window,
-  origin: string,
+export function requestPort(target: Window, origin: string): Promise<MessagePort> {
+  return new Promise((resolve) => {
+    const listener = (event: MessageEvent): void => {
+      if (event.source !== target) return
+      if (!isFsaPortHandoff(event.data)) return
+      const port = event.ports[0]
+      if (!port) return
+      target.removeEventListener('message', listener)
+      // `.start()` is required when the port will be read via
+      // `addEventListener('message')` rather than the auto-starting
+      // `onmessage` setter.
+      port.start()
+      resolve(port)
+    }
+    target.addEventListener('message', listener)
+    const hello: FsaHello = { source: FSA_HELLO_SOURCE }
+    target.postMessage(hello, origin)
+  })
+}
+
+/**
+ * Send one hold-request over the private `port` and resolve with the
+ * matching `hold-decision`. Because `port` is a transferred
+ * `MessagePort`, only the isolated world can post replies on it —
+ * a page script cannot forge a decision.
+ *
+ * The listener still validates every incoming message with
+ * `isFsaHoldDecision` and requires the id to match this specific
+ * request, so concurrent pickers cannot cross wires.
+ *
+ * Exported for tests so an adversarial regression test can assert
+ * that a `hold-decision` posted via `window.postMessage` is IGNORED
+ * even after a valid request has been observed.
+ */
+export function askOverPort(
+  port: MessagePort,
   files: readonly FsaFileMetadata[],
 ): Promise<FsaDecision> {
   return new Promise((resolve) => {
     const id = generateRequestId()
     const listener = (event: MessageEvent): void => {
-      // Same-window messaging only — a message from an iframe or
-      // another window is unrelated to our hold.
-      if (event.source !== target) return
       if (!isFsaHoldDecision(event.data)) return
       if (event.data.id !== id) return
-      target.removeEventListener('message', listener)
+      port.removeEventListener('message', listener)
       resolve(event.data.decision)
     }
-    target.addEventListener('message', listener)
+    port.addEventListener('message', listener)
     const request: FsaHoldRequest = {
       source: FSA_MESSAGE_SOURCE,
       kind: 'hold-request',
       id,
       files,
     }
-    // targetOrigin `origin` (== `location.origin`) — restrict delivery
-    // to the same origin so we cannot leak metadata to a cross-origin
-    // frame that has been embedded (belt & suspenders — same-window
-    // postMessage already goes only to same-window listeners, but
-    // this keeps the surface explicit).
-    target.postMessage(request, origin)
+    port.postMessage(request)
   })
+}
+
+/**
+ * Production `askDecision` implementation: obtain the private port
+ * (lazily, once per document) and ask it for a decision.
+ */
+export function askIsolatedWorld(
+  target: Window,
+  origin: string,
+  files: readonly FsaFileMetadata[],
+): Promise<FsaDecision> {
+  return getOrRequestPort(target, origin).then((port) => askOverPort(port, files))
+}
+
+let cachedPortPromise: Promise<MessagePort> | null = null
+
+function getOrRequestPort(target: Window, origin: string): Promise<MessagePort> {
+  if (cachedPortPromise !== null) return cachedPortPromise
+  cachedPortPromise = requestPort(target, origin)
+  return cachedPortPromise
+}
+
+/** Test seam: forget the cached port so a fresh handshake happens. */
+export function __resetPortForTesting(): void {
+  cachedPortPromise = null
 }
 
 function generateRequestId(): string {

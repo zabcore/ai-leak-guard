@@ -557,24 +557,45 @@ model as A1: **document protection warns, never blocks**.
   `showOpenFilePicker` early, and the wrapper must be installed
   before that snapshot happens. `world: "MAIN"` needs no new
   permission (Chrome 111+ MV3).
-- The existing isolated-world content script now installs a
-  `message` listener via `installFsaMessageHandler` that turns
-  `hold-request` messages into decisions. Same one-modal-at-a-time
-  policy: another modal already open → reply `cancel`.
+- The existing isolated-world content script installs
+  `installFsaMessageHandler`, which owns the private `MessageChannel`
+  (see below) and turns port-borne `hold-request` messages into
+  decisions. Same one-modal-at-a-time policy: another modal already
+  open → reply `cancel`.
 
-**Cross-world message contract (`src/content/main-world/fsa-messages.ts`):**
+**Private-channel wire contract (`src/content/main-world/fsa-messages.ts`).**
+Hold-request and hold-decision traffic runs over a transferred
+`MessagePort`, not `window.postMessage`. This is the fix for the
+attack "a page script observes a `hold-request`, copies its `id`,
+and posts a matching forged `hold-decision`" — page scripts cannot
+obtain a reference to a `MessagePort` that was transferred via
+someone else's `postMessage`, so once the handshake is done the
+channel is extension-private.
 
+Handshake (window.postMessage — one round trip, at load):
+
+```text
+MAIN     → { source:'alg-fsa-hello' }             (window.postMessage)
+isolated → { source:'alg-fsa-port-handoff' }      (window.postMessage + [port2] in transfer list)
 ```
-MAIN world  → { source:'alg-fsa', kind:'hold-request',  id, files:[{name,size,type}] }
-isolated    ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-anyway'|'cancel' }
+
+Steady state (port only — page scripts cannot observe or post here):
+
+```text
+MAIN     → { source:'alg-fsa', kind:'hold-request',  id, files:[{name,size,type}] }   (port2.postMessage)
+isolated ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-anyway'|'cancel' } (port1.postMessage)
 ```
 
+- The isolated world creates the `MessageChannel` on install, keeps
+  `port1`, and transfers `port2` on the FIRST valid hello. Subsequent
+  hellos are dropped (a `MessagePort` can only be transferred once).
 - `id` correlates request and reply so concurrent pickers on the
-  same page cannot cross wires (random per request; identity forced
-  by the `event.source === window` check plus the id match).
+  same page cannot cross wires.
 - Both directions validate the shape with dedicated predicates
-  (`isFsaHoldRequest`, `isFsaHoldDecision`). Foreign / malformed
-  messages from other page scripts are ignored — a page can't forge
+  (`isFsaHello`, `isFsaPortHandoff`, `isFsaHoldRequest`,
+  `isFsaHoldDecision`). Handshake messages also require
+  `event.source === window` so a cross-frame post cannot request the
+  port. Foreign / malformed messages are ignored — a page can't forge
   a decision to bypass the modal, and can't forge a request to open
   it out of nowhere.
 - **Metadata only** across the world boundary. No `File` / `Blob` /
@@ -583,6 +604,17 @@ isolated    ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-a
   originals we return unchanged on `upload-anyway`. This keeps A1's
   "hold references only, don't read contents" invariant intact
   across the world boundary too.
+
+**Threat model — MAIN-world limits.** MAIN-world content scripts
+share a JavaScript context with the page. A truly hostile page could
+monkeypatch `MessageChannel` / `postMessage` / `addEventListener`
+before our MAIN-world script runs, and there is no cryptographic
+defence against that at this layer. The private-port design raises
+the practical bar significantly (the attack window closes at
+document_start — see A1.1 in `docs/SPIKE_A0_UPLOAD_INTERCEPTION.md`)
+and eliminates the trivial "observe id, forge decision on window"
+bypass. Document protection is a **warn, don't block** control; we
+never claim it is bypass-proof against an adversarial site.
 
 **Flag-OFF invariant.** MAIN world cannot read the isolated-world
 flag directly (separate JavaScript contexts), so the wrapper always
