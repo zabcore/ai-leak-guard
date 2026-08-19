@@ -191,7 +191,7 @@ async function runExtractor(
       }
       case 'xlsx': {
         const mod = await import('./formats/xlsx')
-        return finalize(await mod.extractXlsx(file), meta)
+        return finalize(await mod.extractXlsx(file, { signal }), meta)
       }
       case 'docx': {
         const mod = await import('./formats/docx')

@@ -80,6 +80,15 @@ export function readEntryBoundedText(
   const cap = opts.cap
   const failClosed = opts.failClosedIfUnknownSize !== false
 
+  // Cancellation check FIRST — an already-aborted signal must return
+  // `aborted` regardless of what the declared-size classification
+  // would say, so a timeout doesn't get masked by `over-cap` /
+  // `too-large` for an oversized entry (which then surfaces to the
+  // user as the wrong reason).
+  if (opts.signal?.aborted) {
+    return Promise.resolve({ kind: 'aborted', bytesRead: 0 })
+  }
+
   // Fail-closed pre-check on the declared size. This is a fast reject
   // for the honest-archive case; the streaming check below is what
   // catches a header that lies (declared: 100 KB, actual: 500 MB).
@@ -89,12 +98,6 @@ export function readEntryBoundedText(
   }
   if (declared !== null && declared > cap) {
     return Promise.resolve({ kind: 'over-cap', bytesRead: declared })
-  }
-
-  // Fast path: if the caller has already aborted before we even
-  // create the stream, don't touch jszip.
-  if (opts.signal?.aborted) {
-    return Promise.resolve({ kind: 'aborted', bytesRead: 0 })
   }
 
   return new Promise((resolve) => {

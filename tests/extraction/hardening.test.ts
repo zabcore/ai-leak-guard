@@ -333,19 +333,54 @@ describe('zip-read — AbortSignal propagation (fourth-round CR)', () => {
   // the cap. Passing the signal through lets us pause the stream
   // and settle immediately when the deadline hits.
 
-  it('readEntryBoundedText settles as aborted when signal fires mid-stream', async () => {
+  it('readEntryBoundedText settles as aborted when signal fires mid-stream (bytesRead > 0)', async () => {
+    // Real jszip streams are macrotask-scheduled and interleave badly
+    // when we try to observe "at least one chunk arrived". Use a
+    // fabricated entry whose internalStream is fully synchronous so
+    // we can fire abort DIRECTLY from inside `readEntryBoundedText`'s
+    // own data handler — this hits the mid-stream branch and lets us
+    // assert `bytesRead > 0`.
     const { readEntryBoundedText } = await import('../../src/content/extraction/formats/zip-read')
-    const zip = new JSZip()
-    zip.file('a.txt', 'x'.repeat(4096))
-    const buf = await zip.generateAsync({ type: 'arraybuffer' })
-    const loaded = await JSZip.loadAsync(buf)
-    const entry = loaded.file('a.txt')!
     const ac = new AbortController()
-    // Fire the abort on the next microtask so at least one data
-    // chunk has a chance to arrive first.
-    void Promise.resolve().then(() => ac.abort())
-    const result = await readEntryBoundedText(entry, { cap: 1024 * 1024, signal: ac.signal })
+    let onData: ((chunk: Uint8Array) => void) | null = null
+    let onEnd: (() => void) | null = null
+    const fakeEntry = {
+      _data: { uncompressedSize: 4096 },
+      internalStream: (_type: 'uint8array') => {
+        return {
+          on(ev: string, cb: (arg?: unknown) => void) {
+            if (ev === 'data') onData = cb as (chunk: Uint8Array) => void
+            else if (ev === 'end') onEnd = cb as () => void
+            return this
+          },
+          resume() {
+            // Deliver one 512-byte chunk, then trigger the abort via
+            // the caller's own registered handler. This exercises the
+            // abort path AFTER a chunk has landed → bytesRead > 0.
+            queueMicrotask(() => {
+              if (onData) onData(new Uint8Array(512))
+              ac.abort()
+              // Simulate jszip continuing to try to deliver more —
+              // readEntryBoundedText should have settled and ignore.
+              if (onData) onData(new Uint8Array(512))
+              if (onEnd) onEnd()
+            })
+            return this
+          },
+          pause() {
+            return this
+          },
+        }
+      },
+    }
+    const result = await readEntryBoundedText(
+      fakeEntry as unknown as Parameters<typeof readEntryBoundedText>[0],
+      { cap: 4096, signal: ac.signal },
+    )
     expect(result.kind).toBe('aborted')
+    if (result.kind === 'aborted') {
+      expect(result.bytesRead).toBeGreaterThan(0)
+    }
   })
 
   it('returns aborted immediately when the signal is already aborted', async () => {
