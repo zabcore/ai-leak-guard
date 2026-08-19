@@ -34,6 +34,19 @@
       ],
       "js": ["src/content/index.ts"],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*",
+        "https://copilot.microsoft.com/*"
+      ],
+      "js": ["src/content/main-world/fsa-hook.ts"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "action": {
