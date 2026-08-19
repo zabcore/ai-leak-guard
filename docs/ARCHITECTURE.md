@@ -42,7 +42,13 @@ ai-leak-guard/
 │   │   ├── masker.ts             # Apply masks to text given findings
 │   │   ├── preview-flow.ts       # Pure logic for the preview-before-send modal
 │   │   ├── preview-modal.ts      # Shadow DOM modal (V1.1 PR 4)
-│   │   └── toast.ts              # Shadow DOM confirmation toast (no Undo in V1.1)
+│   │   ├── toast.ts              # Shadow DOM confirmation toast (no Undo in V1.1)
+│   │   ├── document-flag.ts      # V1.2 A1 feature-flag guard (default OFF)
+│   │   ├── document-flow.ts      # V1.2 A1 hold state machine
+│   │   ├── document-modal.ts     # V1.2 A1 placeholder confirm modal
+│   │   ├── file-extraction.ts    # V1.2 A1 File[] extraction from change/drop/paste
+│   │   ├── file-inspector.ts     # V1.2 A1 inspector STUB (no parsing, no findings)
+│   │   └── upload-release.ts     # V1.2 A1 DataTransfer replay + pass-through-once
 │   ├── background/
 │   │   └── service-worker.ts     # Service worker entry (bundled rules only)
 │   ├── popup/
@@ -415,6 +421,109 @@ No broad `<all_urls>` permission. Tight host list reduces Chrome Web Store revie
 - Detection on a large paste (50KB): under 50ms (acceptable for paste interactions)
 - Extension bundle size: under 200KB total
 - Memory footprint: under 5MB resident
+
+## Document-protection foundation (V1.2 A1 — flagged OFF)
+
+V1.2 introduces file-upload interception in three PRs (A1 plumbing, A2
+inspector, A3 UX). A1 lands the plumbing only, behind a hard-coded
+feature flag that defaults **OFF**. Flag OFF = byte-for-byte V1.1.1
+behavior; no listeners register that alter native file-input, drop, or
+paste-with-files handling.
+
+**Product model (locked at A0 close):** document protection **warns,
+never blocks**. Two outcomes only —
+
+- `Upload anyway` (primary) → release the ORIGINAL file to the host.
+  There is NO "clean copy" of a document in V1.2; the file goes up
+  as the user selected it.
+- `Cancel` → discard the file client-side; nothing uploads. For a
+  change event the origin `<input type="file">` is reset via
+  `input.value = ''` so the site sees no selection at all. For
+  drop / paste there is nothing to reset — our capture-phase
+  `preventDefault` + `stopImmediatePropagation` already blocked the
+  host handler from firing.
+
+**Feature flag:** `src/content/document-flag.ts` exposes
+`isDocumentProtectionEnabled()`. Reads from
+`globalThis.__AI_LEAK_GUARD_DOC_FLAG__` if set (tests + future popup
+plumbing use this), else falls back to a compile-time `false`. The
+flag is re-read on every call so a mid-session flip is honored by the
+next event. A dedicated `tests/document-flag.test.ts` guard asserts
+default OFF.
+
+**Sites in scope:** ChatGPT, Claude, Gemini, Perplexity. Copilot is
+**deferred** for this release; the paste-flow adapter still handles
+Copilot for text paste, but no file-interception listeners fire there.
+The scope allowlist lives in `src/content/index.ts` next to the flag
+check.
+
+**Interception seams (all window-capture at `document_start`):**
+
+1. **change** on `<input type="file">` — extract via
+   `extractFilesFromChange` (`src/content/file-extraction.ts`),
+   which is the only path with a discoverable origin input for the
+   DataTransfer replay.
+2. **drop** on the composer — extract via `extractFilesFromDrop`.
+   No origin input; release path falls back to the pass-through-once
+   fallback (see below).
+3. **paste** with `clipboardData.files` — extend the existing V1.1
+   paste handler to check for files BEFORE the text/plain read.
+   Pasted images pass through untouched in V1.1.1; this branch
+   catches them.
+
+Same event ordering rationale as V1.1 paste — see "Paste interception
+ordering" above. When the flag is OFF, `documentFlowActive()` returns
+false and every one of these branches is a strict no-op.
+
+**Hold state machine (`src/content/document-flow.ts`):**
+
+```
+extract → inspect (stub) → showDocumentModal
+    ├─ 'upload-anyway' → releaseFiles(state)
+    └─ 'cancel'        → clearInput(origin) if change; else drop
+```
+
+The inspector at A1 is a **stub** (`src/content/file-inspector.ts`)
+that returns `findings: []` for any input and never reads file
+bytes — the state machine still calls it so A2 can drop in the real
+inspector without touching the orchestrator.
+
+**Release strategies (`src/content/upload-release.ts`):**
+
+1. **DataTransfer replay on the origin input** (preferred). For a
+   change event, build a fresh `DataTransfer`, assign
+   `input.files = dt.files`, dispatch a synthetic bubbling `change`.
+   Arms the pass-through-once guard BEFORE the assignment so the
+   replayed change is not re-intercepted (some frameworks
+   synchronously fire on `input.files = ...`).
+   - **Confirmed by A0 matrix as feasible on:** ChatGPT, Claude,
+     Perplexity — all use a light-DOM `<input type="file">`.
+   - **Likely to fail on:** Gemini — if the file input lives inside
+     the `<rich-textarea>` closed shadow root, `input.files`
+     assignment is unreachable from outside the root; the release
+     falls through to strategy 2.
+2. **Pass-through-once fallback.** When strategy 1 fails, or the
+   source event was a drop / paste (no origin input), the release
+   arms a one-shot guard keyed to the event kind and reports
+   `needs-user-reattach`. The next matching event fires natively;
+   the arming clears on that event OR after a 30-second TTL, so a
+   stuck flag cannot leak a future legitimate paste. A1 keeps the
+   post-release UI minimal (a follow-up nudge is A3 material).
+
+**Files-defensively invariant.** No module in the A1 plumbing reads
+file bytes. `file-inspector.ts` holds `{ name, size, type, file }`
+references only. The release path passes the `File` object through
+to a `DataTransfer` untouched. When the A2 inspector arrives it will
+add reads through a controlled seam; the plumbing shape stays fixed.
+
+**What A1 explicitly does NOT ship:**
+
+- No parser (PDF.js, DOCX, plaintext, image OCR).
+- No detector-engine calls for file content.
+- No network requests originated by the extension.
+- No final UX — the placeholder modal is intentionally minimal.
+- No popup control for the flag — the flag is compile-time only in
+  A1. The popup toggle lands with A3.
 
 ## What this architecture explicitly does NOT include in V1
 
