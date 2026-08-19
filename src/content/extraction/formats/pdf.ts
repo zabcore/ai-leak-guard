@@ -12,10 +12,13 @@
 //   • `disableAutoFetch: true` + `disableStream: true` — pdf.js
 //     doesn't reach out for anything (asserted by the no-network
 //     test).
+//   • `isEvalSupported: false` — defensive posture required by issue
+//     #29. pdf.js 6.2's release build doesn't use `eval` anymore, so
+//     the flag is currently a no-op in this version; we still set it
+//     so that older / forked / future pdf.js builds cannot fall back
+//     to a font-program eval path on this codebase.
 //   • The worker script is bundled locally via `?worker` — no CDN
-//     `workerSrc`. Reviewed pdf.js 6.2 no longer honours the
-//     `isEvalSupported` option and its build contains no dynamic
-//     evaluation, so we don't set that flag.
+//     `workerSrc`.
 //
 // The worker is lazily instantiated on first use (matches the parent
 // module's dynamic import strategy). We cache the IN-FLIGHT
@@ -89,38 +92,41 @@ export async function extractPdf(file: File, opts: ExtractPdfOptions = {}): Prom
     .getDocument
   const loadingTask = getDocument({
     data,
+    isEvalSupported: false,
     disableFontFace: true,
     useSystemFonts: false,
     disableAutoFetch: true,
     disableStream: true,
   })
-  // Wire the caller's signal to pdf.js's own cancel primitive. This
-  // is the difference between a "we returned; worker keeps parsing"
-  // orphan and a truly cancelled load.
-  let onAbort: (() => void) | null = null
-  if (opts.signal) {
-    if (opts.signal.aborted) {
-      await safeDestroy(loadingTask)
-      throw new Error('aborted')
-    }
-    onAbort = (): void => {
-      void safeDestroy(loadingTask)
-    }
-    opts.signal.addEventListener('abort', onAbort, { once: true })
-  }
 
-  let doc: PdfDocument
+  // Single outer try/finally so BOTH cleanup steps — abort-listener
+  // removal AND `loadingTask.destroy()` — always run:
+  //   • if `loadingTask.promise` rejects (bad PDF / cancelled load),
+  //     the finally still destroys the task (previous split-try
+  //     structure leaked it on non-password load failures);
+  //   • if the abort fires mid-page (getPage / getTextContent), the
+  //     listener is still wired and calls safeDestroy immediately
+  //     (previous structure removed the listener after load).
+  let onAbort: (() => void) | null = null
   try {
-    doc = await loadingTask.promise
-  } catch (err) {
-    if (isPasswordException(err)) {
-      throw new Error(EXTRACTOR_ERROR_ENCRYPTED)
+    if (opts.signal) {
+      if (opts.signal.aborted) throw new Error('aborted')
+      onAbort = (): void => {
+        void safeDestroy(loadingTask)
+      }
+      opts.signal.addEventListener('abort', onAbort, { once: true })
     }
-    throw err
-  } finally {
-    if (onAbort && opts.signal) opts.signal.removeEventListener('abort', onAbort)
-  }
-  try {
+
+    let doc: PdfDocument
+    try {
+      doc = await loadingTask.promise
+    } catch (err) {
+      if (isPasswordException(err)) {
+        throw new Error(EXTRACTOR_ERROR_ENCRYPTED)
+      }
+      throw err
+    }
+
     const parts: string[] = []
     const pageCount = doc.numPages
     for (let i = 1; i <= pageCount; i++) {
@@ -138,12 +144,13 @@ export async function extractPdf(file: File, opts: ExtractPdfOptions = {}): Prom
     if (text.trim().length === 0) {
       // Cleanly-parsed but no text layer — the classic scanned PDF
       // case. Report as `no-text-layer`, not `empty`, so A4 can
-      // surface "we couldn't read this file" rather than "we read
-      // it and it was empty".
+      // surface "we couldn't read this file" rather than "we read it
+      // and it was empty".
       throw new Error(EXTRACTOR_ERROR_NO_TEXT_LAYER)
     }
     return { kind: 'text', text }
   } finally {
+    if (onAbort && opts.signal) opts.signal.removeEventListener('abort', onAbort)
     await safeDestroy(loadingTask)
   }
 }

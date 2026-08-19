@@ -9,19 +9,21 @@
 // Same rationale as `docx.ts`: primitive XML scan on top of jszip,
 // no macros, no HTML conversion, small dep footprint.
 //
-// ZIP-bomb defence: each slide's uncompressed size is checked
-// individually, and a running total is enforced across all slides.
-// A crafted deck cannot expand to gigabytes.
+// ZIP-bomb defence: each slide is decompressed through the streaming
+// `readEntryBoundedText` reader (per-entry cap enforced mid-stream),
+// plus a running cumulative cap across ALL slides. Falsified /
+// missing size headers are treated as `too-large` (fail-closed).
 
 import JSZip from 'jszip'
 import type { FormatOutput } from '../extract'
 import { decodeXmlEntities } from './xml-text'
+import { readEntryBoundedText } from './zip-read'
 
 // Same per-entry cap as docx (see `docx.ts` for rationale).
 export const MAX_UNCOMPRESSED_ENTRY_BYTES = 40 * 1024 * 1024
 // Cumulative cap across ALL slides in a single deck. A large deck
-// with hundreds of slides is expected; a deck that lies about slide
-// sizes to sneak past the per-entry cap is not.
+// with hundreds of slides is expected; a deck that stitches together
+// many entries to sneak past the per-entry cap is not.
 export const MAX_TOTAL_UNCOMPRESSED_BYTES = 80 * 1024 * 1024
 
 export async function extractPptx(file: File): Promise<FormatOutput> {
@@ -34,22 +36,30 @@ export async function extractPptx(file: File): Promise<FormatOutput> {
     return { kind: 'reason' }
   }
   const parts: string[] = []
-  let totalUncompressed = 0
+  let totalBytes = 0
   for (const name of slideNames) {
     const entry = zip.file(name)
     if (!entry) continue
-    const declared = uncompressedSizeOf(entry)
-    if (declared !== null) {
-      if (declared > MAX_UNCOMPRESSED_ENTRY_BYTES) {
-        return { kind: 'reason', reason: 'too-large' }
-      }
-      totalUncompressed += declared
-      if (totalUncompressed > MAX_TOTAL_UNCOMPRESSED_BYTES) {
-        return { kind: 'reason', reason: 'too-large' }
-      }
+    // Shrink the cap for this entry so a slide can't push the
+    // cumulative total past the deck cap — even if its own declared
+    // size is under the per-entry cap.
+    const remaining = MAX_TOTAL_UNCOMPRESSED_BYTES - totalBytes
+    if (remaining <= 0) {
+      return { kind: 'reason', reason: 'too-large' }
     }
-    const xml = await entry.async('string')
-    parts.push(pptxSlideXmlToText(xml))
+    const perEntryCap = Math.min(MAX_UNCOMPRESSED_ENTRY_BYTES, remaining)
+    const read = await readEntryBoundedText(entry, {
+      cap: perEntryCap,
+      failClosedIfUnknownSize: true,
+    })
+    if (read.kind === 'over-cap') {
+      return { kind: 'reason', reason: 'too-large' }
+    }
+    if (read.kind === 'stream-error') {
+      return { kind: 'reason' }
+    }
+    totalBytes += read.bytesRead
+    parts.push(pptxSlideXmlToText(read.text))
   }
   return { kind: 'text', text: parts.join('\n\n') }
 }
@@ -58,14 +68,6 @@ function slideNumericOrder(a: string, b: string): number {
   const na = Number(a.match(/slide(\d+)\.xml$/)?.[1] ?? 0)
   const nb = Number(b.match(/slide(\d+)\.xml$/)?.[1] ?? 0)
   return na - nb
-}
-
-function uncompressedSizeOf(entry: JSZip.JSZipObject): number | null {
-  const rec = (entry as unknown as { _data?: { uncompressedSize?: number } })._data
-  if (!rec) return null
-  const n = rec.uncompressedSize
-  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return null
-  return n
 }
 
 /**

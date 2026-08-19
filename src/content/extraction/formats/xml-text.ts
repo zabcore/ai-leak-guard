@@ -18,12 +18,21 @@ export function decodeXmlEntities(s: string): string {
 }
 
 function safeCodePoint(cp: number): string {
-  // Unicode Standard: code points range from U+0000 to U+10FFFF.
-  // Surrogate halves (U+D800..U+DFFF) are technically valid code
-  // points but not scalar values; passing them into
-  // `String.fromCodePoint` produces a lone surrogate string. We
-  // filter them out so callers never see invalid UTF-16.
-  if (!Number.isFinite(cp) || cp < 0 || cp > 0x10ffff) return ''
-  if (cp >= 0xd800 && cp <= 0xdfff) return ''
+  // XML 1.0 §2.2 defines the legal character set:
+  //   #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+  // Anything outside that range (control chars like U+0000, surrogate
+  // halves, U+FFFE / U+FFFF) is not a legal XML character; a numeric
+  // reference that points there is almost certainly a hostile probe.
+  // Drop the character rather than embedding an invalid codepoint in
+  // the extracted text (which would later confuse the detector or the
+  // event log).
+  const isXmlCharacter =
+    cp === 0x9 ||
+    cp === 0xa ||
+    cp === 0xd ||
+    (cp >= 0x20 && cp <= 0xd7ff) ||
+    (cp >= 0xe000 && cp <= 0xfffd) ||
+    (cp >= 0x10000 && cp <= 0x10ffff)
+  if (!Number.isFinite(cp) || !isXmlCharacter) return ''
   return String.fromCodePoint(cp)
 }

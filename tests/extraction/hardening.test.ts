@@ -168,6 +168,93 @@ describe('pdf.js loader — concurrent calls share one Worker (no leak)', () => 
   })
 })
 
+describe('zip-read — streaming cap enforcement (second-round CR)', () => {
+  // The declared-size PRE-check catches an honest archive that
+  // openly says "I inflate to 500 MB". The STREAMING check catches
+  // the harder case: an archive whose header lies (declared: 100 B,
+  // actual: MBs). readEntryBoundedText hooks the jszip stream and
+  // rejects the moment a chunk pushes the running total past the
+  // cap, so memory stays bounded regardless of what the header
+  // claims.
+
+  it('rejects an entry whose real decompressed size exceeds the cap even with a lying header', async () => {
+    const { readEntryBoundedText } = await import('../../src/content/extraction/formats/zip-read')
+    const zip = new JSZip()
+    // A ~2 KB payload — bigger than the tiny cap we'll set.
+    zip.file('a.txt', 'x'.repeat(2048))
+    const buf = await zip.generateAsync({ type: 'arraybuffer' })
+    const loaded = await JSZip.loadAsync(buf)
+    const entry = loaded.file('a.txt')!
+    // Lie about the size: claim 4 bytes so the pre-check passes.
+    const rec = (entry as unknown as { _data: { uncompressedSize?: number } })._data
+    rec.uncompressedSize = 4
+    const result = await readEntryBoundedText(entry, { cap: 256 })
+    expect(result.kind).toBe('over-cap')
+    if (result.kind === 'over-cap') {
+      expect(result.bytesRead).toBeGreaterThan(256)
+    }
+  })
+
+  it('fails closed when the declared uncompressed size is missing', async () => {
+    const { readEntryBoundedText } = await import('../../src/content/extraction/formats/zip-read')
+    const zip = new JSZip()
+    zip.file('a.txt', 'hello')
+    const buf = await zip.generateAsync({ type: 'arraybuffer' })
+    const loaded = await JSZip.loadAsync(buf)
+    const entry = loaded.file('a.txt')!
+    const rec = (entry as unknown as { _data: { uncompressedSize?: number } })._data
+    // Remove the declared size — a header that lies by omission.
+    delete rec.uncompressedSize
+    const result = await readEntryBoundedText(entry, { cap: 1024 })
+    expect(result.kind).toBe('over-cap')
+  })
+
+  it('returns text for a well-formed entry within the cap', async () => {
+    const { readEntryBoundedText } = await import('../../src/content/extraction/formats/zip-read')
+    const zip = new JSZip()
+    zip.file('a.txt', 'hello world')
+    const buf = await zip.generateAsync({ type: 'arraybuffer' })
+    const loaded = await JSZip.loadAsync(buf)
+    const entry = loaded.file('a.txt')!
+    const result = await readEntryBoundedText(entry, { cap: 1024 })
+    expect(result.kind).toBe('text')
+    if (result.kind === 'text') {
+      expect(result.text).toBe('hello world')
+      expect(result.bytesRead).toBe('hello world'.length)
+    }
+  })
+})
+
+describe('pdf extractor — cleanup on load failure (second-round CR)', () => {
+  // Previous split-try structure skipped safeDestroy(loadingTask)
+  // when the initial loadingTask.promise rejected with anything
+  // other than PasswordException, leaking the worker's slot. The
+  // single outer try/finally must destroy on every path.
+
+  it('calls loadingTask.destroy() when the initial load rejects with a non-password error', async () => {
+    let destroyCalls = 0
+    vi.doMock('pdfjs-dist', () => ({
+      GlobalWorkerOptions: { workerPort: {} },
+      getDocument: () => ({
+        promise: Promise.reject(new Error('bad pdf')),
+        destroy: async () => {
+          destroyCalls += 1
+        },
+      }),
+    }))
+    const { extractPdf, __resetPdfjsForTesting } =
+      await import('../../src/content/extraction/formats/pdf')
+    __resetPdfjsForTesting()
+    const pdfHeader = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34])
+    const file = new File([pdfHeader], 'a.pdf', { type: 'application/pdf' })
+    // extractPdf throws internally; extract.ts catches. We call it
+    // directly to isolate the cleanup guarantee.
+    await expect(extractPdf(file)).rejects.toThrow('bad pdf')
+    expect(destroyCalls).toBe(1)
+    vi.doUnmock('pdfjs-dist')
+  })
+})
+
 describe('inspectFiles — bounded concurrency', () => {
   // Verify that a large drop does not run every extraction
   // simultaneously. We do this by counting in-flight extractText
