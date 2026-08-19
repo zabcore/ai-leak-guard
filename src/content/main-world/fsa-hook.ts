@@ -105,43 +105,77 @@ export function createWrappedPicker(
   return wrapped
 }
 
+// Handshake timeout. Content scripts at `document_start` (both
+// isolated and MAIN world) run before any page script, so a healthy
+// install completes in the same microtask. 2000 ms is generous for
+// slow devices while still short enough that a broken install fails
+// fast and the site sees a bounded latency instead of a hang.
+export const FSA_HANDSHAKE_TIMEOUT_MS = 2000
+
 /**
- * Request the extension-private `MessagePort` from the isolated world
- * exactly once per document. The handshake is:
+ * Request a `MessagePort` from the isolated world via the
+ * hello / port-handoff handshake. The port then carries every
+ * hold-request / hold-decision.
+ *
+ * Handshake:
  *
  *   MAIN   → { source: 'alg-fsa-hello' }        (window.postMessage)
  *   MAIN   ← { source: 'alg-fsa-port-handoff' } (window.postMessage + [port] transfer)
  *
- * The port then carries every hold-request / hold-decision. Because
- * `MessagePort` is transferred (not cloned), page scripts observing
- * the port-handoff on window still cannot obtain a usable reference —
- * only the receiving JavaScript context (our MAIN-world script) ends
- * up with the actual port.
+ * Realm caveat: the MAIN-world script shares a JavaScript realm with
+ * the page, and `window.postMessage(..., [port2])` exposes the
+ * transferred port through `MessageEvent.ports` to any listener on
+ * that window — including page listeners registered before ours. A
+ * hostile page can therefore attempt a first-hello-hijack to claim
+ * the one-shot port before us, in which case this promise REJECTS
+ * on the handshake timeout. `askIsolatedWorld` then catches the
+ * rejection and fails open to `'upload-anyway'`, matching the
+ * "document protection warns, never blocks" invariant (see
+ * `docs/ARCHITECTURE.md` — "FSA picker interception").
  *
- * Exported for tests. Callers should treat the returned promise as
- * "resolves the first time isolated hands us a port; may hang forever
- * if the isolated content script never loads" — see `askIsolatedWorld`
- * for the timeout / cancel semantics wrapped around it.
+ * Exported for tests. Rejects with `Error('alg-fsa handshake timed out')`
+ * if no valid port-handoff arrives within `FSA_HANDSHAKE_TIMEOUT_MS`.
  */
 export function requestPort(target: Window, origin: string): Promise<MessagePort> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const cleanup = (): void => {
+      target.removeEventListener('message', listener)
+      clearTimeout(timer)
+    }
     const listener = (event: MessageEvent): void => {
       if (event.source !== target) return
       if (!isFsaPortHandoff(event.data)) return
       const port = event.ports[0]
       if (!port) return
-      target.removeEventListener('message', listener)
+      if (settled) return
+      settled = true
+      cleanup()
       // `.start()` is required when the port will be read via
       // `addEventListener('message')` rather than the auto-starting
       // `onmessage` setter.
       port.start()
       resolve(port)
     }
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(new Error('alg-fsa handshake timed out'))
+    }, FSA_HANDSHAKE_TIMEOUT_MS)
     target.addEventListener('message', listener)
     const hello: FsaHello = { source: FSA_HELLO_SOURCE }
     target.postMessage(hello, origin)
   })
 }
+
+// Decision timeout. Long enough that any realistic user interaction
+// with the modal completes (a power user reading a multi-file summary
+// still finishes well under a minute); short enough to unstick the
+// site if the isolated world gets torn down mid-flow (extension
+// unload, mid-picker update). On timeout we fail open — matches the
+// "warn, don't block" invariant.
+export const FSA_DECISION_TIMEOUT_MS = 120_000
 
 /**
  * Send one hold-request over the private `port` and resolve with the
@@ -153,6 +187,10 @@ export function requestPort(target: Window, origin: string): Promise<MessagePort
  * `isFsaHoldDecision` and requires the id to match this specific
  * request, so concurrent pickers cannot cross wires.
  *
+ * If no matching decision arrives within `FSA_DECISION_TIMEOUT_MS`,
+ * fails open to `'upload-anyway'` (safety net for isolated-world
+ * outages — see the constant's rationale).
+ *
  * Exported for tests so an adversarial regression test can assert
  * that a `hold-decision` posted via `window.postMessage` is IGNORED
  * even after a valid request has been observed.
@@ -163,12 +201,25 @@ export function askOverPort(
 ): Promise<FsaDecision> {
   return new Promise((resolve) => {
     const id = generateRequestId()
+    let settled = false
+    const cleanup = (): void => {
+      port.removeEventListener('message', listener)
+      clearTimeout(timer)
+    }
     const listener = (event: MessageEvent): void => {
       if (!isFsaHoldDecision(event.data)) return
       if (event.data.id !== id) return
-      port.removeEventListener('message', listener)
+      if (settled) return
+      settled = true
+      cleanup()
       resolve(event.data.decision)
     }
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve('upload-anyway')
+    }, FSA_DECISION_TIMEOUT_MS)
     port.addEventListener('message', listener)
     const request: FsaHoldRequest = {
       source: FSA_MESSAGE_SOURCE,
@@ -183,21 +234,44 @@ export function askOverPort(
 /**
  * Production `askDecision` implementation: obtain the private port
  * (lazily, once per document) and ask it for a decision.
+ *
+ * Fail-open on handshake failure. If the handshake never completes
+ * (isolated content script not injected, first-hello-hijack by a
+ * page script, extension disabled mid-load), `requestPort` rejects
+ * with a timeout and we return `'upload-anyway'` — the wrapper then
+ * returns the original handles and the site sees a byte-for-byte
+ * native picker call. This matches the "document protection warns,
+ * never blocks" invariant: a broken extension MUST NOT hang the
+ * user's picker or throw a spurious `AbortError`.
+ *
+ * A failed handshake is NOT cached — a subsequent picker call gets
+ * a fresh attempt in case the isolated world came up late.
  */
 export function askIsolatedWorld(
   target: Window,
   origin: string,
   files: readonly FsaFileMetadata[],
 ): Promise<FsaDecision> {
-  return getOrRequestPort(target, origin).then((port) => askOverPort(port, files))
+  return getOrRequestPort(target, origin).then(
+    (port) => askOverPort(port, files),
+    () => 'upload-anyway' as FsaDecision,
+  )
 }
 
 let cachedPortPromise: Promise<MessagePort> | null = null
 
 function getOrRequestPort(target: Window, origin: string): Promise<MessagePort> {
   if (cachedPortPromise !== null) return cachedPortPromise
-  cachedPortPromise = requestPort(target, origin)
-  return cachedPortPromise
+  const pending = requestPort(target, origin)
+  cachedPortPromise = pending
+  // Do NOT cache a failed handshake. If this attempt times out, the
+  // next picker call gets a fresh handshake — the isolated world may
+  // have come up in the meantime, or a first-hello-hijack race may
+  // have unblocked.
+  pending.catch(() => {
+    if (cachedPortPromise === pending) cachedPortPromise = null
+  })
+  return pending
 }
 
 /** Test seam: forget the cached port so a fresh handshake happens. */

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  askIsolatedWorld,
   askOverPort,
   createWrappedPicker,
+  FSA_HANDSHAKE_TIMEOUT_MS,
   installFsaHook,
   requestPort,
   __resetPortForTesting,
@@ -208,14 +210,14 @@ describe('requestPort — hello / port-handoff handshake', () => {
   it('ignores port-handoff events from a different Window source', async () => {
     const pending = requestPort(window, 'https://example')
     await flush()
-    const channel = new MessageChannel()
+    const foreignChannel = new MessageChannel()
     const foreign = {} as unknown as Window
     window.dispatchEvent(
       new MessageEvent('message', {
         data: { source: FSA_PORT_HANDOFF_SOURCE },
         source: foreign,
         origin: 'https://example',
-        ports: [channel.port2],
+        ports: [foreignChannel.port2],
       }),
     )
     // Give the listener a chance to reject.
@@ -226,8 +228,113 @@ describe('requestPort — hello / port-handoff handshake', () => {
     })
     await flush()
     expect(resolved).toBe(false)
-    channel.port1.close()
-    channel.port2.close()
+    // Settle the pending promise with a valid same-window handoff so
+    // the listener detaches and does not leak into subsequent tests.
+    const realChannel = new MessageChannel()
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { source: FSA_PORT_HANDOFF_SOURCE },
+        source: window,
+        origin: 'https://example',
+        ports: [realChannel.port2],
+      }),
+    )
+    const settledPort = await pending
+    expect(settledPort).toBe(realChannel.port2)
+    foreignChannel.port1.close()
+    foreignChannel.port2.close()
+    realChannel.port1.close()
+    realChannel.port2.close()
+  })
+
+  it('rejects with a timeout error when no port-handoff arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = requestPort(window, 'https://example')
+      let err: unknown = null
+      pending.catch((e) => {
+        err = e
+      })
+      // Nothing dispatched → advance past the handshake timeout.
+      vi.advanceTimersByTime(FSA_HANDSHAKE_TIMEOUT_MS + 1)
+      // Let the rejection microtask flush.
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toContain('handshake timed out')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('askIsolatedWorld — fail-open on handshake failure', () => {
+  it('resolves to upload-anyway when the isolated world never answers', async () => {
+    vi.useFakeTimers()
+    try {
+      const promise = askIsolatedWorld(window, 'https://example', [
+        { name: 'a.pdf', size: 1, type: 'application/pdf' },
+      ])
+      vi.advanceTimersByTime(FSA_HANDSHAKE_TIMEOUT_MS + 1)
+      // Drain microtasks for the caught rejection.
+      await Promise.resolve()
+      await Promise.resolve()
+      const decision = await promise
+      expect(decision).toBe('upload-anyway')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does NOT cache a failed handshake — subsequent call gets a fresh attempt', async () => {
+    vi.useFakeTimers()
+    try {
+      // First call fails.
+      const first = askIsolatedWorld(window, 'https://example', [])
+      vi.advanceTimersByTime(FSA_HANDSHAKE_TIMEOUT_MS + 1)
+      await Promise.resolve()
+      await Promise.resolve()
+      await first
+
+      // Second call — isolated world "wakes up" this time. The
+      // handshake must happen fresh (not return a stale cached
+      // failed promise). We verify by intercepting the outbound
+      // hello and responding with a real port.
+      vi.useRealTimers()
+      const second = askIsolatedWorld(window, 'https://example', [
+        { name: 'b.pdf', size: 1, type: 'application/pdf' },
+      ])
+      // A microtask later, the hello has been posted; dispatch the
+      // port-handoff.
+      await flush()
+      const channel = new MessageChannel()
+      channel.port1.start()
+      // Respond to the request over the port with an upload-anyway.
+      channel.port1.onmessage = (event: MessageEvent) => {
+        if (isFsaHoldRequest(event.data)) {
+          const req = event.data as { id: string }
+          channel.port1.postMessage({
+            source: 'alg-fsa',
+            kind: 'hold-decision',
+            id: req.id,
+            decision: 'upload-anyway',
+          })
+        }
+      }
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { source: 'alg-fsa-port-handoff' },
+          source: window,
+          origin: 'https://example',
+          ports: [channel.port2],
+        }),
+      )
+      const decision = await second
+      expect(decision).toBe('upload-anyway')
+      channel.port1.close()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

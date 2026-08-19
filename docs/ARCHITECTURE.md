@@ -563,14 +563,16 @@ model as A1: **document protection warns, never blocks**.
   decisions. Same one-modal-at-a-time policy: another modal already
   open → reply `cancel`.
 
-**Private-channel wire contract (`src/content/main-world/fsa-messages.ts`).**
-Hold-request and hold-decision traffic runs over a transferred
-`MessagePort`, not `window.postMessage`. This is the fix for the
-attack "a page script observes a `hold-request`, copies its `id`,
-and posts a matching forged `hold-decision`" — page scripts cannot
-obtain a reference to a `MessagePort` that was transferred via
-someone else's `postMessage`, so once the handshake is done the
-channel is extension-private.
+**Port-scoped wire contract (`src/content/main-world/fsa-messages.ts`).**
+Hold-request and hold-decision traffic runs over a `MessagePort` the
+isolated world creates and transfers to MAIN once at load — not over
+`window.postMessage`. This closes the trivial "a page script
+observes a `hold-request` on window, copies its `id`, and posts a
+matching forged `hold-decision` on window" bypass: neither direction
+is observable on window after the handshake, and a page script cannot
+post a decision on the port because it has no reference to it. The
+port is **not reachable via window messaging** post-handshake — see
+the caveat below for what that does and does not mean.
 
 Handshake (window.postMessage — one round trip, at load):
 
@@ -605,16 +607,40 @@ isolated ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-anyw
   "hold references only, don't read contents" invariant intact
   across the world boundary too.
 
-**Threat model — MAIN-world limits.** MAIN-world content scripts
-share a JavaScript context with the page. A truly hostile page could
-monkeypatch `MessageChannel` / `postMessage` / `addEventListener`
-before our MAIN-world script runs, and there is no cryptographic
-defence against that at this layer. The private-port design raises
-the practical bar significantly (the attack window closes at
-document_start — see A1.1 in `docs/SPIKE_A0_UPLOAD_INTERCEPTION.md`)
-and eliminates the trivial "observe id, forge decision on window"
-bypass. Document protection is a **warn, don't block** control; we
-never claim it is bypass-proof against an adversarial site.
+**Threat model — MAIN-world limits and handshake race.** The MAIN-world
+script shares a JavaScript realm with the page (that is what makes
+patching `window.showOpenFilePicker` visible to ChatGPT in the first
+place). Two consequences follow:
+
+1. **First-hello-hijack**: `window.postMessage(handoff, origin, [port2])`
+   exposes the transferred `port2` through `MessageEvent.ports` to any
+   window `message` listener. A page script that posts its own
+   `alg-fsa-hello` before our MAIN hook does can claim the one-shot
+   `port2` (MessagePort transfer is first-come-first-served). The
+   isolated handler then has no port to hand our hook, and every
+   subsequent picker call would hang were it not for the fail-open
+   below.
+2. **Realm patching**: a hostile page could patch `MessageChannel`,
+   `postMessage`, `addEventListener`, etc. before our MAIN-world
+   script runs. No cryptographic defence exists at this layer — a
+   shared JS realm precludes it.
+
+**Fail-open on handshake failure.** `requestPort` in
+`src/content/main-world/fsa-hook.ts` runs a bounded
+`FSA_HANDSHAKE_TIMEOUT_MS` (2 s) timer. On timeout — hijack, isolated
+never loaded, or the extension disabled mid-load — `askIsolatedWorld`
+returns `'upload-anyway'` and the wrapper releases the original
+handles. A subsequent picker call gets a fresh handshake attempt.
+`askOverPort` runs a longer `FSA_DECISION_TIMEOUT_MS` (120 s) as a
+safety net for isolated-world outages that happen after handshake,
+also fail-open. This is what keeps document protection at **warn,
+never block** even in adversarial conditions: a broken or hijacked
+extension MUST NOT hang the user's picker or throw a spurious
+`AbortError`.
+
+The private-port design still eliminates the trivial forge-on-window
+bypass and prevents in-flight decision snooping. It does not claim
+bypass-proof status against a hostile site.
 
 **Flag-OFF invariant.** MAIN world cannot read the isolated-world
 flag directly (separate JavaScript contexts), so the wrapper always

@@ -38,13 +38,31 @@ export interface FsaHoldDecision {
 export type FsaMessage = FsaHoldRequest | FsaHoldDecision
 
 // ─── Handshake (window.postMessage only) ────────────────────────────────
-// The MAIN-world wrapper asks the isolated world for a private
-// `MessagePort` at load. This is the ONLY exchange that flows over
-// the shared `window.postMessage` bus; every subsequent hold-request /
-// hold-decision travels on the returned port, which page scripts
-// cannot access (see `docs/ARCHITECTURE.md` — "FSA picker
-// interception"). The handshake is deliberately tiny: hello (no
-// payload) / port-handoff (port is on the transfer list).
+// The MAIN-world wrapper asks the isolated world for a `MessagePort`
+// at load. This is the ONLY exchange that flows over the shared
+// `window.postMessage` bus; every subsequent hold-request /
+// hold-decision travels on the returned port.
+//
+// Guarantee (post-handshake): the port cannot be reached via window
+// messaging — hold-request and hold-decision traffic is not
+// observable to page listeners, and page scripts cannot forge a
+// decision on the port. This closes the trivial "observe id on
+// window, post forged decision on window" bypass.
+//
+// Realm caveat (see `docs/ARCHITECTURE.md` — "FSA picker
+// interception"): our MAIN-world script shares a JS realm with the
+// page, and the `alg-fsa-port-handoff` message that transfers `port2`
+// runs through `window.postMessage`, which exposes the port to any
+// `message` listener via `MessageEvent.ports`. A page script racing
+// us at document_start can therefore attempt a first-hello-hijack
+// (post its own hello, receive `port2` first). We can't
+// cryptographically prevent this in a shared realm; the hook's
+// bounded handshake timeout + fail-open path in
+// `src/content/main-world/fsa-hook.ts` keeps document protection at
+// "warn, never block" even when the hijack succeeds.
+//
+// The handshake is deliberately tiny: hello (no payload) /
+// port-handoff (port is on the transfer list).
 
 export const FSA_HELLO_SOURCE = 'alg-fsa-hello'
 export const FSA_PORT_HANDOFF_SOURCE = 'alg-fsa-port-handoff'

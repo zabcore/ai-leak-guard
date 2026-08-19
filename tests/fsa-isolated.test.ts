@@ -276,4 +276,59 @@ describe('installFsaMessageHandler — adversarial regression (CodeRabbit CRITIC
     expect(postSpy.mock.calls.filter((c) => isFsaHoldDecision(c[0]))).toHaveLength(0)
     port.close()
   })
+
+  // First-hello-hijack: a hostile page script races the MAIN hook by
+  // posting `alg-fsa-hello` before our hook does. `MessagePort`
+  // transfer is one-shot, so whichever `message` listener reads
+  // `event.ports[0]` on the port-handoff first claims the port,
+  // starving the real MAIN hook. This is the fundamental
+  // realm-sharing limitation documented in `docs/ARCHITECTURE.md` —
+  // this test locks in the current behavior so any future
+  // authenticated-handshake work is exercised by a regression check.
+  //
+  // jsdom's `window.postMessage` doesn't reliably transfer
+  // `MessagePort` objects across same-window listeners the way a
+  // real browser does, so we assert on the isolated handler's OWN
+  // postMessage calls (captured via spy) rather than on port
+  // delivery: the handler posts a handoff with a port on the FIRST
+  // valid hello and does NOT post a second handoff on a later hello.
+  it('current-behavior: only one hello is answered with a port; a second hello is ignored', async () => {
+    uninstall = installFsaMessageHandler(window, makeDeps())
+    const handoffCalls: Array<{ transferHadPort: boolean }> = []
+    vi.spyOn(window, 'postMessage').mockImplementation((...args: unknown[]) => {
+      const [data, , transfer] = args as [unknown, string, Transferable[] | undefined]
+      if (isFsaPortHandoff(data)) {
+        handoffCalls.push({
+          transferHadPort: Array.isArray(transfer) && transfer[0] instanceof MessagePort,
+        })
+      }
+    })
+
+    // First hello (from whoever wins the race — hostile or hook).
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { source: FSA_HELLO_SOURCE },
+        source: window,
+        origin: 'https://example',
+      }),
+    )
+    await flush()
+    expect(handoffCalls).toHaveLength(1)
+    expect(handoffCalls[0].transferHadPort).toBe(true)
+
+    // Second hello (the loser trying to reach the port).
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { source: FSA_HELLO_SOURCE },
+        source: window,
+        origin: 'https://example',
+      }),
+    )
+    await flush()
+    // Still only one handoff. The one-shot port has been transferred
+    // and the loser gets nothing — MAIN's bounded handshake timeout
+    // (see `fsa-hook.ts` FSA_HANDSHAKE_TIMEOUT_MS) fails open to
+    // `upload-anyway`, matching the warn-don't-block invariant.
+    expect(handoffCalls).toHaveLength(1)
+  })
 })
