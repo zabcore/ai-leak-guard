@@ -146,3 +146,65 @@ if (typeof HTMLInputElement !== 'undefined') {
     },
   })
 }
+
+// ─── V1.2 M6 XLSX Worker seam ──────────────────────────────────────────────
+//
+// jsdom has no Web Worker implementation. Production `extractXlsx`
+// spawns a Vite `?worker` bundle to run SheetJS; that path is not
+// loadable here. Install a synchronous fake WorkerFactory that
+// replays the worker's postMessage contract in-line on the main
+// thread, so every existing test that walks through `extractText`
+// (or `extractXlsx` directly) still exercises the SheetJS parse.
+//
+// Tests that specifically want to exercise the abort / termination
+// path pass their own `workerFactory` via ExtractXlsxOptions — that
+// per-call override wins over this global default.
+
+import * as XLSX from 'xlsx'
+import {
+  __setXlsxWorkerFactoryForTesting,
+  type XlsxWorkerLike,
+} from '../src/content/extraction/formats/xlsx'
+
+function inlineXlsxWorker(): XlsxWorkerLike {
+  const w: XlsxWorkerLike = {
+    onmessage: null,
+    onerror: null,
+    postMessage(message: unknown) {
+      // Drive the reply in a microtask so timing matches a real
+      // Worker (message events are asynchronous), which prevents
+      // tests from accidentally relying on synchronous resolution.
+      queueMicrotask(() => {
+        if (w.onmessage === null) return
+        const { buf } = (message as { buf: ArrayBuffer }) ?? { buf: new ArrayBuffer(0) }
+        try {
+          const wb = XLSX.read(buf, { type: 'array' })
+          if (!wb.SheetNames || wb.SheetNames.length === 0) {
+            w.onmessage?.(new MessageEvent('message', { data: { kind: 'reason' } }))
+            return
+          }
+          const parts: string[] = []
+          for (const name of wb.SheetNames) {
+            const sheet = wb.Sheets[name]
+            if (!sheet) continue
+            parts.push(XLSX.utils.sheet_to_csv(sheet))
+          }
+          w.onmessage?.(
+            new MessageEvent('message', { data: { kind: 'text', text: parts.join('\n\n') } }),
+          )
+        } catch {
+          w.onmessage?.(new MessageEvent('message', { data: { kind: 'reason' } }))
+        }
+      })
+    },
+    terminate() {
+      // Fake terminate — drops the reply-fire ability by clearing
+      // onmessage so a queued reply after termination is inert.
+      w.onmessage = null
+      w.onerror = null
+    },
+  }
+  return w
+}
+
+__setXlsxWorkerFactoryForTesting(inlineXlsxWorker)
