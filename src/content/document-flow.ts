@@ -12,13 +12,23 @@
 // with fabricated events and a stubbed modal.
 
 import type { ExtractedFiles } from './file-extraction'
-import { inspectFiles } from './file-inspector'
+import { inspectFiles, type FileInspection } from './file-inspector'
 import { showDocumentModal, type DocumentModalOutcome } from './document-modal'
 import { clearFileInput, releaseFiles, type ReleaseOutcome } from './upload-release'
 
 export type HoldResult =
-  | { readonly outcome: 'upload-anyway'; readonly release: ReleaseOutcome }
-  | { readonly outcome: 'cancel' }
+  | {
+      readonly outcome: 'upload-anyway'
+      readonly release: ReleaseOutcome
+      /**
+       * Extraction results per file, in the same order as
+       * `state.files`. A3 will read `.extraction.text` from each
+       * entry to run detection. In A2 the entries always carry
+       * `findings: []`.
+       */
+      readonly inspection: FileInspection
+    }
+  | { readonly outcome: 'cancel'; readonly inspection: FileInspection }
 
 /**
  * Injectable seams so the orchestrator can be unit-tested without
@@ -57,23 +67,26 @@ export async function holdFiles(
   opener: Element | null,
   deps: HoldDeps = defaultDeps,
 ): Promise<HoldResult> {
-  // A2: inspector now extracts local text per file (PDF text-layer,
-  // Office XML, plaintext). Detection is still stubbed
-  // (`findings: []`) — plugged in by A3. Awaited so that any
-  // extractor timeout / size-cap decision is settled before the
-  // modal opens, and so text is in-hand for A3's later use. The
-  // inspector never rejects; hostile files are captured as
-  // `extraction.status === 'unable_to_inspect'`.
-  await inspectFiles(state.files)
-
+  // A2: kick off extraction CONCURRENTLY with the modal open so the
+  // user sees the confirm dialog immediately instead of waiting up
+  // to `EXTRACTION_TIMEOUT_MS` per file for the parse. `inspectFiles`
+  // never rejects; hostile files land as
+  // `extraction.status === 'unable_to_inspect'`. We await both
+  // promises before returning so the caller (and A3, once it wires
+  // detection over the extracted text) has the inspection in hand.
+  //
+  // Detection is still stubbed (`findings: []`) — plugged in by A3.
+  const inspectionPromise = inspectFiles(state.files)
   const outcome = await deps.showModal({
     fileCount: state.files.length,
     opener,
   })
 
+  const inspection = await inspectionPromise
+
   if (outcome === 'upload-anyway') {
     const release = deps.releaseFiles(state)
-    return { outcome, release }
+    return { outcome, release, inspection }
   }
 
   // Cancel: for a change event, clear the origin input so the site
@@ -83,5 +96,5 @@ export async function holdFiles(
   if (state.kind === 'change' && state.originInput !== null) {
     deps.clearInput(state.originInput)
   }
-  return { outcome: 'cancel' }
+  return { outcome: 'cancel', inspection }
 }

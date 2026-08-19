@@ -63,28 +63,41 @@ export function aggregateFindings(inspection: FileInspection): readonly Finding[
   return out
 }
 
+// Small worker-pool limit for parallel extraction. `Promise.all`
+// with no bound could hold N × `MAX_EXTRACTION_BYTES` in memory (a
+// 50-file drop → ~1 GB), and every PDF ends up serialised on the
+// single pdf.js worker anyway, so unbounded concurrency doesn't buy
+// throughput. Four keeps a multi-file drop lively without inviting
+// an OOM on a heavy paste.
+export const MAX_CONCURRENT_EXTRACTIONS = 4
+
 /**
- * Run the extraction pass on every file concurrently and return a
- * `FileInspection`. Concurrent by design — pdf.js work is CPU-bound
- * and per-file, so extracting an N-file drop in parallel keeps
- * hold latency proportional to the slowest single file, not to the
- * sum.
+ * Run the extraction pass on every file with bounded concurrency and
+ * return a `FileInspection`. At most `MAX_CONCURRENT_EXTRACTIONS`
+ * files are in flight at once, so aggregate memory is bounded by
+ * `MAX_CONCURRENT_EXTRACTIONS × MAX_EXTRACTION_BYTES` regardless of
+ * how many files the user dropped.
  *
  * Never rejects. Any per-file extractor failure is captured on the
- * entry as `extraction.status === 'unable_to_inspect'`; the surrounding
- * flow always sees a resolved promise so a hostile file cannot deny
- * the user the hold modal.
+ * entry as `extraction.status === 'unable_to_inspect'`; the
+ * surrounding flow always sees a resolved promise so a hostile file
+ * cannot deny the user the hold modal.
  */
 export async function inspectFiles(files: readonly File[]): Promise<FileInspection> {
-  const perFile = await Promise.all(
-    files.map(async (file): Promise<FileInspectionEntry> => {
-      const extraction = await extractText(file)
-      return {
+  const perFile: FileInspectionEntry[] = new Array(files.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < files.length) {
+      const index = next++
+      const file = files[index] as File
+      perFile[index] = {
         meta: { file, name: file.name, size: file.size, type: file.type },
-        extraction,
+        extraction: await extractText(file),
         findings: [],
       }
-    }),
-  )
+    }
+  }
+  const poolSize = Math.min(MAX_CONCURRENT_EXTRACTIONS, files.length)
+  await Promise.all(Array.from({ length: poolSize }, worker))
   return { perFile }
 }

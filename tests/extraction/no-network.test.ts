@@ -53,7 +53,15 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  if (origFetch !== undefined) globalThis.fetch = origFetch
+  if (origFetch === undefined) {
+    // If `fetch` didn't exist to start with (e.g. an older jsdom
+    // variant), removing the stub is the right restoration — leaving
+    // it in place would let a later test see a hostile fetch stub
+    // from this file.
+    Reflect.deleteProperty(globalThis as unknown as Record<string, unknown>, 'fetch')
+  } else {
+    globalThis.fetch = origFetch
+  }
   XMLHttpRequest.prototype.open = origXhrOpen
   vi.restoreAllMocks()
 })

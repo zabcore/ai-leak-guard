@@ -120,20 +120,26 @@ export async function extractText(file: File): Promise<ExtractionResult> {
     }
   }
 
-  // 3. Race the actual extractor against the timeout. Whatever
-  //    settles first wins; if the timer wins, the parser's promise
-  //    is orphaned and its ArrayBuffer references drop as soon as
-  //    the async work bottoms out.
+  // 3. Race the actual extractor against a cancellable timeout.
+  //    Two guarantees:
+  //      • On extractor success/failure, the timer is CLEARED so its
+  //        setTimeout doesn't keep the closure alive for the full
+  //        10 s (multiplied by the number of files in a drop).
+  //      • On timeout, an AbortSignal fires so per-format extractors
+  //        that support cancellation (pdf.js via
+  //        `loadingTask.destroy()`) release the underlying worker
+  //        rather than continuing to parse a hostile file in the
+  //        background.
+  const ac = new AbortController()
+  const timer = createTimeoutSentinel(meta)
   try {
     const result = await Promise.race([
-      runExtractor(file, detectedFormat, meta),
-      timeoutSentinel(meta),
+      runExtractor(file, detectedFormat, meta, ac.signal),
+      timer.promise,
     ])
+    if (result.reason === 'timeout') ac.abort()
     return result
   } catch (err) {
-    // Defence in depth: `runExtractor` catches everything internally
-    // and returns a value, but a runtime error inside `Promise.race`
-    // wiring itself would land here.
     void err
     return {
       status: 'unable_to_inspect',
@@ -141,12 +147,20 @@ export async function extractText(file: File): Promise<ExtractionResult> {
       reason: 'parse-error',
       meta,
     }
+  } finally {
+    timer.cancel()
   }
 }
 
-function timeoutSentinel(meta: ExtractionMeta): Promise<ExtractionResult> {
-  return new Promise((resolve) => {
-    setTimeout(() => {
+interface TimeoutSentinel {
+  readonly promise: Promise<ExtractionResult>
+  readonly cancel: () => void
+}
+
+function createTimeoutSentinel(meta: ExtractionMeta): TimeoutSentinel {
+  let handle: ReturnType<typeof setTimeout> | undefined
+  const promise = new Promise<ExtractionResult>((resolve) => {
+    handle = setTimeout(() => {
       resolve({
         status: 'unable_to_inspect',
         text: '',
@@ -155,18 +169,25 @@ function timeoutSentinel(meta: ExtractionMeta): Promise<ExtractionResult> {
       })
     }, EXTRACTION_TIMEOUT_MS)
   })
+  return {
+    promise,
+    cancel: () => {
+      if (handle !== undefined) clearTimeout(handle)
+    },
+  }
 }
 
 async function runExtractor(
   file: File,
   format: DetectedFormat,
   meta: ExtractionMeta,
+  signal: AbortSignal,
 ): Promise<ExtractionResult> {
   try {
     switch (format) {
       case 'pdf': {
         const mod = await import('./formats/pdf')
-        return finalize(await mod.extractPdf(file), meta)
+        return finalize(await mod.extractPdf(file, { signal }), meta)
       }
       case 'xlsx': {
         const mod = await import('./formats/xlsx')

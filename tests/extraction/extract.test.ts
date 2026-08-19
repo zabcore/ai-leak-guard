@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   extractText,
   sniffFormat,
-  MAX_EXTRACTION_BYTES,
   EXTRACTION_TIMEOUT_MS,
   type ExtractionResult,
 } from '../../src/content/extraction/extract'
@@ -65,17 +64,29 @@ describe('sniffFormat', () => {
 })
 
 describe('extractText — guards', () => {
-  it('short-circuits to too-large without invoking a parser', async () => {
+  it('short-circuits to too-large WITHOUT loading a parser module', async () => {
     // Fabricate a File whose reported size is over the cap; use a
     // 1-byte slice to keep the test cheap — the guard reads only
     // `file.size`, not the actual bytes.
+    //
+    // Belt-and-suspenders: mock the PDF format module and assert the
+    // spy never fires. If some future refactor accidentally moved
+    // the size check below the dispatch, this test would flag it.
+    const pdfSpy = vi.fn()
+    vi.doMock('../../src/content/extraction/formats/pdf', () => ({
+      extractPdf: pdfSpy,
+    }))
+    const { extractText: freshExtract, MAX_EXTRACTION_BYTES: BYTES } =
+      await import('../../src/content/extraction/extract')
     const big = new File(['x'], 'big.pdf', { type: 'application/pdf' })
-    Object.defineProperty(big, 'size', { value: MAX_EXTRACTION_BYTES + 1 })
-    const result = await extractText(big)
+    Object.defineProperty(big, 'size', { value: BYTES + 1 })
+    const result = await freshExtract(big)
     expect(result.status).toBe('unable_to_inspect')
     expect(result.reason).toBe('too-large')
     // detectedFormat is left at 'unknown' because we skipped the sniff.
     expect(result.meta.detectedFormat).toBe('unknown')
+    expect(pdfSpy).not.toHaveBeenCalled()
+    vi.doUnmock('../../src/content/extraction/formats/pdf')
   })
 
   it('reports unsupported-type for unknown-format files', async () => {

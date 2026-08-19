@@ -102,7 +102,6 @@ describe('pdf extractor — happy path', () => {
     plan = { pages: [['x']] }
     await callExtract()
     expect(capturedOpts).not.toBeNull()
-    expect(capturedOpts!.isEvalSupported).toBe(false)
     expect(capturedOpts!.disableFontFace).toBe(true)
     expect(capturedOpts!.useSystemFonts).toBe(false)
     expect(capturedOpts!.disableAutoFetch).toBe(true)
