@@ -21,7 +21,7 @@
 // requests at runtime.
 
 import type { FormatOutput } from '../extract'
-import { resolveExtensionWorkerUrl } from './worker-url'
+import { spawnExtensionWorkerFromBlob } from './worker-url'
 
 export interface ExtractXlsxOptions {
   readonly signal?: AbortSignal
@@ -41,7 +41,11 @@ export interface XlsxWorkerLike {
   onerror: ((event: unknown) => void) | null
 }
 
-export type WorkerFactory = () => XlsxWorkerLike
+// The default factory is async now (it fetches the extension-hosted
+// worker code and wraps it in a `blob:` URL — see `worker-url.ts`
+// for why); tests that inject a synchronous fake still work because
+// `await` on a non-Promise unwraps to the value.
+export type WorkerFactory = () => XlsxWorkerLike | Promise<XlsxWorkerLike>
 
 interface WorkerResult {
   readonly kind: 'text' | 'reason'
@@ -69,18 +73,21 @@ async function loadDefaultFactory(): Promise<WorkerFactory> {
   // `?url` returns the bundled xlsx-worker chunk's URL string. Kept
   // dynamic (not top-level) so tests injecting a `workerFactory`
   // — either via `__setXlsxWorkerFactoryForTesting` or a per-call
-  // opts override — never touch this import. Route the URL through
-  // `resolveExtensionWorkerUrl` so the Worker is spawned against
-  // `chrome-extension://…` rather than the page origin (see pdf.ts
-  // and #39 for the full write-up on the 404-hang regression the
-  // `?worker` factory used to produce).
+  // opts override — never touch this import. The URL then flows
+  // through `spawnExtensionWorkerFromBlob`, which fetches the
+  // extension-hosted worker code and spawns the `Worker` from a
+  // `blob:` URL. Strict-CSP sites (claude.ai) reject
+  // `new Worker(chrome-extension://…)` even for WAR resources; the
+  // blob-URL path is accepted on every current target site (see
+  // `worker-url.ts` for the full CSP write-up).
   const { default: xlsxWorkerUrl } = (await import('./xlsx.worker.ts?url')) as { default: string }
-  const workerUrl = resolveExtensionWorkerUrl(xlsxWorkerUrl)
   // `type: 'module'` matches the ESM shape Vite emits for the
   // TypeScript worker source. `terminate()` on the wrapper stays
   // the sole cleanup handle — see the outer function's `cleanup`.
-  cachedFactory = (): XlsxWorkerLike =>
-    new Worker(workerUrl, { type: 'module' }) as unknown as XlsxWorkerLike
+  cachedFactory = async (): Promise<XlsxWorkerLike> =>
+    (await spawnExtensionWorkerFromBlob(xlsxWorkerUrl, {
+      type: 'module',
+    })) as unknown as XlsxWorkerLike
   return cachedFactory
 }
 
@@ -96,7 +103,15 @@ export async function extractXlsx(
   const factory = opts.workerFactory ?? overrideFactory ?? (await loadDefaultFactory())
   if (opts.signal?.aborted) return { kind: 'reason', reason: 'timeout' }
 
-  const worker = factory()
+  const worker = await factory()
+  if (opts.signal?.aborted) {
+    try {
+      worker.terminate()
+    } catch {
+      /* terminate must never throw upward */
+    }
+    return { kind: 'reason', reason: 'timeout' }
+  }
 
   return new Promise<FormatOutput>((resolve) => {
     let settled = false

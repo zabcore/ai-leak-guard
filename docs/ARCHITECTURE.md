@@ -811,22 +811,48 @@ wildcarded because the chunk hash changes per build) so both
 workers are reachable by the content script from the extension
 origin.
 
-**Worker URL invariant (A4.1 / issue #39).** pdf.ts + xlsx.ts
-originally spawned their worker chunk via Vite's `?worker` factory,
-which resolved the chunk's URL against the PAGE origin in the
-content-script bundle. In production that meant
-`https://<host>/assets/pdf.worker-<hash>.js` → 404 → the Worker
-never loaded → document extraction hung until
-`EXTRACTION_TIMEOUT_MS` fired. Fix: both extractors now import the
-chunk with `?url` (a string), route it through
-`chrome.runtime.getURL()`, and spawn `new Worker(url, {type:'module'})`
-against the resolved `chrome-extension://…` URL. The
-`assertExtensionOriginWorkerUrl` guard is called at spawn time and
-throws if the resolved URL doesn't sit on the extension origin, so
-a future bundler regression that silently reverts to a page-origin
-path is caught immediately instead of manifesting as a mysterious
-extraction hang. Both invariants are pinned by
-`tests/extraction/worker-url.test.ts`.
+**Worker URL invariant (A4.1 / issue #39, refined A4.2).** pdf.ts +
+xlsx.ts originally spawned their worker chunk via Vite's `?worker`
+factory, which resolved the chunk's URL against the PAGE origin in
+the content-script bundle — `https://<host>/assets/pdf.worker-<hash>.js`
+→ 404 → Worker never loaded → extraction hung until the 10 s
+timeout fired. A4.1 fixed the URL by importing the chunk with
+`?url`, routing it through `chrome.runtime.getURL()`, and spawning
+`new Worker(chrome-extension://…, {type:'module'})`. Guard:
+`assertExtensionOriginWorkerUrl` throws if the resolved URL doesn't
+sit on the active extension's origin, catching cross-extension
+hijack (the qualified-URL path) and stubbed-getURL regressions (the
+resolved path).
+
+**A4.2 refinement — strict-CSP sites.** claude.ai (confirmed) — and
+other strict-CSP surfaces likely to follow — reject
+`new Worker(chrome-extension://…)` from a content-script context
+even when the resource is in `web_accessible_resources`: the page's
+`worker-src` clause doesn't allow the extension scheme. Verified
+in-page that `blob:` workers (classic and module) ARE allowed on
+all four current target sites. So the extractors now:
+
+1. Resolve the extension URL exactly as before
+   (`resolveExtensionWorkerUrl`), preserving the same-origin
+   invariant against the active extension.
+2. `fetch(extensionUrl)` from the content-script context — content
+   scripts can fetch their own WAR resources without extra
+   permissions and without triggering the page's `connect-src`
+   (extension-privileged fetch).
+3. Wrap the response body in a `Blob({type:'text/javascript'})` and
+   spawn `new Worker(URL.createObjectURL(blob), {type:'module'})`.
+4. Revoke the object URL on the next microtask — the browser has
+   already initiated the worker fetch synchronously during
+   `new Worker(...)`, so revoke doesn't tear the Worker down.
+
+The single seam is `spawnExtensionWorkerFromBlob`; a direct
+`new Worker(chrome-extension://…)` would silently regress on
+strict-CSP sites, so the helper is where the invariant lives.
+Fallback if any site also blocks `blob:` workers: move extraction
+to an offscreen document — not needed for the current four.
+Invariants pinned by `tests/extraction/worker-url.test.ts` (fetch
+source is chrome-extension, spawn URL is blob:) and the pdf spawn-
+site test in `tests/extraction/hardening.test.ts`.
 
 `verify:sw` and the "does not collect data" declaration are
 re-verified.

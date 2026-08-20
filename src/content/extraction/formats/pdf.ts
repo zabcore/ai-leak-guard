@@ -38,7 +38,7 @@
 
 import type { FormatOutput } from '../extract'
 import { EXTRACTOR_ERROR_ENCRYPTED, EXTRACTOR_ERROR_NO_TEXT_LAYER } from '../extract'
-import { resolveExtensionWorkerUrl } from './worker-url'
+import { spawnExtensionWorkerFromBlob } from './worker-url'
 
 // Injectable pdf.js loader — production path uses the real
 // `pdfjs-dist`; tests can `vi.mock('pdfjs-dist')` to replace the
@@ -83,16 +83,23 @@ async function ensureWorkerConfigured(mod: PdfjsModule): Promise<void> {
   const { default: pdfWorkerUrl } = (await import('pdfjs-dist/build/pdf.worker.mjs?url')) as {
     default: string
   }
-  // Spawn the worker against the extension origin.
-  // `resolveExtensionWorkerUrl` prepends `chrome-extension://` and
-  // asserts the invariant so a bundler regression can't silently
-  // fall back to the page origin and 404 the worker (which used to
-  // manifest as a stuck extraction hitting the 10 s timeout).
-  const workerUrl = resolveExtensionWorkerUrl(pdfWorkerUrl)
+  // Spawn the worker via a `blob:` URL wrapping the extension-hosted
+  // worker code. Strict-CSP sites (claude.ai confirmed) block
+  // `new Worker(chrome-extension://…)` even for WAR resources — the
+  // page's `worker-src` clause doesn't allow the extension scheme,
+  // so the worker never loads and extraction throws `parse-error`.
+  // `blob:` workers are accepted by every current target site.
+  // `spawnExtensionWorkerFromBlob` still routes through
+  // `resolveExtensionWorkerUrl` so the FETCH source is pinned to
+  // our extension origin — the invariant just moved from "spawn URL"
+  // to "fetch URL".
+  //
   // `type: 'module'` matches pdf.js's `.mjs` worker build. No `eval`
   // path — `isEvalSupported: false` is enforced on the loading task
   // itself for defence in depth against forked pdf.js builds.
-  opts.workerPort = new Worker(workerUrl, { type: 'module' })
+  opts.workerPort = (await spawnExtensionWorkerFromBlob(pdfWorkerUrl, {
+    type: 'module',
+  })) as unknown as Worker
 }
 
 /**

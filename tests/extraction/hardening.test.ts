@@ -122,10 +122,15 @@ describe('pdf.js loader — concurrent calls share one Worker (no leak)', () => 
   // cache, two concurrent PDF extractions would spawn two workers.
 
   let workerConstructCount = 0
+  const spawnedUrls: string[] = []
   const OriginalWorker = globalThis.Worker
+  const OriginalFetch = globalThis.fetch
+  const OriginalCreateObjectURL = URL.createObjectURL
+  const OriginalRevokeObjectURL = URL.revokeObjectURL
 
   beforeEach(async () => {
     workerConstructCount = 0
+    spawnedUrls.length = 0
     vi.doMock('pdfjs-dist', () => ({
       GlobalWorkerOptions: {},
       getDocument: () => ({
@@ -141,14 +146,32 @@ describe('pdf.js loader — concurrent calls share one Worker (no leak)', () => 
       }),
     }))
     // #39 switched the worker load from `?worker` (constructor
-    // factory) to `?url` (string) + a manual `new Worker(url)`. We
-    // no longer need to mock the `?worker` import; instead we swap
-    // the global `Worker` constructor so we can count spawns and
-    // avoid jsdom's missing Worker implementation.
+    // factory) to `?url` (string) + `spawnExtensionWorkerFromBlob`,
+    // which fetches the extension-hosted worker code and constructs
+    // `new Worker(blob:…, …)` from a blob wrapping it. So this test
+    // now stubs three things: the `?url` import, `fetch`, and the
+    // `URL.createObjectURL` / `revokeObjectURL` pair — plus swaps
+    // the global `Worker` constructor to count spawns and record
+    // the URL passed in.
     vi.doMock('pdfjs-dist/build/pdf.worker.mjs?url', () => ({ default: '/assets/pdf.worker.js' }))
+    ;(globalThis as unknown as { fetch: unknown }).fetch = async (input: unknown) => {
+      const url = String(input)
+      // Return the FETCHED bytes as the worker source; blob wrapping
+      // happens inside `spawnExtensionWorkerFromBlob`.
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => `// fake pdf worker source for ${url}`,
+      } as unknown as Response
+    }
+    URL.createObjectURL = ((blob: Blob) =>
+      `blob:fake-${blob.size}-${blob.type}`) as typeof URL.createObjectURL
+    URL.revokeObjectURL = (() => {}) as typeof URL.revokeObjectURL
     ;(globalThis as unknown as { Worker: unknown }).Worker = class FakeWorker {
-      constructor() {
+      constructor(url: string | URL) {
         workerConstructCount += 1
+        spawnedUrls.push(String(url))
       }
     }
     const { __resetPdfjsForTesting } = await import('../../src/content/extraction/formats/pdf')
@@ -159,6 +182,9 @@ describe('pdf.js loader — concurrent calls share one Worker (no leak)', () => 
     vi.doUnmock('pdfjs-dist')
     vi.doUnmock('pdfjs-dist/build/pdf.worker.mjs?url')
     ;(globalThis as unknown as { Worker: typeof OriginalWorker }).Worker = OriginalWorker
+    ;(globalThis as unknown as { fetch: typeof OriginalFetch }).fetch = OriginalFetch
+    URL.createObjectURL = OriginalCreateObjectURL
+    URL.revokeObjectURL = OriginalRevokeObjectURL
     vi.resetModules()
   })
 
@@ -171,6 +197,20 @@ describe('pdf.js loader — concurrent calls share one Worker (no leak)', () => 
     expect(ra.kind).toBe('text')
     expect(rb.kind).toBe('text')
     expect(workerConstructCount).toBe(1)
+  })
+
+  it('pdf worker is spawned from a blob: URL (NOT the extension URL)', async () => {
+    // Follow-up on #39: strict-CSP sites (claude.ai) reject
+    // `new Worker(chrome-extension://…)` even for WAR resources.
+    // The fix fetches the worker via the extension URL and spawns
+    // from a `blob:` URL; assert both invariants at once.
+    const { extractPdf } = await import('../../src/content/extraction/formats/pdf')
+    const pdfHeader = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34])
+    const file = new File([pdfHeader], 'a.pdf', { type: 'application/pdf' })
+    await extractPdf(file)
+    expect(spawnedUrls).toHaveLength(1)
+    expect(spawnedUrls[0].startsWith('blob:')).toBe(true)
+    expect(spawnedUrls[0].startsWith('chrome-extension://')).toBe(false)
   })
 })
 

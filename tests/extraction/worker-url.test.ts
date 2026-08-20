@@ -160,11 +160,16 @@ describe('assertExtensionOriginWorkerUrl', () => {
 // shape of the `?url` import (or a test-env mock that returned a
 // bare path) would silently reintroduce the 404-hang bug.
 
-describe('pdf.ts — spawns Worker against chrome-extension:// URL', () => {
+describe('pdf.ts — spawns Worker from a blob: URL (strict-CSP fix)', () => {
   const spawnedUrls: string[] = []
+  const fetchedUrls: string[] = []
+  const OriginalFetch = globalThis.fetch
+  const OriginalCreateObjectURL = URL.createObjectURL
+  const OriginalRevokeObjectURL = URL.revokeObjectURL
 
   beforeEach(async () => {
     spawnedUrls.length = 0
+    fetchedUrls.length = 0
     vi.doMock('pdfjs-dist', () => ({
       GlobalWorkerOptions: {},
       getDocument: () => ({
@@ -182,6 +187,19 @@ describe('pdf.ts — spawns Worker against chrome-extension:// URL', () => {
     vi.doMock('pdfjs-dist/build/pdf.worker.mjs?url', () => ({
       default: '/assets/pdf.worker-hash.js',
     }))
+    ;(globalThis as unknown as { fetch: unknown }).fetch = async (input: unknown) => {
+      const url = String(input)
+      fetchedUrls.push(url)
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => `// fake worker source`,
+      } as unknown as Response
+    }
+    URL.createObjectURL = ((blob: Blob) =>
+      `blob:test-${blob.size}-${blob.type}`) as typeof URL.createObjectURL
+    URL.revokeObjectURL = (() => {}) as typeof URL.revokeObjectURL
     ;(globalThis as unknown as { Worker: unknown }).Worker = class FakeWorker {
       constructor(url: string | URL) {
         spawnedUrls.push(String(url))
@@ -197,17 +215,31 @@ describe('pdf.ts — spawns Worker against chrome-extension:// URL', () => {
     vi.doUnmock('pdfjs-dist')
     vi.doUnmock('pdfjs-dist/build/pdf.worker.mjs?url')
     ;(globalThis as unknown as { Worker: typeof OriginalWorker }).Worker = OriginalWorker
+    ;(globalThis as unknown as { fetch: typeof OriginalFetch }).fetch = OriginalFetch
+    URL.createObjectURL = OriginalCreateObjectURL
+    URL.revokeObjectURL = OriginalRevokeObjectURL
     vi.resetModules()
   })
 
-  it('the Worker URL starts with chrome-extension:// (never page origin)', async () => {
+  it('fetches from chrome-extension:// AND spawns from blob:', async () => {
+    // The invariant #39-follow-up enforces:
+    //   • FETCH source is the extension URL (WAR resource pulled via
+    //     content-script's extension-privileged fetch).
+    //   • SPAWN URL is a `blob:` URL — strict-CSP sites (claude.ai)
+    //     reject `new Worker(chrome-extension://…)` outright, but
+    //     accept `blob:` workers.
     const { extractPdf } = await import('../../src/content/extraction/formats/pdf')
     const pdfHeader = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34])
     const file = new File([pdfHeader], 'a.pdf', { type: 'application/pdf' })
     await extractPdf(file)
+    // FETCH source: extension-origin URL, matching the `?url` import.
+    expect(fetchedUrls).toHaveLength(1)
+    expect(fetchedUrls[0].startsWith('chrome-extension://')).toBe(true)
+    expect(fetchedUrls[0]).toContain('/assets/pdf.worker-hash.js')
+    // SPAWN URL: blob:, NEVER chrome-extension:.
     expect(spawnedUrls).toHaveLength(1)
-    expect(spawnedUrls[0].startsWith('chrome-extension://')).toBe(true)
-    expect(spawnedUrls[0]).toContain('/assets/pdf.worker-hash.js')
+    expect(spawnedUrls[0].startsWith('blob:')).toBe(true)
+    expect(spawnedUrls[0].startsWith('chrome-extension://')).toBe(false)
   })
 })
 
