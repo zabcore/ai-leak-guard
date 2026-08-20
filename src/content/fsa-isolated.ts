@@ -24,10 +24,11 @@
 // stale hello arrives after the port has been transferred (only one
 // consumer can hold a transferred port), it is silently dropped.
 //
-// Decision logic (unchanged from the original design):
+// Decision logic:
 //
 //   flag OFF / not in scope / extension disabled
-//                      → reply `upload-anyway` immediately
+//                      → reply `upload-anyway` immediately without
+//                        touching the `File[]` on the request
 //                        (byte-for-byte pass-through — the MAIN-world
 //                        wrapper returns the original handles and
 //                        the site cannot tell we were in the loop)
@@ -36,9 +37,14 @@
 //                                   policy matches V1.1 paste and A1
 //                                   change / drop / paste)
 //
-//   otherwise                    → open the placeholder document
-//                                   modal with the file count and
-//                                   forward the outcome
+//   otherwise                    → run `inspectFiles(request.blobs)`
+//                                   locally (A3 extraction + V1.1
+//                                   detection), then open the
+//                                   placeholder document modal with
+//                                   the file count + inspection and
+//                                   forward the outcome. Refs to the
+//                                   `File[]` are dropped as soon as
+//                                   the decision resolves.
 
 import {
   isFsaHello,
@@ -50,6 +56,7 @@ import {
   type FsaHoldRequest,
   type FsaPortHandoff,
 } from './main-world/fsa-messages'
+import { inspectFiles, type FileInspection } from './file-inspector'
 
 /**
  * Injectable seams so the handler can be exercised without a real
@@ -60,8 +67,24 @@ export interface FsaHandlerDeps {
   readonly isActive: () => boolean
   /** Is any V1.1 preview or A1 document modal already on screen? */
   readonly isAnotherModalOpen: () => boolean
-  /** Opens the document-protection modal and resolves with the user's choice. */
-  readonly showModal: (opts: { fileCount: number }) => Promise<'upload-anyway' | 'cancel'>
+  /**
+   * Opens the document-protection modal and resolves with the user's
+   * choice. `inspection` carries the A3 per-file + aggregate scan
+   * results the A4 modal will render its summary from. The
+   * placeholder modal in V1.2 A3.1 only reads `fileCount`; A4 will
+   * pick up `inspection` without touching this handler.
+   */
+  readonly showModal: (opts: {
+    fileCount: number
+    inspection: FileInspection
+  }) => Promise<'upload-anyway' | 'cancel'>
+  /**
+   * Optional seam that overrides `inspectFiles` — kept ONLY for the
+   * FSA handler unit tests, which stub inspection to skip pdf.js
+   * lazy-load + jsdom quirks. Production leaves this undefined and
+   * the handler calls the real `inspectFiles`.
+   */
+  readonly inspect?: (files: readonly File[]) => Promise<FileInspection>
 }
 
 /**
@@ -97,6 +120,11 @@ export async function handleFsaHoldRequest(
   reply: FsaReply,
 ): Promise<void> {
   if (!deps.isActive()) {
+    // Never touch `request.blobs` when we're not going to prompt —
+    // pass-through must stay bytes-untouched. The MAIN wrapper still
+    // holds the ORIGINAL handles it will return to the site; our
+    // structured-clone refs here fall out of scope with the request
+    // as soon as this handler returns.
     reply('upload-anyway')
     return
   }
@@ -104,8 +132,26 @@ export async function handleFsaHoldRequest(
     reply('cancel')
     return
   }
-  const outcome = await deps.showModal({ fileCount: request.files.length })
+  // Run A3 extraction + V1.1 detection over the picker's files
+  // BEFORE opening the modal — the placeholder modal only reads
+  // `fileCount` today, but A4 will render its summary from
+  // `inspection` without any further changes to this handler.
+  //
+  // `inspectFiles` is documented never-throws; a per-file failure
+  // becomes `unable_to_inspect` on that entry. So we don't need a
+  // try/catch here — the outer handler's `catch` still guards the
+  // rest of the flow.
+  const inspect = deps.inspect ?? inspectFiles
+  const inspection = await inspect(request.blobs)
+  const outcome = await deps.showModal({
+    fileCount: request.files.length,
+    inspection,
+  })
   reply(outcome)
+  // Structured-clone refs to the picker's `File[]` are only held by
+  // this handler's scope + the inspection result. Returning here
+  // releases both — the modal's own callers must not persist
+  // `inspection.perFile[*].meta.file` past this point.
 }
 
 /**

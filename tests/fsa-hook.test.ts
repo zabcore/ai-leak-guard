@@ -14,7 +14,6 @@ import {
   FSA_HELLO_SOURCE,
   FSA_MESSAGE_SOURCE,
   FSA_PORT_HANDOFF_SOURCE,
-  isFsaHoldRequest,
   type FsaDecision,
   type FsaFileMetadata,
 } from '../src/content/main-world/fsa-messages'
@@ -51,25 +50,40 @@ describe('createWrappedPicker', () => {
     expect(out).toBe(handles)
   })
 
-  it('sends METADATA ONLY (no File / Blob / bytes) to askDecision', async () => {
+  it('sends metadata + the SAME File objects to askDecision (parallel arrays for the isolated inspector)', async () => {
     const file = new File(['sensitive contents'], 'patient.pdf', {
       type: 'application/pdf',
     })
     const orig = vi.fn(() => Promise.resolve([fakeHandle(file)]))
-    let captured: readonly FsaFileMetadata[] | null = null
-    const askDecision = vi.fn((files: readonly FsaFileMetadata[]) => {
-      captured = files
+    let capturedMeta: readonly FsaFileMetadata[] | null = null
+    let capturedBlobs: readonly File[] | null = null
+    const askDecision = vi.fn((metadata: readonly FsaFileMetadata[], blobs: readonly File[]) => {
+      capturedMeta = metadata
+      capturedBlobs = blobs
       return Promise.resolve<FsaDecision>('upload-anyway')
     })
 
     const wrapped = createWrappedPicker(orig, askDecision)
     await wrapped()
 
-    expect(captured).not.toBeNull()
-    expect(captured).toEqual([{ name: 'patient.pdf', size: file.size, type: 'application/pdf' }])
-    // Belt-and-suspenders: no key other than name/size/type made it across.
-    const entry = captured![0] as unknown as Record<string, unknown>
-    expect(Object.keys(entry).sort()).toEqual(['name', 'size', 'type'])
+    // Metadata still exactly {name,size,type}, no bytes.
+    expect(capturedMeta).toEqual([
+      { name: 'patient.pdf', size: file.size, type: 'application/pdf' },
+    ])
+    const metaEntry = capturedMeta![0] as unknown as Record<string, unknown>
+    expect(Object.keys(metaEntry).sort()).toEqual(['name', 'size', 'type'])
+
+    // Blobs are the actual File objects the picker returned — the
+    // isolated inspector reads bytes from these on the private port.
+    // In tests we get the SAME reference; in production the browser
+    // hands the isolated world a structured-clone that shares the
+    // underlying bytes.
+    expect(capturedBlobs).not.toBeNull()
+    expect(capturedBlobs!.length).toBe(1)
+    expect(capturedBlobs![0]).toBeInstanceOf(File)
+    expect(capturedBlobs![0]).toBe(file)
+    // Blobs stay parallel to metadata.
+    expect(capturedBlobs![0]?.name).toBe(capturedMeta![0]?.name)
   })
 
   it('throws AbortError when the decision is cancel — the exact DOMException the native picker throws', async () => {
@@ -272,9 +286,12 @@ describe('askIsolatedWorld — fail-open on handshake failure', () => {
   it('resolves to upload-anyway when the isolated world never answers', async () => {
     vi.useFakeTimers()
     try {
-      const promise = askIsolatedWorld(window, 'https://example', [
-        { name: 'a.pdf', size: 1, type: 'application/pdf' },
-      ])
+      const promise = askIsolatedWorld(
+        window,
+        'https://example',
+        [{ name: 'a.pdf', size: 1, type: 'application/pdf' }],
+        [new File(['x'], 'a.pdf', { type: 'application/pdf' })],
+      )
       vi.advanceTimersByTime(FSA_HANDSHAKE_TIMEOUT_MS + 1)
       // Drain microtasks for the caught rejection.
       await Promise.resolve()
@@ -290,7 +307,7 @@ describe('askIsolatedWorld — fail-open on handshake failure', () => {
     vi.useFakeTimers()
     try {
       // First call fails.
-      const first = askIsolatedWorld(window, 'https://example', [])
+      const first = askIsolatedWorld(window, 'https://example', [], [])
       vi.advanceTimersByTime(FSA_HANDSHAKE_TIMEOUT_MS + 1)
       await Promise.resolve()
       await Promise.resolve()
@@ -301,9 +318,12 @@ describe('askIsolatedWorld — fail-open on handshake failure', () => {
       // failed promise). We verify by intercepting the outbound
       // hello and responding with a real port.
       vi.useRealTimers()
-      const second = askIsolatedWorld(window, 'https://example', [
-        { name: 'b.pdf', size: 1, type: 'application/pdf' },
-      ])
+      const second = askIsolatedWorld(
+        window,
+        'https://example',
+        [{ name: 'b.pdf', size: 1, type: 'application/pdf' }],
+        [new File(['y'], 'b.pdf', { type: 'application/pdf' })],
+      )
       // A microtask later, the hello has been posted; dispatch the
       // port-handoff.
       await flush()
@@ -311,12 +331,15 @@ describe('askIsolatedWorld — fail-open on handshake failure', () => {
       channel.port1.start()
       // Respond to the request over the port with an upload-anyway.
       channel.port1.onmessage = (event: MessageEvent) => {
-        if (isFsaHoldRequest(event.data)) {
-          const req = event.data as { id: string }
+        // Duck-type on kind + id (see fsa-messages.test.ts for the
+        // full blob-shape validation; jsdom's structured clone drops
+        // File so a full isFsaHoldRequest check would fail here).
+        const d = event.data as { kind?: string; id?: string }
+        if (d && d.kind === 'hold-request' && typeof d.id === 'string') {
           channel.port1.postMessage({
             source: 'alg-fsa',
             kind: 'hold-decision',
-            id: req.id,
+            id: d.id,
             decision: 'upload-anyway',
           })
         }
@@ -339,17 +362,32 @@ describe('askIsolatedWorld — fail-open on handshake failure', () => {
 })
 
 describe('askOverPort — port-scoped hold-request / hold-decision', () => {
-  it('sends a well-formed hold-request on the port and resolves with the matching decision', async () => {
+  it('sends a hold-request with the expected shape on the port and resolves with the matching decision', async () => {
+    // In jsdom's MessageChannel implementation `File` does not survive
+    // structured clone — reconstructed blobs come out as `{}` and
+    // `isFsaHoldRequest` on the receiver would reject them. Real
+    // Chrome clones `File` fine, so the shape is validated by
+    // `tests/fsa-messages.test.ts` against an in-memory request; here
+    // we only check the metadata half survives the round-trip.
     const channel = new MessageChannel()
     channel.port1.start()
-    const decisionPromise = askOverPort(channel.port2, [
-      { name: 'a.pdf', size: 1, type: 'application/pdf' },
-    ])
-    // The other end of the channel receives the request; capture id,
-    // then reply with a well-formed decision.
+    const decisionPromise = askOverPort(
+      channel.port2,
+      [{ name: 'a.pdf', size: 1, type: 'application/pdf' }],
+      [new File(['x'], 'a.pdf', { type: 'application/pdf' })],
+    )
     channel.port1.onmessage = (event: MessageEvent) => {
-      expect(isFsaHoldRequest(event.data)).toBe(true)
-      const req = event.data as { id: string }
+      const req = event.data as {
+        source: string
+        kind: string
+        id: string
+        files: readonly { name: string }[]
+      }
+      expect(req.source).toBe(FSA_MESSAGE_SOURCE)
+      expect(req.kind).toBe('hold-request')
+      expect(typeof req.id).toBe('string')
+      expect(req.id.length).toBeGreaterThan(0)
+      expect(req.files.map((f) => f.name)).toEqual(['a.pdf'])
       channel.port1.postMessage({
         source: FSA_MESSAGE_SOURCE,
         kind: 'hold-decision',
@@ -373,11 +411,19 @@ describe('askOverPort — port-scoped hold-request / hold-decision', () => {
     // unrelated id was rejected.
     let capturedId: string | null = null
     channel.port1.onmessage = (event: MessageEvent) => {
-      if (isFsaHoldRequest(event.data)) capturedId = event.data.id
+      // Duck-type on kind + id (blob-shape validation happens against
+      // an in-memory request in fsa-messages.test.ts; jsdom drops
+      // structured-cloned Files, so the guard's blob check would fail
+      // here on the receiver even though the wrapper posted a valid
+      // request).
+      const d = event.data as { kind?: string; id?: string }
+      if (d && d.kind === 'hold-request' && typeof d.id === 'string') capturedId = d.id
     }
-    const decisionPromise = askOverPort(channel.port2, [
-      { name: 'a.pdf', size: 1, type: 'application/pdf' },
-    ])
+    const decisionPromise = askOverPort(
+      channel.port2,
+      [{ name: 'a.pdf', size: 1, type: 'application/pdf' }],
+      [new File(['x'], 'a.pdf', { type: 'application/pdf' })],
+    )
     for (let i = 0; i < 20 && capturedId === null; i++) await flush()
     expect(capturedId).not.toBeNull()
 
@@ -421,11 +467,19 @@ describe('askOverPort — port-scoped hold-request / hold-decision', () => {
     // Capture the id MAIN uses so we can attempt a matching forgery.
     let capturedId: string | null = null
     channel.port1.onmessage = (event: MessageEvent) => {
-      if (isFsaHoldRequest(event.data)) capturedId = event.data.id
+      // Duck-type on kind + id (blob-shape validation happens against
+      // an in-memory request in fsa-messages.test.ts; jsdom drops
+      // structured-cloned Files, so the guard's blob check would fail
+      // here on the receiver even though the wrapper posted a valid
+      // request).
+      const d = event.data as { kind?: string; id?: string }
+      if (d && d.kind === 'hold-request' && typeof d.id === 'string') capturedId = d.id
     }
-    const decisionPromise = askOverPort(channel.port2, [
-      { name: 'sensitive.pdf', size: 1, type: 'application/pdf' },
-    ])
+    const decisionPromise = askOverPort(
+      channel.port2,
+      [{ name: 'sensitive.pdf', size: 1, type: 'application/pdf' }],
+      [new File(['x'], 'sensitive.pdf', { type: 'application/pdf' })],
+    )
     // jsdom's MessageChannel dispatch timing isn't guaranteed on
     // one microtask flush — some environments (Node 24 in CI) need
     // a few event-loop turns before port1.onmessage fires. Poll

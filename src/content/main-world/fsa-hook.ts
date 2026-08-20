@@ -19,10 +19,24 @@
 // via someone else's postMessage, so they can neither read requests
 // nor forge decisions once the handshake completes.
 //
-// Metadata-only. Never posts `File` objects, `Blob`s, or bytes across
-// the world boundary — only `{ name, size, type }` per file. That
-// preserves the "hold references only, don't read contents" invariant
-// A1 established (see `docs/ARCHITECTURE.md`).
+// A3.1 note. The hold-request now also carries the picker's `File[]`
+// alongside the metadata, structured-cloned onto the private port so
+// the isolated inspector can run extraction + detection locally
+// (closing the coverage gap that made the FSA picker path the only
+// site path never scanned). This is NOT "user data leaked to the
+// page":
+//   • The transfer runs on the private `MessagePort`, not
+//     `window.postMessage`; page listeners never observe it.
+//   • `File` structured-clone shares the underlying bytes with the
+//     originals still held in MAIN, so `upload-anyway` still returns
+//     the ORIGINAL handles byte-for-byte — the extension does not
+//     make a copy the site could ever see.
+//   • The reply stays decision-only (`upload-anyway` / `cancel`); no
+//     matched-value bytes ever come back over the port.
+//   • MAIN drops its `File[]` reference the moment the decision
+//     resolves, so the "hold references only, drop when done"
+//     invariant A1 established still applies (see
+//     `docs/ARCHITECTURE.md`).
 
 import {
   FSA_HELLO_SOURCE,
@@ -63,7 +77,10 @@ interface WrappedMarker {
  */
 export function createWrappedPicker(
   orig: ShowOpenFilePickerFn,
-  askDecision: (files: readonly FsaFileMetadata[]) => Promise<FsaDecision>,
+  askDecision: (
+    metadata: readonly FsaFileMetadata[],
+    blobs: readonly File[],
+  ) => Promise<FsaDecision>,
 ): ShowOpenFilePickerFn {
   const wrapped: ShowOpenFilePickerFn = async (...args: unknown[]) => {
     // Run the native picker first — this pops the OS file dialog and
@@ -77,28 +94,41 @@ export function createWrappedPicker(
     // through. No files means nothing to hold.
     if (!Array.isArray(handles) || handles.length === 0) return handles
 
-    // Extract File objects to read metadata. `.getFile()` on a
-    // FileSystemFileHandle is metadata-cheap in Chrome; we do NOT
-    // call `.text()` / `.arrayBuffer()` / anything that would read
-    // bytes. The `File` object itself stays inside the MAIN world.
-    const files = await Promise.all(handles.map((h) => h.getFile()))
+    // Extract File objects for both metadata AND the isolated
+    // inspector. `.getFile()` on a FileSystemFileHandle is
+    // metadata-cheap in Chrome; the returned `File` is a lazy
+    // reference to the underlying bytes and only reads them when
+    // something calls `.text()` / `.arrayBuffer()` / a stream. The
+    // originals stay in MAIN so `upload-anyway` returns the same
+    // handles the native picker produced; a structured clone crosses
+    // the private port for local extraction + detection.
+    let files: File[] | null = await Promise.all(handles.map((h) => h.getFile()))
     const metadata: FsaFileMetadata[] = files.map((f) => ({
       name: f.name,
       size: f.size,
       type: f.type,
     }))
 
-    const decision = await askDecision(metadata)
+    try {
+      const decision = await askDecision(metadata, files)
 
-    if (decision === 'upload-anyway') {
-      // Silent release — return exactly what the native picker
-      // returned; the site cannot tell we were in the loop.
-      return handles
+      if (decision === 'upload-anyway') {
+        // Silent release — return exactly what the native picker
+        // returned; the site cannot tell we were in the loop.
+        return handles
+      }
+      // Cancel path: throw the same DOMException the native picker
+      // throws on user cancel so consumer sites handle it exactly as
+      // they already do for cancellations.
+      throw new DOMException('The user aborted a request.', 'AbortError')
+    } finally {
+      // Drop MAIN's local `File` array the moment the decision
+      // resolves (or throws). The site still holds the ORIGINAL
+      // handles; upload-anyway returned them above. Anything the
+      // isolated inspector cloned onto the port is that side's
+      // problem to release.
+      files = null
     }
-    // Cancel path: throw the same DOMException the native picker
-    // throws on user cancel so consumer sites handle it exactly as
-    // they already do for cancellations.
-    throw new DOMException('The user aborted a request.', 'AbortError')
   }
 
   ;(wrapped as unknown as WrappedMarker).__algWrapped = true
@@ -197,7 +227,8 @@ export const FSA_DECISION_TIMEOUT_MS = 120_000
  */
 export function askOverPort(
   port: MessagePort,
-  files: readonly FsaFileMetadata[],
+  metadata: readonly FsaFileMetadata[],
+  blobs: readonly File[],
 ): Promise<FsaDecision> {
   return new Promise((resolve) => {
     const id = generateRequestId()
@@ -225,8 +256,13 @@ export function askOverPort(
       source: FSA_MESSAGE_SOURCE,
       kind: 'hold-request',
       id,
-      files,
+      files: metadata,
+      blobs,
     }
+    // `File` is structured-cloneable, so postMessage on a
+    // `MessagePort` hands the isolated world a fresh `File`
+    // referencing the same underlying bytes — no transfer list, no
+    // marshalling cost, no ownership hand-off (MAIN keeps its refs).
     port.postMessage(request)
   })
 }
@@ -250,10 +286,11 @@ export function askOverPort(
 export function askIsolatedWorld(
   target: Window,
   origin: string,
-  files: readonly FsaFileMetadata[],
+  metadata: readonly FsaFileMetadata[],
+  blobs: readonly File[],
 ): Promise<FsaDecision> {
   return getOrRequestPort(target, origin).then(
-    (port) => askOverPort(port, files),
+    (port) => askOverPort(port, metadata, blobs),
     () => 'upload-anyway' as FsaDecision,
   )
 }
@@ -303,8 +340,8 @@ export function installFsaHook(target: Window): 'installed' | 'already-wrapped' 
   if (typeof current !== 'function') return 'unavailable'
   if (current.__algWrapped === true) return 'already-wrapped'
   const orig = current.bind(target) as ShowOpenFilePickerFn
-  const wrapped = createWrappedPicker(orig, (files) =>
-    askIsolatedWorld(target, target.location.origin, files),
+  const wrapped = createWrappedPicker(orig, (metadata, blobs) =>
+    askIsolatedWorld(target, target.location.origin, metadata, blobs),
   )
   holder.showOpenFilePicker = wrapped
   return 'installed'
