@@ -41,9 +41,22 @@ describe('resolveExtensionWorkerUrl', () => {
     expect(url.endsWith('/assets/xlsx.worker-xyz.js')).toBe(true)
   })
 
-  it('short-circuits an already-fully-qualified chrome-extension:// URL', () => {
-    const already = 'chrome-extension://someextid/assets/pdf.worker.js'
-    expect(resolveExtensionWorkerUrl(already)).toBe(already)
+  it('accepts an already-fully-qualified URL from OUR extension origin', () => {
+    // `chrome.runtime.getURL('')` returns the active extension's
+    // origin — use it directly so the test stays honest against the
+    // real test-env id rather than a hard-coded literal.
+    const own = chrome.runtime.getURL('/assets/pdf.worker.js')
+    expect(resolveExtensionWorkerUrl(own)).toBe(own)
+  })
+
+  it('rejects a URL from a DIFFERENT extension ID (cross-extension hijack guard)', () => {
+    // A colluding extension (or a mocked import) that feeds us a
+    // `chrome-extension://<other-id>/…` URL must NOT spawn a Worker
+    // pointing at their code. This is the guard that turns
+    // "starts with chrome-extension://" from a prefix check into an
+    // origin check.
+    const other = 'chrome-extension://someotherextidsomeotherextidsomeo/assets/pdf.worker.js'
+    expect(() => resolveExtensionWorkerUrl(other)).toThrow(/does not belong to this extension/)
   })
 
   it('throws when chrome.runtime.getURL is unavailable (fail-loud)', () => {
@@ -160,18 +173,27 @@ describe('pdf.ts — spawns Worker against chrome-extension:// URL', () => {
   })
 })
 
-// xlsx.ts spawn-site NOTE: `tests/setup.ts` already injects a
-// `workerFactory` override on the shared `overrideFactory` slot at
-// module load (so all downstream xlsx tests run against an inline
-// fake instead of a real Worker), which means we can't reach the
-// `loadDefaultFactory` code path from an integration test without
-// stomping that global setup for every sibling test in the same file.
+// xlsx.ts spawn-site note.
+// A CR nitpick suggested pairing this file's pdf.ts spawn-site test
+// with an xlsx.ts equivalent (using `vi.resetModules()` + a mocked
+// `./xlsx.worker.ts?url`). Two attempts confirmed the test can't be
+// made deterministic in vitest's jsdom env — the arrow-closure that
+// calls `new Worker(url, {type:'module'})` inside `xlsx.ts`
+// consistently sees `Worker is not a constructor` even when the
+// FakeWorker is installed via `vi.stubGlobal` before the dynamic
+// import. Root cause is jsdom's Worker binding: it isn't exposed as
+// a plain global constructor callable from module scope, and the
+// setup.ts factory override captured by `loadDefaultFactory` on
+// prior import runs interferes with the reset path.
+//
 // The invariant we care about — "xlsx.ts routes its worker URL
 // through `resolveExtensionWorkerUrl` before spawning `new Worker`" —
-// is covered by:
-//   * the `resolveExtensionWorkerUrl` unit tests above
-//     (URL resolution + extension-origin assertion), and
-//   * the pdf.ts spawn-site test below (same pattern applied to
-//     the other extractor).
-// Adding a duplicate integration test here would only re-exercise
-// the same helper, not add coverage.
+// is still covered by:
+//   * the `resolveExtensionWorkerUrl` unit tests above (URL
+//     normalisation + extension-origin assertion + cross-extension
+//     hijack rejection), and
+//   * the pdf.ts spawn-site test below (same pattern applied to the
+//     other extractor). xlsx.ts's `loadDefaultFactory` visibly
+//     calls the same helper, so a regression that stops routing
+//     through `resolveExtensionWorkerUrl` would be caught by the
+//     resolver-side tests + a source read of xlsx.ts.

@@ -40,13 +40,6 @@ const EXTENSION_ORIGIN_PREFIX = 'chrome-extension://'
  *         URL does not live under the extension origin.
  */
 export function resolveExtensionWorkerUrl(rawUrl: string): string {
-  // In a CRXJS dev-mode HMR reload the emitted url is sometimes an
-  // already-fully-qualified `chrome-extension://…` string. `getURL`
-  // strips a leading slash but doesn't handle a bare URL, so short-
-  // circuit before we hand it in.
-  if (rawUrl.startsWith(EXTENSION_ORIGIN_PREFIX)) {
-    return assertExtensionOriginWorkerUrl(rawUrl)
-  }
   const getURL =
     typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.getURL === 'function'
       ? chrome.runtime.getURL.bind(chrome.runtime)
@@ -56,6 +49,23 @@ export function resolveExtensionWorkerUrl(rawUrl: string): string {
       `[AI Leak Guard] worker URL: chrome.runtime.getURL is unavailable — cannot resolve ${rawUrl}`,
     )
   }
+  // Active extension origin, e.g. `chrome-extension://<our-ext-id>/`.
+  // `getURL('')` returns the origin plus a trailing slash — the
+  // canonical way to obtain the current extension's URL prefix.
+  const ownOrigin = getURL('')
+  if (rawUrl.startsWith(EXTENSION_ORIGIN_PREFIX)) {
+    // Already-qualified URL — accept ONLY when it belongs to OUR
+    // extension origin. Rejecting bare-prefix matches prevents a
+    // scenario where a colluding extension (or a mocked import in
+    // a shared browser process) hands us a `chrome-extension://<other-id>/…`
+    // URL and lures us into spawning a Worker against their code.
+    if (!urlHasOrigin(rawUrl, ownOrigin)) {
+      throw new Error(
+        `[AI Leak Guard] worker URL: ${JSON.stringify(rawUrl)} does not belong to this extension (${ownOrigin})`,
+      )
+    }
+    return assertExtensionOriginWorkerUrl(rawUrl)
+  }
   // `chrome.runtime.getURL` treats leading `/` as an absolute path
   // rooted at the extension origin, which is exactly the layout Vite
   // produces (`/assets/…`). Strip the leading slash defensively so
@@ -63,6 +73,22 @@ export function resolveExtensionWorkerUrl(rawUrl: string): string {
   const relative = rawUrl.startsWith('/') ? rawUrl.slice(1) : rawUrl
   const resolved = getURL(relative)
   return assertExtensionOriginWorkerUrl(resolved)
+}
+
+/**
+ * True when `url` shares the `chrome-extension://<id>/` prefix of
+ * `origin` (both must be extension-origin URLs; `origin` is the
+ * `chrome.runtime.getURL('')` result — protocol + host + trailing
+ * slash). Simple prefix compare rather than `URL.origin` parsing so
+ * this stays dependency-free and callable from the worker configure
+ * paths without instantiating a `URL`.
+ */
+function urlHasOrigin(url: string, origin: string): boolean {
+  // Guard against a caller passing an origin without the trailing
+  // slash — matching `chrome-extension://foo` against
+  // `chrome-extension://foobar/…` would otherwise be a false positive.
+  const normalisedOrigin = origin.endsWith('/') ? origin : `${origin}/`
+  return url.startsWith(normalisedOrigin)
 }
 
 /**
