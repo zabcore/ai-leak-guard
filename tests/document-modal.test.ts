@@ -60,11 +60,17 @@ describe('openDocumentModal — mount + isolation', () => {
 describe('openDocumentModal — scanning state', () => {
   it('primary button (Upload anyway) is hidden during scanning', () => {
     openDocumentModal({ opener: null })
-    // Buttons live in the closed shadow — we probe them by keyboard.
-    // Enter in scanning state must NOT resolve upload-anyway because
-    // the primary is hidden and the focus lands on cancel by default.
-    // We assert this via the outcome test below.
     expect(isDocumentModalOpen()).toBe(true)
+    const shadow = __getModalShadowForTests()
+    const primary = shadow?.querySelector('.btn--primary') as HTMLButtonElement | null
+    const secondary = shadow?.querySelector('.btn--secondary') as HTMLButtonElement | null
+    expect(primary).not.toBeNull()
+    // Direct DOM assertion — the seam gives us the closed shadow root
+    // so we don't have to infer visibility from downstream behavior.
+    expect(primary?.hidden).toBe(true)
+    // Sanity: [Cancel] stays visible so the user can bail during the
+    // scan.
+    expect(secondary?.hidden).toBe(false)
   })
 
   it('Enter during scanning does not resolve upload-anyway', async () => {
@@ -109,7 +115,11 @@ describe('openDocumentModal — sensitive state', () => {
     expect(text).toContain(friendlyCategoryLabel(DetectorCategory.HEALTHCARE_PATIENT_ID))
     expect(text).toContain(friendlyCategoryLabel(DetectorCategory.GOVERNMENT_FINANCIAL))
     expect(text).toContain('high-severity')
-    // Primary button is [Upload anyway]; Enter triggers it.
+    // Focus lands on the dialog container after the scanning → sensitive
+    // transition — an intentional safety change so a held Enter can't
+    // release before the user reads the warning. Tab explicitly moves
+    // to [Upload anyway], then Enter triggers it.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }))
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
     await expect(ctrl.outcome).resolves.toBe('upload-anyway')
   })
@@ -129,7 +139,7 @@ describe('openDocumentModal — sensitive state', () => {
     return ctrl.outcome
   })
 
-  it('Enter after showing sensitive resolves upload-anyway (primary)', async () => {
+  it('Tab-then-Enter after showing sensitive resolves upload-anyway (primary)', async () => {
     const ctrl = openDocumentModal({ opener: null })
     ctrl.showSensitive({
       fileCount: 2,
@@ -137,8 +147,35 @@ describe('openDocumentModal — sensitive state', () => {
       categories: [DetectorCategory.IDENTITY],
       hasCriticalOrHigh: false,
     })
+    // Transition focuses `dialog`; a Tab moves focus to [Upload anyway]
+    // (list[0] in the trap), then Enter finalizes.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }))
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
     await expect(ctrl.outcome).resolves.toBe('upload-anyway')
+  })
+
+  it('bare Enter after showing sensitive does NOT resolve upload-anyway (held-Enter safety)', async () => {
+    // Focus-safety invariant: a user holding Enter (e.g., trying to
+    // send a prompt on ChatGPT) when the scanning view flips to
+    // sensitive must not accidentally release the file. The transition
+    // focuses the dialog container, and the Enter recovery pulls focus
+    // back to Cancel — so a single Enter is a no-op, never a release.
+    const ctrl = openDocumentModal({ opener: null })
+    ctrl.showSensitive({
+      fileCount: 1,
+      totalMaskable: 2,
+      categories: [DetectorCategory.HEALTHCARE_PATIENT_ID],
+      hasCriticalOrHigh: true,
+    })
+    let settled = false
+    void ctrl.outcome.then(() => {
+      settled = true
+    })
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    ctrl.close('cancel')
+    await ctrl.outcome
   })
 
   it('Escape after showing sensitive resolves cancel', async () => {
@@ -160,6 +197,9 @@ describe('openDocumentModal — unable state', () => {
     ctrl.showUnable({ fileCount: 1, reason: 'encrypted' })
     expect(shadowTextContent()).toContain("We couldn't read this file")
     expect(shadowTextContent()).toContain('password-protected')
+    // Same held-Enter safety as the sensitive path — Tab first, then
+    // Enter finalizes upload-anyway.
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }))
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }))
     await expect(ctrl.outcome).resolves.toBe('upload-anyway')
   })
@@ -184,7 +224,11 @@ describe('openDocumentModal — unable state', () => {
   it('renders a fallback sub-line when reason is missing', async () => {
     const ctrl = openDocumentModal({ opener: null })
     ctrl.showUnable({ fileCount: 1 })
-    expect(shadowTextContent()).toContain("We couldn't read this file")
+    // Match the body-specific fallback ("…to check its contents.")
+    // rather than the shared heading — otherwise the assertion would
+    // pass even if `unableReasonLine` silently returned an empty
+    // string.
+    expect(shadowTextContent()).toContain('check its contents')
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await expect(ctrl.outcome).resolves.toBe('cancel')
   })
@@ -218,6 +262,9 @@ describe('openDocumentModal — focus behavior', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await ctrl.outcome
     expect(document.activeElement).toBe(opener)
+    // Clean up the opener we appended so later tests that assert on
+    // `document.body.childElementCount` see a fresh body.
+    opener.remove()
   })
 
   it('tolerates a null opener without throwing on close', async () => {
@@ -229,25 +276,14 @@ describe('openDocumentModal — focus behavior', () => {
 
 describe('openDocumentModal — metadata-only rendering', () => {
   // The modal MUST NOT render `Finding.value` (the raw matched
-  // string). Consistent with A5's metadata-only event log + the
-  // no-clean-copy scope. This test asserts a specific SSN value
-  // never appears anywhere in the modal's DOM subtree — we can't
-  // read the closed shadow root from the outside, so we reach in
-  // via the host's shadowRoot when we (re)configure the modal in
-  // this test's isolated setup using an OPEN shadow root proxy.
+  // string). Consistent with A5's metadata-only event log and the
+  // no-clean-copy scope.
   //
-  // We do this by rendering the sensitive view with a shape that
-  // WOULD have matched, and asserting a well-known SSN literal is
-  // not present in the modal's serialized outerHTML / DOM tree
-  // reachable via any well-known API. Since the closed shadow root
-  // hides its contents from `outerHTML`, we walk the host's own
-  // shadow root through the DevTools-visible internal handle:
-  // browsers expose an `internals_` seam in tests via the
-  // constructor (jsdom returns null for closed shadow, but the
-  // implementation's applySensitive constructs chip text from
-  // `friendlyCategoryLabel(cat)` alone — never from Finding values —
-  // so we verify the source constraint directly by asserting the
-  // labels do not include the raw value).
+  // The host uses a closed shadow root, so `host.shadowRoot` is null
+  // from the outside. These tests read the rendered subtree through
+  // the module's `__getModalShadowForTests` seam and assert that
+  // known secret literals are absent while the expected metadata
+  // copy is present.
 
   it('friendlyCategoryLabel is metadata-only — does not echo raw match input', () => {
     // The chip factory only accepts a DetectorCategory enum member

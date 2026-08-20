@@ -164,6 +164,12 @@ const STYLES = `
     flex: 0 0 auto;
   }
   @keyframes alg-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none;
+      opacity: 0.7;
+    }
+  }
   .actions {
     padding: 12px 20px 18px;
     display: flex;
@@ -337,6 +343,9 @@ export function openDocumentModal(opts: {
 
   const scanning = document.createElement('div')
   scanning.className = 'scanning'
+  // role="status" makes screen readers announce the scanning text
+  // when it appears without needing focus to move to it.
+  scanning.setAttribute('role', 'status')
   const spinner = document.createElement('span')
   spinner.className = 'spinner'
   spinner.setAttribute('aria-hidden', 'true')
@@ -426,7 +435,13 @@ export function openDocumentModal(opts: {
     if (opts.categories.length > 0) children.push(chips)
     children.push(actions)
     dialog.replaceChildren(...children)
-    uploadBtn.focus()
+    // Do NOT auto-focus the release action on transition. A user
+    // holding Enter (e.g., trying to send a prompt on ChatGPT) at
+    // the moment the scanning view flips to the warning must not
+    // accidentally release a sensitive document. Focus the dialog
+    // container; the focus trap still reaches [Upload anyway] on
+    // the first Tab, so keyboard access is preserved.
+    dialog.focus()
   }
 
   const applyUnable = (opts: UnableViewOpts): void => {
@@ -443,7 +458,10 @@ export function openDocumentModal(opts: {
     scanning.hidden = true
     uploadBtn.hidden = false
     dialog.replaceChildren(heading, body, actions)
-    uploadBtn.focus()
+    // See the note in `applySensitive`: dialog.focus() (not
+    // uploadBtn.focus()) so a held Enter can't release before the
+    // user reads the warning.
+    dialog.focus()
   }
 
   // The focus trap cycles primary → secondary → close, matching V1.1
@@ -499,10 +517,16 @@ export function openDocumentModal(opts: {
         // (ChatGPT / Claude etc.) doesn't fire while the modal is up.
         event.stopPropagation()
       } else {
+        // Focus escaped (dialog container, non-tabbable, or null).
+        // Pull focus back to Cancel — the SAFE default. A previous
+        // implementation focused the primary [Upload anyway], which
+        // meant a held Enter on the scanning→sensitive transition
+        // could release the document before the user read the
+        // warning. Keeping cancel as the recovery target makes
+        // held-Enter default to "cancel", never "release".
         event.preventDefault()
         event.stopPropagation()
-        const list = focusableList()
-        list[0].focus()
+        cancelBtn.focus()
       }
       return
     }
@@ -577,9 +601,16 @@ export function __resetDocumentModalForTests(): void {
 }
 
 /**
- * Test-only: returns the modal's (closed) shadow root so the
- * metadata-only test can walk the rendered subtree and assert
- * matched-value strings are absent. Never exported for production.
+ * Test-only accessor for the modal's (closed) shadow root. The
+ * metadata-only test walks the rendered subtree through this seam to
+ * assert that raw `Finding.value` strings never appear.
+ *
+ * NOTE: this symbol ships in the content-script bundle unconditionally
+ * (there is no test-only build step). That is safe here because the
+ * content-script module scope is not reachable from page scripts —
+ * they cannot import the module or reach `openModalShadow` — so the
+ * closed-shadow guarantee against the PAGE is unaffected. It is only
+ * "test-only" in the sense that no production code path calls it.
  */
 export function __getModalShadowForTests(): ShadowRoot | null {
   return openModalShadow

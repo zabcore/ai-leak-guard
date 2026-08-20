@@ -26,7 +26,11 @@ export type HoldResult =
       readonly release: ReleaseOutcome
       readonly inspection: FileInspection
     }
-  | { readonly outcome: 'cancel'; readonly inspection: FileInspection }
+  // Cancel deliberately does NOT carry the inspection. A user who
+  // cancels during "Checking…" gets an instant close — we must not
+  // block on inspection settling just to attach a value nothing
+  // downstream reads.
+  | { readonly outcome: 'cancel' }
 
 /**
  * Injectable seams so the orchestrator can be unit-tested without
@@ -64,19 +68,24 @@ export async function holdFiles(
   // scan (and skip entirely on a fast one).
   const inspectionPromise = inspectFiles(state.files)
   const outcome = await deps.resolveDecision(inspectionPromise, { opener })
+
+  if (outcome === 'cancel') {
+    // Instant cancel: don't await inspectionPromise. A user who hit
+    // Cancel during "Checking…" would otherwise wait for extraction
+    // to run to completion (multi-second on a PDF) before this flow
+    // clears the input and returns. The unused inspection promise is
+    // allowed to fall to the floor — its refs drop as soon as it
+    // settles.
+    if (state.kind === 'change' && state.originInput !== null) {
+      deps.clearInput(state.originInput)
+    }
+    return { outcome: 'cancel' }
+  }
+
+  // upload-anyway: we're going to release, so inspection has already
+  // settled (the modal only shows the [Upload anyway] button once the
+  // scan completes) — this await is a formality.
   const inspection = await inspectionPromise
-
-  if (outcome === 'upload-anyway') {
-    const release = deps.releaseFiles(state)
-    return { outcome, release, inspection }
-  }
-
-  // Cancel: for a change event, clear the origin input so the site
-  // sees no selection at all. For drop / paste we already prevented
-  // the default in the content-script handler and there is nothing
-  // else to reset.
-  if (state.kind === 'change' && state.originInput !== null) {
-    deps.clearInput(state.originInput)
-  }
-  return { outcome: 'cancel', inspection }
+  const release = deps.releaseFiles(state)
+  return { outcome, release, inspection }
 }

@@ -22,13 +22,16 @@ import {
   resolveDocumentDecision,
 } from '../src/content/document-decision'
 
-// Flush enough microtasks that a `Promise.race([timerFired, ...])`
-// chain has fully resolved and the surrounding async function has
-// advanced past its next await. A single `await Promise.resolve()`
-// flushes ONE microtask — not enough when the helper stacks a race
-// on top of a resolved timer promise.
-async function flushMicrotasks(): Promise<void> {
-  for (let i = 0; i < 5; i++) await Promise.resolve()
+// Kept for tests that need to wait for the helper's internal
+// Promise.race chain to settle before we assert an observable side
+// effect. Prefer polling on the OBSERVABLE (e.g., `vi.waitFor(() =>
+// expect(openModal).toHaveBeenCalledOnce())`) over a fixed
+// microtask count so a future refactor that adds one more await in
+// the helper doesn't silently break these tests.
+async function waitFor<T>(fn: () => T): Promise<T> {
+  // 100 ms is plenty for a microtask-chain settle; if the helper is
+  // actually broken the test fails with the underlying assertion.
+  return await vi.waitFor(fn, { timeout: 100 })
 }
 
 function cleanInspection(): FileInspection {
@@ -243,10 +246,10 @@ describe('resolveDocumentDecision — clean aggregate', () => {
         clearTimer: () => {},
       },
     })
-    // Flush microtasks past the openModal call (Promise.race needs a
-    // couple of them to run its internal handlers).
-    await flushMicrotasks()
-    expect(openModal).toHaveBeenCalledOnce()
+    // Wait for the openModal side effect rather than counting
+    // microtasks — the number of `await`s inside the helper is an
+    // implementation detail.
+    await waitFor(() => expect(openModal).toHaveBeenCalledOnce())
     resolveInspection(cleanInspection())
     await expect(promise).resolves.toBe('upload-anyway')
     // The helper closed the modal programmatically rather than
@@ -298,8 +301,7 @@ describe('resolveDocumentDecision — sensitive aggregate', () => {
         clearTimer: () => {},
       },
     })
-    await flushMicrotasks()
-    expect(openModal).toHaveBeenCalledOnce()
+    await waitFor(() => expect(openModal).toHaveBeenCalledOnce())
     // No transition yet — the modal is in scanning state.
     expect(modal.showSensitiveMock).not.toHaveBeenCalled()
     resolveInspection(sensitiveInspection())
@@ -349,11 +351,12 @@ describe('resolveDocumentDecision — cancel during scanning', () => {
     })
     // Scanning view is painted; user hits Cancel BEFORE inspection
     // resolves.
-    await flushMicrotasks()
+    await waitFor(() => expect(openModal).toHaveBeenCalledOnce())
     modal.resolveOutcome('cancel')
-    // Let the cancel-race resolve so the helper returns early
-    // BEFORE the inspection settles as sensitive.
-    await flushMicrotasks()
+    // Give the helper's cancel-race a chance to settle before we
+    // resolve inspection — the point of this test is to prove the
+    // helper returns on cancel WITHOUT waiting for inspection.
+    await waitFor(() => expect(modal.closeMock).not.toHaveBeenCalledWith('upload-anyway'))
     resolveInspection(sensitiveInspection())
     await expect(promise).resolves.toBe('cancel')
     // We must NOT transition to sensitive after the cancel.

@@ -146,7 +146,9 @@ describe('handleFsaHoldRequest — decision routing via the reply seam', () => {
   })
 
   it('flag ON + no other modal → routes through resolveDecision and forwards the outcome', async () => {
-    const resolveDecision: FsaHandlerDeps['resolveDecision'] = vi.fn(() =>
+    // Typed via the seam's own signature — Vitest 4.x infers
+    // `mock.calls` from the supplied function type.
+    const resolveDecision = vi.fn<FsaHandlerDeps['resolveDecision']>(() =>
       Promise.resolve<'upload-anyway' | 'cancel'>('upload-anyway'),
     )
     const reply = vi.fn()
@@ -157,19 +159,18 @@ describe('handleFsaHoldRequest — decision routing via the reply seam', () => {
     )
     expect(reply).toHaveBeenCalledTimes(1)
     expect(reply).toHaveBeenCalledWith('upload-anyway')
-    const mock = resolveDecision as unknown as ReturnType<typeof vi.fn>
-    expect(mock).toHaveBeenCalledOnce()
-    const call = mock.mock.calls[0] as [Promise<FileInspection>, { opener: Element | null }]
+    expect(resolveDecision).toHaveBeenCalledOnce()
+    const [pendingInspection, opts] = resolveDecision.mock.calls[0]
     // The FSA path passes a pending inspection promise (not a
     // resolved value) so the decision helper can race it against
     // the flicker delay.
-    expect(call[0]).toBeInstanceOf(Promise)
-    const inspection = await call[0]
+    expect(pendingInspection).toBeInstanceOf(Promise)
+    const inspection = await pendingInspection
     expect(inspection.aggregate.state).toBe('clean')
     expect(inspection.perFile).toHaveLength(1)
     // No opener element from the FSA path — the picker was invoked
     // by the page's own JS; there's no editor to return focus to.
-    expect(call[1].opener).toBeNull()
+    expect(opts).toEqual({ opener: null })
   })
 
   it('flag OFF → does NOT run inspection (bytes are not touched on the pass-through path)', async () => {

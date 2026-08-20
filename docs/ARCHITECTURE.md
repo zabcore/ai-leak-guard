@@ -483,15 +483,17 @@ false and every one of these branches is a strict no-op.
 
 **Hold state machine (`src/content/document-flow.ts`, A4-final):**
 
-```
+```text
 extract → inspect → resolveDocumentDecision
     ├─ 'upload-anyway' → releaseFiles(state)
     └─ 'cancel'        → clearInput(origin) if change; else drop
 ```
 
-`resolveDocumentDecision` handles the clean auto-release, the
-sensitive / unable modal views, and the cancellable scanning state
-— see the A4 section further below.
+`resolveDocumentDecision` branches on the A3 `AggregateScanResult`
+— clean auto-releases, sensitive / unable open the matching modal
+view, and the cancellable "Checking…" state paints between them
+when extraction is slow. See the A4 section further below for the
+full state machine.
 
 The inspector at A1 is a **stub** (`src/content/file-inspector.ts`)
 that returns `findings: []` for any input and never reads file
@@ -678,15 +680,17 @@ picker call. A dedicated guard test asserts this end-to-end.
 
 **A3.1 — scan wiring on the FSA path.** When the flag is ON and no
 other modal is open, the isolated handler runs `inspectFiles(request.blobs)`
-before opening the placeholder document modal. Same
-`inspectFiles` (`src/content/file-inspector.ts`) the
-change / drop / paste paths call — same extraction, same V1.1
-detector, same `AggregateScanResult`. The `showModal` seam receives
-`{ fileCount, inspection }`; the placeholder A3.1 modal only reads
-`fileCount`, and A4 will render its summary from `inspection`
-without any change to this handler. A parity test in
-`tests/fsa-isolated.test.ts` locks the two paths' outputs together
-by running the same file through both.
+and routes the pending inspection through the shared
+`resolveDecision` seam (`FsaHandlerDeps.resolveDecision`, which
+production wires to `resolveDocumentDecision` — the same helper the
+change / drop / paste path uses). Same `inspectFiles`
+(`src/content/file-inspector.ts`) both file paths call — same
+extraction, same V1.1 detector, same `AggregateScanResult`. The
+helper branches on `aggregate.state`: `clean` auto-resolves
+`upload-anyway` without ever opening a modal; `sensitive` /
+`unable_to_inspect` open the warning modal in the matching view. A
+parity test in `tests/fsa-isolated.test.ts` locks the two paths'
+outputs together by running the same file through both.
 
 **Silent release, no re-attach.** Upload-anyway returns the exact
 handles the native picker returned — the site cannot tell we were
