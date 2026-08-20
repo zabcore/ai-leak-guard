@@ -584,8 +584,8 @@ isolated → { source:'alg-fsa-port-handoff' }      (window.postMessage + [port2
 Steady state (port only — page scripts cannot observe or post here):
 
 ```text
-MAIN     → { source:'alg-fsa', kind:'hold-request',  id, files:[{name,size,type}] }   (port2.postMessage)
-isolated ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-anyway'|'cancel' } (port1.postMessage)
+MAIN     → { source:'alg-fsa', kind:'hold-request',  id, files:[{name,size,type}], blobs:File[] } (port2.postMessage)
+isolated ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-anyway'|'cancel' }      (port1.postMessage)
 ```
 
 - The isolated world creates the `MessageChannel` on install, keeps
@@ -600,12 +600,32 @@ isolated ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-anyw
   port. Foreign / malformed messages are ignored — a page can't forge
   a decision to bypass the modal, and can't forge a request to open
   it out of nowhere.
-- **Metadata only** across the world boundary. No `File` / `Blob` /
-  bytes / handles are ever posted. The `File` object stays inside
-  the MAIN world, and the handles the site cares about are the
-  originals we return unchanged on `upload-anyway`. This keeps A1's
-  "hold references only, don't read contents" invariant intact
-  across the world boundary too.
+- **Bytes stay local; the reply stays decision-only.** The
+  hold-request carries the picker's `File[]` alongside the metadata
+  so the isolated-world inspector can extract + scan locally (A3.1
+  closed the gap that had made the FSA picker the only site path
+  never scanned). Files are structured-cloned onto the **private**
+  `MessagePort` — after a successful handshake, steady-state port
+  traffic is not observable to page listeners (the initial
+  `alg-fsa-port-handoff` on `window.postMessage` IS observable to
+  page listeners via `MessageEvent.ports`, which is the
+  first-hello-hijack race described in the threat-model section
+  below; the hold-request `File[]` itself is only ever posted on
+  the port after handoff, so once handoff succeeds page scripts
+  can neither read nor forge it). `upload-anyway`
+  returns the **original picker handles** MAIN still holds, not
+  anything derived from the isolated-side clone; the site sees the
+  same handles a native picker call would have produced, byte-for-
+  byte. (Whether the browser's structured-clone shares the underlying
+  byte sequence between the two `File`s is implementation-defined
+  per W3C File API + WHATWG structured-clone — Chrome typically
+  shares, since `Blob` / `File` are immutable. The byte-identical
+  result the site sees does not depend on that: it comes from MAIN
+  returning its untouched originals.) The reply back to MAIN carries
+  a `decision` string only — no matched values, no extracted text —
+  and MAIN drops its `File[]` reference the moment the decision
+  resolves. A1's "hold references only, don't read contents until
+  the inspector needs to" invariant still applies.
 
 **Threat model — MAIN-world limits and handshake race.** The MAIN-world
 script shares a JavaScript realm with the page (that is what makes
@@ -646,9 +666,22 @@ bypass-proof status against a hostile site.
 flag directly (separate JavaScript contexts), so the wrapper always
 sends a `hold-request`. When the flag is OFF (or the extension is
 globally disabled), the isolated-world handler replies
-`upload-anyway` immediately without opening a modal. The wrapper
-returns the original handles and the site sees a native picker
-call. A dedicated guard test asserts this end-to-end.
+`upload-anyway` immediately **without touching `request.blobs`** —
+no extraction, no detection — and without opening a modal. The
+wrapper returns the original handles and the site sees a native
+picker call. A dedicated guard test asserts this end-to-end.
+
+**A3.1 — scan wiring on the FSA path.** When the flag is ON and no
+other modal is open, the isolated handler runs `inspectFiles(request.blobs)`
+before opening the placeholder document modal. Same
+`inspectFiles` (`src/content/file-inspector.ts`) the
+change / drop / paste paths call — same extraction, same V1.1
+detector, same `AggregateScanResult`. The `showModal` seam receives
+`{ fileCount, inspection }`; the placeholder A3.1 modal only reads
+`fileCount`, and A4 will render its summary from `inspection`
+without any change to this handler. A parity test in
+`tests/fsa-isolated.test.ts` locks the two paths' outputs together
+by running the same file through both.
 
 **Silent release, no re-attach.** Upload-anyway returns the exact
 handles the native picker returned — the site cannot tell we were

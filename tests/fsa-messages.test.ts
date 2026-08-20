@@ -6,52 +6,86 @@ import {
 } from '../src/content/main-world/fsa-messages'
 
 describe('isFsaHoldRequest', () => {
-  const validRequest = {
+  const oneBlob = (): File => new File(['x'], 'a.pdf', { type: 'application/pdf' })
+  const validRequest = () => ({
     source: FSA_MESSAGE_SOURCE,
     kind: 'hold-request',
     id: 'alg-fsa-abc',
     files: [{ name: 'a.pdf', size: 100, type: 'application/pdf' }],
-  }
-
-  it('accepts a well-formed hold-request', () => {
-    expect(isFsaHoldRequest(validRequest)).toBe(true)
+    blobs: [oneBlob()],
   })
 
-  it('accepts an empty files array (the wrapper drops zero-file pickers before sending)', () => {
-    expect(isFsaHoldRequest({ ...validRequest, files: [] })).toBe(true)
+  it('accepts a well-formed hold-request (metadata parallel to blobs)', () => {
+    expect(isFsaHoldRequest(validRequest())).toBe(true)
+  })
+
+  it('accepts an empty files+blobs pair (the wrapper drops zero-file pickers before sending)', () => {
+    expect(isFsaHoldRequest({ ...validRequest(), files: [], blobs: [] })).toBe(true)
   })
 
   it('rejects a foreign source tag (another page script posting to our window)', () => {
-    expect(isFsaHoldRequest({ ...validRequest, source: 'not-us' })).toBe(false)
+    expect(isFsaHoldRequest({ ...validRequest(), source: 'not-us' })).toBe(false)
   })
 
   it('rejects a wrong kind', () => {
-    expect(isFsaHoldRequest({ ...validRequest, kind: 'hold-decision' })).toBe(false)
+    expect(isFsaHoldRequest({ ...validRequest(), kind: 'hold-decision' })).toBe(false)
   })
 
   it('rejects an empty id', () => {
-    expect(isFsaHoldRequest({ ...validRequest, id: '' })).toBe(false)
+    expect(isFsaHoldRequest({ ...validRequest(), id: '' })).toBe(false)
   })
 
   it('rejects a non-string id', () => {
-    expect(isFsaHoldRequest({ ...validRequest, id: 42 })).toBe(false)
+    expect(isFsaHoldRequest({ ...validRequest(), id: 42 })).toBe(false)
   })
 
   it('rejects when files is not an array', () => {
-    expect(isFsaHoldRequest({ ...validRequest, files: 'nope' })).toBe(false)
+    expect(isFsaHoldRequest({ ...validRequest(), files: 'nope' })).toBe(false)
   })
 
   it('rejects a file entry missing name', () => {
     expect(
-      isFsaHoldRequest({ ...validRequest, files: [{ size: 1, type: 'application/pdf' }] }),
+      isFsaHoldRequest({ ...validRequest(), files: [{ size: 1, type: 'application/pdf' }] }),
     ).toBe(false)
   })
 
   it('rejects a file entry with negative size', () => {
     expect(
       isFsaHoldRequest({
-        ...validRequest,
+        ...validRequest(),
         files: [{ name: 'a.pdf', size: -1, type: 'application/pdf' }],
+      }),
+    ).toBe(false)
+  })
+
+  it('rejects when blobs is missing entirely', () => {
+    const r = validRequest() as unknown as Record<string, unknown>
+    delete r.blobs
+    expect(isFsaHoldRequest(r)).toBe(false)
+  })
+
+  it('rejects when blobs is not an array', () => {
+    expect(isFsaHoldRequest({ ...validRequest(), blobs: 'nope' })).toBe(false)
+  })
+
+  it('rejects when blobs length does not match files length', () => {
+    expect(
+      isFsaHoldRequest({
+        ...validRequest(),
+        files: [
+          { name: 'a.pdf', size: 100, type: 'application/pdf' },
+          { name: 'b.pdf', size: 100, type: 'application/pdf' },
+        ],
+        blobs: [oneBlob()],
+      }),
+    ).toBe(false)
+  })
+
+  it('rejects when a blob entry is not a File (e.g. a page script forging a plain object)', () => {
+    expect(
+      isFsaHoldRequest({
+        ...validRequest(),
+        blobs: [{ name: 'a.pdf', size: 100, type: 'application/pdf' }],
       }),
     ).toBe(false)
   })

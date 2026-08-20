@@ -5,6 +5,7 @@ import {
   installFsaMessageHandler,
   type FsaHandlerDeps,
 } from '../src/content/fsa-isolated'
+import type { FileInspection } from '../src/content/file-inspector'
 import {
   FSA_HELLO_SOURCE,
   FSA_MESSAGE_SOURCE,
@@ -21,11 +22,50 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+// Cheap fake inspection — enough to satisfy the FileInspection shape
+// so the handler runs to the modal. Individual tests can override.
+function fakeInspection(files: readonly File[]): FileInspection {
+  const perFile = files.map((file) => ({
+    meta: { file, name: file.name, size: file.size, type: file.type },
+    extraction: {
+      status: 'extracted' as const,
+      text: '',
+      meta: {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+        detectedFormat: 'text' as const,
+      },
+    },
+    findings: [],
+    scan: {
+      state: 'clean' as const,
+      maskableCount: 0,
+      categories: [],
+      hasCriticalOrHigh: false,
+    },
+  }))
+  return {
+    perFile,
+    aggregate: {
+      state: 'clean' as const,
+      totalMaskable: 0,
+      categories: [],
+      anyCriticalOrHigh: false,
+      perStateCounts: { sensitive: 0, clean: files.length, unable: 0 },
+    },
+  }
+}
+
 function makeDeps(overrides: Partial<FsaHandlerDeps> = {}): FsaHandlerDeps {
   return {
     isActive: overrides.isActive ?? (() => true),
     isAnotherModalOpen: overrides.isAnotherModalOpen ?? (() => false),
     showModal: overrides.showModal ?? (() => Promise.resolve('cancel')),
+    // Stub inspection by default so tests avoid pdf.js lazy-loads
+    // and jsdom quirks. Individual tests can pass their own to
+    // observe the argument or force a delay.
+    inspect: overrides.inspect ?? ((files) => Promise.resolve(fakeInspection(files))),
   }
 }
 
@@ -35,6 +75,7 @@ function holdRequest(files: { name: string; size: number; type: string }[] = [])
     kind: 'hold-request',
     id: 'test-id-1',
     files,
+    blobs: files.map((f) => new File(['x'], f.name, { type: f.type })),
   }
 }
 
@@ -116,8 +157,112 @@ describe('handleFsaHoldRequest — decision routing via the reply seam', () => {
     expect(reply).toHaveBeenCalledWith('upload-anyway')
     const mock = showModal as unknown as ReturnType<typeof vi.fn>
     expect(mock).toHaveBeenCalledOnce()
-    const call = mock.mock.calls[0] as [{ fileCount: number }]
-    expect(call[0]).toEqual({ fileCount: 1 })
+    const call = mock.mock.calls[0] as [{ fileCount: number; inspection: FileInspection }]
+    expect(call[0].fileCount).toBe(1)
+    // A3.1: showModal now receives the A3 inspection alongside
+    // fileCount so A4 can render its summary from it.
+    expect(call[0].inspection).toBeDefined()
+    expect(call[0].inspection.aggregate.state).toBe('clean')
+    expect(call[0].inspection.perFile).toHaveLength(1)
+  })
+
+  it('flag OFF → does NOT run inspection (bytes are not touched on the pass-through path)', async () => {
+    const inspect = vi.fn(() => Promise.resolve(fakeInspection([])))
+    const showModal = vi.fn(() => Promise.resolve<'upload-anyway' | 'cancel'>('cancel'))
+    const reply = vi.fn()
+    await handleFsaHoldRequest(
+      holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }]),
+      makeDeps({ isActive: () => false, inspect, showModal }),
+      reply,
+    )
+    expect(inspect).not.toHaveBeenCalled()
+    expect(reply).toHaveBeenCalledWith('upload-anyway')
+  })
+
+  it('another modal already open → does NOT run inspection either', async () => {
+    const inspect = vi.fn(() => Promise.resolve(fakeInspection([])))
+    const showModal = vi.fn()
+    const reply = vi.fn()
+    await handleFsaHoldRequest(
+      holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }]),
+      makeDeps({ isAnotherModalOpen: () => true, inspect, showModal }),
+      reply,
+    )
+    expect(inspect).not.toHaveBeenCalled()
+    expect(reply).toHaveBeenCalledWith('cancel')
+  })
+
+  it('A3.1: inspect() is called with the request.blobs (File[]) so extraction + detection can run', async () => {
+    const inspect = vi.fn((files: readonly File[]) => Promise.resolve(fakeInspection(files)))
+    const showModal = vi.fn(() => Promise.resolve<'upload-anyway' | 'cancel'>('upload-anyway'))
+    const reply = vi.fn()
+    const req = holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }])
+    await handleFsaHoldRequest(req, makeDeps({ inspect, showModal }), reply)
+    expect(inspect).toHaveBeenCalledOnce()
+    const passedFiles = inspect.mock.calls[0]?.[0] as readonly File[]
+    // Same reference the request carried — no marshalling loss.
+    expect(passedFiles).toBe(req.blobs)
+    expect(passedFiles[0]).toBeInstanceOf(File)
+    expect(reply).toHaveBeenCalledWith('upload-anyway')
+  })
+})
+
+describe('handleFsaHoldRequest — parity with the change / drop / paste path', () => {
+  // A3.1 closed the coverage gap where the FSA picker never scanned.
+  // Both the change/drop/paste path (document-flow) and the FSA path
+  // funnel through the SAME `inspectFiles` — this test locks that in
+  // by running the real inspector on the same File and asserting the
+  // FSA handler produces byte-for-byte the same inspection.
+  it('same File via the FSA hold-request scans identically to the change-path (paste-path parity)', async () => {
+    const { inspectFiles } = await import('../src/content/file-inspector')
+    const text = 'Patient SSN: 123-45-6789 in the record.'
+    const file = new File([text], 'sensitive.txt', { type: 'text/plain' })
+
+    // Reference: what the change/drop/paste path sees today.
+    const reference = await inspectFiles([file])
+
+    // FSA path: drive the handler with NO `inspect` override so the
+    // real `inspectFiles` runs from `request.blobs`.
+    let observed: FileInspection | null = null
+    const showModal = (opts: { fileCount: number; inspection: FileInspection }) => {
+      observed = opts.inspection
+      return Promise.resolve<'upload-anyway' | 'cancel'>('cancel')
+    }
+    // Use holdRequest's metadata but override its dummy blob with the
+    // real File so the two paths see the same bytes.
+    const req: FsaHoldRequest = {
+      source: FSA_MESSAGE_SOURCE,
+      kind: 'hold-request',
+      id: 'parity-1',
+      files: [{ name: file.name, size: file.size, type: file.type }],
+      blobs: [file],
+    }
+    await handleFsaHoldRequest(
+      req,
+      {
+        isActive: () => true,
+        isAnotherModalOpen: () => false,
+        showModal,
+        // no `inspect` — use production `inspectFiles`
+      },
+      () => {},
+    )
+
+    expect(observed).not.toBeNull()
+    const fsa = observed!
+    // Aggregate parity.
+    expect(fsa.aggregate.state).toBe(reference.aggregate.state)
+    expect(fsa.aggregate.totalMaskable).toBe(reference.aggregate.totalMaskable)
+    expect(fsa.aggregate.anyCriticalOrHigh).toBe(reference.aggregate.anyCriticalOrHigh)
+    expect([...fsa.aggregate.categories].sort()).toEqual([...reference.aggregate.categories].sort())
+    // Per-file finding parity — same rules, spans, values, sensitivity.
+    const norm = (fs: readonly { ruleId: string; start: number; end: number; value: string }[]) =>
+      fs.map((f) => `${f.ruleId}|${f.start}|${f.end}|${f.value}`).sort()
+    expect(norm([...fsa.perFile[0].findings])).toEqual(norm([...reference.perFile[0].findings]))
+    // And it actually found something (belt & suspenders — otherwise
+    // parity would be trivially satisfied by two empty lists).
+    expect(fsa.perFile[0].findings.length).toBeGreaterThanOrEqual(1)
+    expect(fsa.aggregate.state).toBe('sensitive')
   })
 })
 
@@ -191,7 +336,11 @@ describe('installFsaMessageHandler — private-channel handshake & round-trip', 
       makeDeps({ showModal: () => Promise.resolve('upload-anyway') }),
     )
     const port = await performHandshake()
-    const req = holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }])
+    // Empty picker so the round-trip through jsdom's MessageChannel
+    // doesn't need to preserve File objects (jsdom's structured
+    // clone drops File — see comment in fsa-hook.test.ts). The
+    // handler's decision routing is what this test locks in.
+    const req = holdRequest([])
     const decision = await new Promise<{ id: string; decision: string }>((resolve) => {
       port.addEventListener('message', (event) => {
         if (isFsaHoldDecision(event.data)) resolve(event.data as { id: string; decision: string })
@@ -221,7 +370,9 @@ describe('installFsaMessageHandler — private-channel handshake & round-trip', 
     uninstall = installFsaMessageHandler(window, makeDeps({ showModal }))
     const port = await performHandshake()
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const req = holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }])
+    // Empty picker — see note in the "replies to a valid hold-request"
+    // test above; jsdom's MessageChannel drops File on clone.
+    const req = holdRequest([])
     const decision = await new Promise<{ decision: string }>((resolve) => {
       port.addEventListener('message', (event) => {
         if (isFsaHoldDecision(event.data)) resolve(event.data as { decision: string })
