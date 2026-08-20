@@ -698,9 +698,11 @@ too-large / timeout / unsupported-type / parse-error / empty`.
   `disableAutoFetch: true`, `disableStream: true`. Worker is
   BUNDLED LOCALLY (Vite `?worker` suffix — see
   `manifest.web_accessible_resources`).
-- `src/content/extraction/formats/xlsx.ts` — SheetJS `read` +
-  per-sheet `sheet_to_csv`. Macros are never executed (SheetJS
-  ignores the `vbaProject` stream).
+- `src/content/extraction/formats/xlsx.ts` +
+  `src/content/extraction/formats/xlsx.worker.ts` — SheetJS parsing
+  runs in a terminable Web Worker (see
+  "XLSX Worker + patched SheetJS sourcing" below). Macros are never
+  executed (SheetJS ignores the `vbaProject` stream).
 - `src/content/extraction/formats/docx.ts` — jszip → `word/document.xml`
   → primitive `<w:t>` scan with `<w:p>` / `<w:br>` breaks; no
   mammoth, no HTML conversion.
@@ -766,6 +768,64 @@ orchestrators. Detection over the extracted text is A3's job.
 per build) so the pdf.js worker is loadable by the content script.
 `verify:sw` and the "does not collect data" declaration are
 re-verified.
+
+## XLSX Worker + patched SheetJS sourcing (V1.2 M6 release blocker)
+
+M6 (issue #31) remediates the two HIGH-severity SheetJS
+vulnerabilities that shipped in `xlsx@0.18.5` alongside A2 (behind
+the OFF flag). Both must land before `DOCUMENT_PROTECTION_ENABLED`
+is turned on:
+
+- **CVE-2023-30533** — Prototype Pollution (SheetJS ≤ 0.19.2)
+- **CVE-2024-22363** — ReDoS (SheetJS ≤ 0.20.1)
+
+**Patched SheetJS sourcing.** SheetJS no longer publishes to npm;
+the fixed builds live on the official CDN. `package.json` and the
+lockfile pin the SheetJS CDN tarball
+(`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz` — a version
+≥ 0.20.2 that patches both CVEs). The tarball is downloaded ONCE
+at build time (or the first `npm install` after checkout) and
+resolved by npm's integrity hash from the lockfile on every
+subsequent install. Nothing about this changes runtime behaviour:
+the extension still makes zero network requests at runtime — the
+no-network test in `tests/extraction/no-network.test.ts` asserts
+that.
+
+**XLSX Worker.** `XLSX.read` and `XLSX.utils.sheet_to_csv` are
+synchronous; a hostile workbook (ReDoS payload, pathological cell
+graph) can peg the main thread and the A2 10 s timeout cannot
+preempt it. `src/content/extraction/formats/xlsx.ts` now spawns
+`xlsx.worker.ts` (a Vite `?worker` chunk) per extraction and
+transfers the ArrayBuffer for zero-copy handoff. The worker imports
+SheetJS at module load; when the caller's `AbortSignal` fires,
+`worker.terminate()` drops the entire parse context (stack, buffer,
+workbook state) in one shot.
+
+**Wire contract.** Kept tiny so the worker bundle stays small:
+
+```text
+main → worker  { buf: ArrayBuffer }              (transferred)
+main ← worker  { kind: 'text', text: string }
+main ← worker  { kind: 'reason', reason?: string }
+```
+
+**Test coverage** — `tests/extraction/hardening.test.ts`:
+
+- Real (inline-fake) worker path produces the same CSV output as the
+  A2 sync path — every existing docx/pptx/xlsx / no-network test
+  goes through the Worker seam via `tests/setup.ts`.
+- Hostile worker (never replies) + `AbortController.abort()` →
+  `worker.terminate()` is called, extractor resolves with
+  `unable_to_inspect / timeout`.
+- Already-aborted signal short-circuits with `timeout` WITHOUT
+  spawning a worker.
+
+**Test seam.** `xlsx.ts` exports `__setXlsxWorkerFactoryForTesting`
+so `tests/setup.ts` can install a synchronous in-memory factory
+(jsdom has no `Worker`); every extraction test runs the real
+SheetJS parse via this seam. Individual tests can also pass an
+inline `workerFactory` option per call (used by the
+termination-on-abort tests).
 
 ## What this architecture explicitly does NOT include in V1
 

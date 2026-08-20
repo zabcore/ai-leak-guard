@@ -462,3 +462,81 @@ describe('inspectFiles — bounded concurrency', () => {
     vi.doUnmock('../../src/content/extraction/formats/text')
   })
 })
+
+describe('xlsx extractor — Worker termination on abort (M6 release blocker)', () => {
+  // The M6 fix for issue #31: XLSX.read is synchronous and can be
+  // pegged by a hostile ReDoS workbook. Running it in a terminable
+  // Worker means the extraction 10 s timeout can `worker.terminate()`
+  // and drop the parse in one shot. These tests assert the wiring:
+  // an aborted signal terminates the worker and settles as timeout,
+  // even for a worker that would otherwise never reply.
+
+  it('calls worker.terminate() when the signal aborts during a hostile (never-replies) parse', async () => {
+    const { extractXlsx } = await import('../../src/content/extraction/formats/xlsx')
+    let terminateCalls = 0
+    let postCalls = 0
+    // A hostile-workbook fake: accepts postMessage but never fires
+    // onmessage, modelling `XLSX.read` chewing on ReDoS. terminate()
+    // is the only way out.
+    const hostileWorkerFactory = () => {
+      const w = {
+        onmessage: null as ((event: MessageEvent) => void) | null,
+        onerror: null as ((event: unknown) => void) | null,
+        postMessage: (_msg: unknown) => {
+          postCalls += 1
+        },
+        terminate: () => {
+          terminateCalls += 1
+          w.onmessage = null
+        },
+      }
+      return w
+    }
+
+    const ac = new AbortController()
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'sheet.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const promise = extractXlsx(file, {
+      signal: ac.signal,
+      workerFactory: hostileWorkerFactory,
+    })
+    // Wait until the promise setup has reached postMessage (past the
+    // `await file.arrayBuffer()`). jsdom needs several event-loop
+    // turns for that arrayBuffer resolution.
+    for (let i = 0; i < 20 && postCalls === 0; i++) {
+      await new Promise((r) => setTimeout(r, 0))
+    }
+    expect(postCalls).toBe(1)
+
+    ac.abort()
+    const result = await promise
+
+    expect(result.kind).toBe('reason')
+    if (result.kind === 'reason') expect(result.reason).toBe('timeout')
+    expect(terminateCalls).toBeGreaterThanOrEqual(1)
+  })
+
+  it('short-circuits with timeout WITHOUT spawning a worker when the signal is already aborted', async () => {
+    const { extractXlsx } = await import('../../src/content/extraction/formats/xlsx')
+    let factoryCalled = 0
+    const factory = () => {
+      factoryCalled += 1
+      return {
+        onmessage: null,
+        onerror: null,
+        postMessage: () => {},
+        terminate: () => {},
+      }
+    }
+    const ac = new AbortController()
+    ac.abort()
+    const file = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'sheet.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const result = await extractXlsx(file, { signal: ac.signal, workerFactory: factory })
+    expect(result.kind).toBe('reason')
+    if (result.kind === 'reason') expect(result.reason).toBe('timeout')
+    expect(factoryCalled).toBe(0)
+  })
+})

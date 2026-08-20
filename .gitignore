@@ -61,6 +61,11 @@ web_modules/
 
 # Output of 'npm pack'
 *.tgz
+# Exception: keep the pinned local SheetJS archive that package.json
+# resolves via `"xlsx": "file:vendor/xlsx-0.20.3.tgz"`. Additional
+# vendored tarballs must be added here explicitly by path so they get
+# reviewed rather than sneaking in via a wildcard.
+!vendor/xlsx-0.20.3.tgz
 
 # Yarn Integrity file
 .yarn-integrity
