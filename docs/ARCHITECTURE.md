@@ -827,6 +827,87 @@ SheetJS parse via this seam. Individual tests can also pass an
 inline `workerFactory` option per call (used by the
 termination-on-abort tests).
 
+## Document detection integration (V1.2 A3 — flagged OFF)
+
+A2 turned every held file into `entry.extraction` but left
+`findings: []`. A3 plugs the existing **V1.1 detector verbatim**
+(`detectDetailed` from `src/detector/engine.ts`) over that extracted
+text, folds the outcome into a `DocScanResult`, and rolls per-file
+results up into an `AggregateScanResult` for A4's headline UX. No
+new detector code, no new rules — the paste path and the document
+path share one engine.
+
+**Files:**
+
+- `src/content/extraction/scan-result.ts` — pure types +
+  `scanResultFor()` (per-file) + `aggregateScanResults()` (fold).
+- `src/content/file-inspector.ts` — `inspectFiles` now runs
+  `detectDetailed(extraction.text)` per entry when
+  `extraction.status === 'extracted'`; skips `empty` and
+  `unable_to_inspect` (no text to scan). Adds `MAX_SCAN_CHARS =
+2_000_000` size guard and a per-file try/catch that degrades a
+  detector throw to `unable_to_inspect / scan-error` without
+  crashing the pool.
+- Re-exports `isMaskable` so A4/A5 gate on the same predicate the
+  inspector uses.
+
+**Scan-result state (`DocScanResult`):**
+
+```text
+extraction.status === 'extracted'    → run detector →
+  filter(isMaskable).length > 0        → { state: 'sensitive',
+                                            maskableCount, categories,
+                                            hasCriticalOrHigh }
+  else                                 → { state: 'clean', … zeros }
+extraction.status === 'empty'        → { state: 'clean', … zeros }
+extraction.status === 'unable_to_inspect'
+                                     → { state: 'unable_to_inspect',
+                                          reason: extraction.reason }
+```
+
+`isMaskable` is the **single "counts as sensitive" gate** — it
+mirrors the paste path (clinical-context / LOW findings never mask
+alone), so an ICD/CPT-only document stays `clean`. The A4 modal
+picks its copy from `scan.state` and its count from
+`scan.maskableCount`.
+
+**Aggregate roll-up (`AggregateScanResult`).** Any file `sensitive`
+→ aggregate `sensitive`; else any `unable` → aggregate
+`unable_to_inspect`; else `clean`. Carries `totalMaskable`,
+deduplicated `categories`, `anyCriticalOrHigh`, and per-state file
+counts.
+
+**Scan-size guard.** Extracted text over `MAX_SCAN_CHARS`
+(2 000 000 chars, chosen so a large PDF still fits but a
+document-scale hostile input can't peg a per-rule regex). Text over
+the cap is refused — file becomes `unable_to_inspect /
+too-large-to-scan` rather than being silently truncated and reported
+as `clean`. The V1.1 rules were tuned on paste-sized inputs; a
+detector-side fix for any per-rule backtracking pathology found on
+larger inputs is deferred to a future detector-focused PR, per the
+"no `src/detector/**` changes in A3" rule.
+
+**Per-file try/catch.** Each `detectDetailed` call is wrapped so
+that a single hostile file (unexpected regex path, adversarial
+input) can only degrade that one file to `unable_to_inspect /
+scan-error`; the pool continues and siblings still get results. The
+inspector remains async and never rejects.
+
+**Metadata-only discipline (A5 forward-compat).** The scan RESULT
+(`state / maskableCount / categories / hasCriticalOrHigh / reason`)
+carries no matched-value bytes and is safe to log. `Finding.value`
+(the matched text) stays in memory only — never persist / log /
+postMessage it. A5's event log will consume `DocScanResult`, not
+`Finding[]`.
+
+**Parity.** A dedicated test asserts `detectDetailed(text)` returns
+identical findings whether reached via the paste path or the
+document path — no divergent behaviour is possible because both
+call the same function.
+
+**Flag OFF.** Nothing above runs unless `documentFlowActive()` opens
+`inspectFiles`. Existing paste + A1 + A1.1 + A2 tests stay green.
+
 ## What this architecture explicitly does NOT include in V1
 
 - React or any UI framework

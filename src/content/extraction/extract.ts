@@ -36,6 +36,12 @@ export type ExtractionReason =
   | 'unsupported-type'
   | 'parse-error'
   | 'empty'
+  // A3 additions — extraction succeeded but the SCAN over the
+  // extracted text was refused. Kept in this union (rather than a
+  // separate scan-reason type) so `ExtractionResult` remains the
+  // single carrier the flow reasons about.
+  | 'too-large-to-scan'
+  | 'scan-error'
 
 /**
  * Format the sniffer decided on. `'unknown'` means neither magic
