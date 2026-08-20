@@ -605,8 +605,14 @@ isolated ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-anyw
   so the isolated-world inspector can extract + scan locally (A3.1
   closed the gap that had made the FSA picker the only site path
   never scanned). Files are structured-cloned onto the **private**
-  `MessagePort` — page listeners never observe the port, so this
-  transfer is not "user data leaked to the page". `upload-anyway`
+  `MessagePort` — after a successful handshake, steady-state port
+  traffic is not observable to page listeners (the initial
+  `alg-fsa-port-handoff` on `window.postMessage` IS observable to
+  page listeners via `MessageEvent.ports`, which is the
+  first-hello-hijack race described in the threat-model section
+  below; the hold-request `File[]` itself is only ever posted on
+  the port after handoff, so once handoff succeeds page scripts
+  can neither read nor forge it). `upload-anyway`
   returns the **original picker handles** MAIN still holds, not
   anything derived from the isolated-side clone; the site sees the
   same handles a native picker call would have produced, byte-for-
