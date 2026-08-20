@@ -72,6 +72,18 @@ export function resolveExtensionWorkerUrl(rawUrl: string): string {
   // we behave the same way if a future bundler drops it.
   const relative = rawUrl.startsWith('/') ? rawUrl.slice(1) : rawUrl
   const resolved = getURL(relative)
+  // Same-origin enforcement, applied symmetrically to both the
+  // qualified-URL path above and this resolved path — a stubbed or
+  // buggy `chrome.runtime.getURL` implementation that hands back
+  // `chrome-extension://<other-id>/…` (or any non-extension URL)
+  // must NOT lead to a Worker being spawned there. The
+  // `assertExtensionOriginWorkerUrl` guard catches non-extension
+  // origins; this one specifically catches OTHER extensions.
+  if (!urlHasOrigin(resolved, ownOrigin)) {
+    throw new Error(
+      `[AI Leak Guard] worker URL: resolved ${JSON.stringify(resolved)} does not belong to this extension (${ownOrigin})`,
+    )
+  }
   return assertExtensionOriginWorkerUrl(resolved)
 }
 

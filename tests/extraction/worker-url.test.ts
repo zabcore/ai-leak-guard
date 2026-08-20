@@ -84,8 +84,46 @@ describe('resolveExtensionWorkerUrl', () => {
       }
     ).chrome.runtime.getURL = (p: string) => `https://evil.example/${p}`
     try {
+      // ownOrigin is derived first via getURL('') → 'https://evil.example/',
+      // which fails the same-origin match on the resolved URL before
+      // `assertExtensionOriginWorkerUrl` even runs. Both error paths
+      // are acceptable — either message means we refused to spawn.
       expect(() => resolveExtensionWorkerUrl('/assets/x.js')).toThrow(
-        /expected an extension-origin URL/,
+        /(does not belong to this extension|expected an extension-origin URL)/,
+      )
+    } finally {
+      ;(
+        globalThis as unknown as {
+          chrome: { runtime: { getURL: (s: string) => string } }
+        }
+      ).chrome.runtime.getURL = original
+    }
+  })
+
+  it('rejects a resolved URL from a DIFFERENT extension (symmetric guard)', () => {
+    // Even if a stubbed / buggy `chrome.runtime.getURL` correctly
+    // returns a `chrome-extension://…` URL, it must be OUR extension
+    // — not some other extension the browser also has installed.
+    // This mirrors the cross-extension hijack guard on the qualified
+    // path, applied symmetrically to the resolved path.
+    const original = (
+      globalThis as unknown as { chrome: { runtime: { getURL: (s: string) => string } } }
+    ).chrome.runtime.getURL
+    ;(
+      globalThis as unknown as {
+        chrome: { runtime: { getURL: (s: string) => string } }
+      }
+    ).chrome.runtime.getURL = (p: string) => {
+      // ownOrigin lookup returns our real extension id; resource
+      // lookup returns some OTHER extension's URL. This is the
+      // scenario the earlier fix protects against on the qualified-
+      // input path — the same guard must fire on the resolved path.
+      if (p === '') return `chrome-extension://testextidtestextidtestextidtestex/`
+      return `chrome-extension://otherextidotherextidotherextidother/${p}`
+    }
+    try {
+      expect(() => resolveExtensionWorkerUrl('/assets/x.js')).toThrow(
+        /does not belong to this extension/,
       )
     } finally {
       ;(
