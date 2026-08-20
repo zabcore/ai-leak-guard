@@ -24,7 +24,8 @@
 // stale hello arrives after the port has been transferred (only one
 // consumer can hold a transferred port), it is silently dropped.
 //
-// Decision logic:
+// Decision logic (A4 — routes through the shared decision helper so
+// the FSA path and the change/drop/paste path cannot drift):
 //
 //   flag OFF / not in scope / extension disabled
 //                      → reply `upload-anyway` immediately without
@@ -37,12 +38,16 @@
 //                                   policy matches V1.1 paste and A1
 //                                   change / drop / paste)
 //
-//   otherwise                    → run `inspectFiles(request.blobs)`
+//   otherwise                    → kick off `inspectFiles(request.blobs)`
 //                                   locally (A3 extraction + V1.1
-//                                   detection), then open the
-//                                   placeholder document modal with
-//                                   the file count + inspection and
-//                                   forward the outcome. Refs to the
+//                                   detection) and hand the pending
+//                                   inspection to `resolveDocumentDecision`.
+//                                   Clean → reply `upload-anyway`
+//                                   without opening a modal. Sensitive
+//                                   or unable_to_inspect → the shared
+//                                   helper opens the A4 modal in the
+//                                   matching view; the reply carries
+//                                   the user's decision. Refs to the
 //                                   `File[]` are dropped as soon as
 //                                   the decision resolves.
 
@@ -57,6 +62,7 @@ import {
   type FsaPortHandoff,
 } from './main-world/fsa-messages'
 import { inspectFiles, type FileInspection } from './file-inspector'
+import type { DocumentModalOutcome } from './document-modal'
 
 /**
  * Injectable seams so the handler can be exercised without a real
@@ -68,16 +74,16 @@ export interface FsaHandlerDeps {
   /** Is any V1.1 preview or A1 document modal already on screen? */
   readonly isAnotherModalOpen: () => boolean
   /**
-   * Opens the document-protection modal and resolves with the user's
-   * choice. `inspection` carries the A3 per-file + aggregate scan
-   * results the A4 modal will render its summary from. The
-   * placeholder modal in V1.2 A3.1 only reads `fileCount`; A4 will
-   * pick up `inspection` without touching this handler.
+   * Route a pending `FileInspection` through the A4 decision helper —
+   * clean files auto-proceed with no modal, sensitive / unable open
+   * the modal in the matching view, and the promise resolves with
+   * the user's outcome. Same helper backs `document-flow.ts` so the
+   * change/drop/paste path and the FSA path stay in lockstep.
    */
-  readonly showModal: (opts: {
-    fileCount: number
-    inspection: FileInspection
-  }) => Promise<'upload-anyway' | 'cancel'>
+  readonly resolveDecision: (
+    inspectionPromise: Promise<FileInspection>,
+    opts: { readonly opener: Element | null },
+  ) => Promise<DocumentModalOutcome>
   /**
    * Optional seam that overrides `inspectFiles` — kept ONLY for the
    * FSA handler unit tests, which stub inspection to skip pdf.js
@@ -132,21 +138,20 @@ export async function handleFsaHoldRequest(
     reply('cancel')
     return
   }
-  // Run A3 extraction + V1.1 detection over the picker's files
-  // BEFORE opening the modal — the placeholder modal only reads
-  // `fileCount` today, but A4 will render its summary from
-  // `inspection` without any further changes to this handler.
+  // Kick off extraction + detection over the picker's `File[]` and
+  // hand the pending inspection to the shared A4 decision helper —
+  // it applies the flicker-avoidance delay, opens the modal only if
+  // the aggregate isn't clean, and returns the user's outcome. The
+  // FSA path and the change/drop/paste path route through the same
+  // helper so their UX cannot drift.
   //
   // `inspectFiles` is documented never-throws; a per-file failure
   // becomes `unable_to_inspect` on that entry. So we don't need a
   // try/catch here — the outer handler's `catch` still guards the
   // rest of the flow.
   const inspect = deps.inspect ?? inspectFiles
-  const inspection = await inspect(request.blobs)
-  const outcome = await deps.showModal({
-    fileCount: request.files.length,
-    inspection,
-  })
+  const inspectionPromise = inspect(request.blobs)
+  const outcome = await deps.resolveDecision(inspectionPromise, { opener: null })
   reply(outcome)
   // Structured-clone refs to the picker's `File[]` are only held by
   // this handler's scope + the inspection result. Returning here

@@ -7,7 +7,8 @@ import type { ReleaseOutcome } from '../src/content/upload-release'
 
 function makeDeps(overrides: Partial<HoldDeps> = {}): HoldDeps {
   return {
-    showModal: overrides.showModal ?? (() => Promise.resolve('cancel')),
+    resolveDecision:
+      overrides.resolveDecision ?? (() => Promise.resolve<DocumentModalOutcome>('cancel')),
     releaseFiles: overrides.releaseFiles ?? (() => 'released'),
     clearInput: overrides.clearInput ?? (() => {}),
   }
@@ -22,8 +23,8 @@ function dropState(...files: File[]): ExtractedFiles {
 }
 
 describe('holdFiles', () => {
-  it('opens the modal with the correct file count', async () => {
-    const showModal: HoldDeps['showModal'] = vi.fn(() =>
+  it('hands the pending inspection + opener to resolveDecision', async () => {
+    const resolveDecision: HoldDeps['resolveDecision'] = vi.fn(() =>
       Promise.resolve<DocumentModalOutcome>('cancel'),
     )
     const input = document.createElement('input')
@@ -32,12 +33,12 @@ describe('holdFiles', () => {
       new File(['a'], 'a.pdf', { type: 'application/pdf' }),
       new File(['b'], 'b.pdf', { type: 'application/pdf' }),
     ]
-    await holdFiles(changeState(input, ...files), input, makeDeps({ showModal }))
-    const mock = showModal as unknown as ReturnType<typeof vi.fn>
+    await holdFiles(changeState(input, ...files), input, makeDeps({ resolveDecision }))
+    const mock = resolveDecision as unknown as ReturnType<typeof vi.fn>
     expect(mock).toHaveBeenCalledOnce()
-    const call = mock.mock.calls[0] as [{ fileCount: number; opener: Element | null }]
-    expect(call[0].fileCount).toBe(2)
-    expect(call[0].opener).toBe(input)
+    const call = mock.mock.calls[0] as [Promise<unknown>, { opener: Element | null }]
+    expect(call[0]).toBeInstanceOf(Promise)
+    expect(call[1].opener).toBe(input)
   })
 
   it('on Upload anyway → invokes releaseFiles and returns the release outcome', async () => {
@@ -49,7 +50,7 @@ describe('holdFiles', () => {
       changeState(input, file),
       input,
       makeDeps({
-        showModal: () => Promise.resolve('upload-anyway'),
+        resolveDecision: () => Promise.resolve('upload-anyway'),
         releaseFiles: release,
       }),
     )
@@ -68,7 +69,7 @@ describe('holdFiles', () => {
       changeState(input, file),
       input,
       makeDeps({
-        showModal: () => Promise.resolve('cancel'),
+        resolveDecision: () => Promise.resolve('cancel'),
         clearInput,
       }),
     )
@@ -85,7 +86,7 @@ describe('holdFiles', () => {
       dropState(file),
       null,
       makeDeps({
-        showModal: () => Promise.resolve('cancel'),
+        resolveDecision: () => Promise.resolve('cancel'),
         clearInput,
       }),
     )
@@ -100,7 +101,7 @@ describe('holdFiles', () => {
       dropState(file),
       null,
       makeDeps({
-        showModal: () => Promise.resolve('upload-anyway'),
+        resolveDecision: () => Promise.resolve('upload-anyway'),
         releaseFiles: release,
         clearInput,
       }),

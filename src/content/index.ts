@@ -14,7 +14,8 @@ import {
   extractFilesFromPaste,
 } from './file-extraction'
 import { holdFiles, type HoldResult } from './document-flow'
-import { isDocumentModalOpen, showDocumentModal } from './document-modal'
+import { isDocumentModalOpen } from './document-modal'
+import { resolveDocumentDecision } from './document-decision'
 import { clearFileInput, consumePassThroughIfArmed } from './upload-release'
 import { showReattachNudge } from './document-nudge'
 import { installFsaMessageHandler } from './fsa-isolated'
@@ -101,19 +102,26 @@ function documentFlowActive(): boolean {
 //   - upload-anyway + needs-user-reattach → the DataTransfer replay
 //     wasn't available (drop / paste / closed-shadow-root); the
 //     pass-through-once guard is armed, so we show a small nudge
-//     telling the user to re-attach so the next selection reaches
-//     the host untouched.
+//     telling the user to re-attach. On drop/paste of a CLEAN file
+//     the copy is informational ("no sensitive items found"); on a
+//     sensitive/unable file the user actively said "upload anyway"
+//     via the modal so the nudge stays a plain re-attach instruction.
 //   - cancel                              → nothing was uploaded and
 //     the origin input (if any) was already cleared by the flow.
 function handleHoldResult(result: HoldResult, kind: 'change' | 'drop' | 'paste'): void {
   if (result.outcome === 'cancel') return
   if (result.release !== 'needs-user-reattach') return
+  const wasClean = result.inspection.aggregate.state === 'clean'
   const nudge =
     kind === 'change'
       ? 'Attachment released. Please pick the file again to send it to the site.'
       : kind === 'drop'
-        ? 'Attachment released. Please drop the file again to send it to the site.'
-        : 'Attachment released. Please paste the image again to send it to the site.'
+        ? wasClean
+          ? 'No sensitive items found. Drop the file again to send it to the site.'
+          : 'Attachment released. Please drop the file again to send it to the site.'
+        : wasClean
+          ? 'No sensitive items found. Paste the image again to send it to the site.'
+          : 'Attachment released. Please paste the image again to send it to the site.'
   showReattachNudge(nudge)
 }
 
@@ -128,7 +136,7 @@ function handleHoldResult(result: HoldResult, kind: 'change' | 'drop' | 'paste')
 installFsaMessageHandler(window, {
   isActive: () => documentFlowActive(),
   isAnotherModalOpen: () => isDocumentModalOpen() || isPreviewModalOpen(),
-  showModal: (opts) => showDocumentModal({ fileCount: opts.fileCount, opener: null }),
+  resolveDecision: (inspectionPromise, opts) => resolveDocumentDecision(inspectionPromise, opts),
 })
 
 // One listener on `window` in the capture phase. Two reasons this beats

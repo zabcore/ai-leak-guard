@@ -45,7 +45,8 @@ ai-leak-guard/
 │   │   ├── toast.ts              # Shadow DOM confirmation toast (no Undo in V1.1)
 │   │   ├── document-flag.ts      # V1.2 A1 feature-flag guard (default OFF)
 │   │   ├── document-flow.ts      # V1.2 A1 hold state machine
-│   │   ├── document-modal.ts     # V1.2 A1 placeholder confirm modal
+│   │   ├── document-decision.ts  # V1.2 A4 shared clean/sensitive/unable helper
+│   │   ├── document-modal.ts     # V1.2 A4 warning modal (scanning/sensitive/unable)
 │   │   ├── document-nudge.ts     # V1.2 A1 re-attach nudge (Shadow DOM one-liner)
 │   │   ├── file-extraction.ts    # V1.2 A1 File[] extraction from change/drop/paste
 │   │   ├── file-inspector.ts     # V1.2 A1 inspector STUB (no parsing, no findings)
@@ -480,13 +481,17 @@ Same event ordering rationale as V1.1 paste — see "Paste interception
 ordering" above. When the flag is OFF, `documentFlowActive()` returns
 false and every one of these branches is a strict no-op.
 
-**Hold state machine (`src/content/document-flow.ts`):**
+**Hold state machine (`src/content/document-flow.ts`, A4-final):**
 
 ```
-extract → inspect (stub) → showDocumentModal
+extract → inspect → resolveDocumentDecision
     ├─ 'upload-anyway' → releaseFiles(state)
     └─ 'cancel'        → clearInput(origin) if change; else drop
 ```
+
+`resolveDocumentDecision` handles the clean auto-release, the
+sensitive / unable modal views, and the cancellable scanning state
+— see the A4 section further below.
 
 The inspector at A1 is a **stub** (`src/content/file-inspector.ts`)
 that returns `findings: []` for any input and never reads file
@@ -940,6 +945,82 @@ call the same function.
 
 **Flag OFF.** Nothing above runs unless `documentFlowActive()` opens
 `inspectFiles`. Existing paste + A1 + A1.1 + A2 tests stay green.
+
+## Document warning modal (V1.2 A4 — flagged OFF)
+
+A4 replaces the A1 placeholder confirm modal with the real warning
+UX and unifies the two hold paths (change/drop/paste via
+`document-flow.ts`, ChatGPT FSA via `fsa-isolated.ts`) onto a single
+decision helper so their behavior cannot drift. Product rule:
+**documents scan-and-WARN, never block.** Clean files auto-proceed
+with NO modal; the modal appears only for `sensitive` or
+`unable_to_inspect`.
+
+**Shared decision helper (`src/content/document-decision.ts`).**
+Both hold paths funnel through:
+
+```text
+resolveDocumentDecision(inspectionPromise, { opener })
+  → 'upload-anyway' | 'cancel'
+```
+
+Branch on the A3 aggregate `DocScanResult`:
+
+- `clean` → resolve `'upload-anyway'` with **no modal shown**. On
+  the change/FSA paths this is a silent release; on drop/paste the
+  release step needs a re-attach, and the nudge copy is reworded
+  as informational ("No sensitive items found. Drop/paste the file
+  again to send it to the site.") because the user was never
+  warned in the first place.
+- `sensitive` → open the modal in the sensitive view:
+  "N sensitive items found in this file" (or "…across M files"),
+  friendly category chips (`healthcare_patient_id`→"Patient
+  identifiers (MRN)", `identity`→"Personal identity",
+  `government_financial`→"SSN / financial", `provider_id`→"Provider
+  ID (NPI)", `developer_credential`→"Credentials"), and an
+  emphasised "Includes high-severity items." line when
+  `hasCriticalOrHigh` is true. Primary is **[Upload anyway]**.
+- `unable_to_inspect` → open the modal in the unable view with a
+  reason-aware sub-line: encrypted / no-text-layer / too-large /
+  timeout / unsupported-type / parse-error / scan-error each get
+  a distinct honest copy. Primary is still **[Upload anyway]** — a
+  file we couldn't read is not proof it's dangerous.
+
+**Cancellable "Checking…" state.** Extraction can take up to
+`EXTRACTION_TIMEOUT_MS` per file; the helper races
+`inspectionPromise` against a `FLICKER_DELAY_MS` (250 ms) timer:
+
+- Inspection wins → route straight to the terminal state (or the
+  clean auto-release) — no spinner flash.
+- Timer wins → paint the scanning view (spinner + "Checking this
+  file…" + Cancel). When inspection subsequently resolves, the
+  helper transitions the SAME modal instance in-place
+  (`ctrl.showSensitive(...)` / `ctrl.showUnable(...)` /
+  `ctrl.close('upload-anyway')` on clean). If the user cancels
+  during scanning, the helper honours it — even if the eventual
+  inspection would have been sensitive.
+
+**Modal controller (`src/content/document-modal.ts`).** The V1.1
+Shadow-DOM patterns are reused verbatim (closed root, focus trap
+over primary → secondary → close, Escape / × / backdrop cancel,
+capture-phase keydown so ChatGPT/Claude's Enter-to-send doesn't
+fire while the modal is up, focus returns to the opener on close).
+A4 replaces `showDocumentModal(opts)` with `openDocumentModal({opener})
+→ DocumentModalController` so the decision helper can start in the
+scanning view and transition to a result view without unmounting.
+
+**Metadata-only rendering.** The modal API accepts only
+`totalMaskable`, `categories`, `hasCriticalOrHigh`, `fileCount`,
+`reason` — never `Finding.value`. A dedicated component test
+asserts a known SSN literal is absent from the modal's shadow DOM
+after `showSensitive(...)`. This mirrors A5's metadata-only event
+log discipline; no clean-copy / remove-item controls exist in
+V1.2.
+
+**Flag OFF.** `documentFlowActive()` (paste path) and `isActive`
+(FSA path) still gate the entire chain. When the flag is off no
+inspection runs, no modal opens, and the site sees byte-for-byte
+native behaviour.
 
 ## What this architecture explicitly does NOT include in V1
 
