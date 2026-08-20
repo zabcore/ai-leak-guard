@@ -11,6 +11,7 @@ function makeDeps(overrides: Partial<HoldDeps> = {}): HoldDeps {
       overrides.resolveDecision ?? (() => Promise.resolve<DocumentModalOutcome>('cancel')),
     releaseFiles: overrides.releaseFiles ?? (() => 'released'),
     clearInput: overrides.clearInput ?? (() => {}),
+    inspect: overrides.inspect,
   }
 }
 
@@ -84,30 +85,38 @@ describe('holdFiles', () => {
     // instantly on cancel and never awaits the pending scan.
   })
 
-  it('on Cancel → does NOT wait for inspection to settle', async () => {
+  it('on Cancel → returns BEFORE inspection settles', async () => {
+    // Ordering test, not a wall-time test. We inject a deferred
+    // inspection promise that never resolves during the test body, so
+    // the ONLY way `holdFiles` can return is by skipping the await on
+    // it. A regressed implementation that awaits inspection would
+    // hang forever here.
     const clearInput = vi.fn()
     const input = document.createElement('input')
     input.type = 'file'
     const file = new File(['x'], 'a.pdf', { type: 'application/pdf' })
-    // Resolve the decision immediately as 'cancel'. `holdFiles` starts
-    // the inspection promise itself and, per the fix, must not await
-    // it before returning on cancel. We prove this by measuring wall
-    // time — a real cancel path returns in <50 ms even though the
-    // extractor's per-file work is real (there's a jsdom extractor
-    // for `text/plain` that resolves promptly, but the invariant we
-    // care about is the ordering: return before the promise settles).
-    const start = Date.now()
+    let resolveInspection!: (value: never) => void
+    const inspectPromise = new Promise<never>((resolve) => {
+      resolveInspection = resolve
+    })
+    const inspect = vi.fn(() => inspectPromise)
+
     const result = await holdFiles(
       changeState(input, file),
       input,
       makeDeps({
         resolveDecision: () => Promise.resolve('cancel'),
         clearInput,
+        inspect,
       }),
     )
-    const elapsed = Date.now() - start
     expect(result.outcome).toBe('cancel')
-    expect(elapsed).toBeLessThan(200)
+    expect(clearInput).toHaveBeenCalledOnce()
+    expect(inspect).toHaveBeenCalledOnce()
+    // Only NOW do we let the inspection promise resolve — the test's
+    // arrival at this line already proved cancel returned first.
+    // Resolving prevents an unhandled-promise warning.
+    resolveInspection(undefined as never)
   })
 
   it('on Cancel with a drop event → does NOT try to clear an input (there is none)', async () => {

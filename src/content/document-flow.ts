@@ -44,6 +44,17 @@ export interface HoldDeps {
   ) => Promise<DocumentModalOutcome>
   readonly releaseFiles: (state: ExtractedFiles) => ReleaseOutcome
   readonly clearInput: (input: HTMLInputElement) => void
+  /**
+   * Optional seam that overrides `inspectFiles`. Used by tests that
+   * need a deferred inspection promise to prove the cancel path
+   * returns BEFORE inspection settles (the wall-time test the earlier
+   * A4 fix landed with couldn't actually distinguish the two orderings
+   * in jsdom, where the built-in text extractor completes in a couple
+   * of milliseconds). Production leaves this undefined and the
+   * orchestrator calls the real `inspectFiles`. Matches the same
+   * pattern `FsaHandlerDeps.inspect` uses on the FSA path.
+   */
+  readonly inspect?: (files: readonly File[]) => Promise<FileInspection>
 }
 
 const defaultDeps: HoldDeps = {
@@ -66,7 +77,8 @@ export async function holdFiles(
   // Kick off extraction + detection concurrently with the decision
   // helper so the "Checking…" state can paint immediately on a slow
   // scan (and skip entirely on a fast one).
-  const inspectionPromise = inspectFiles(state.files)
+  const inspect = deps.inspect ?? inspectFiles
+  const inspectionPromise = inspect(state.files)
   const outcome = await deps.resolveDecision(inspectionPromise, { opener })
 
   if (outcome === 'cancel') {
