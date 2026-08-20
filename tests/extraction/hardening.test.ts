@@ -122,6 +122,7 @@ describe('pdf.js loader — concurrent calls share one Worker (no leak)', () => 
   // cache, two concurrent PDF extractions would spawn two workers.
 
   let workerConstructCount = 0
+  const OriginalWorker = globalThis.Worker
 
   beforeEach(async () => {
     workerConstructCount = 0
@@ -139,20 +140,25 @@ describe('pdf.js loader — concurrent calls share one Worker (no leak)', () => 
         destroy: async () => {},
       }),
     }))
-    vi.doMock('pdfjs-dist/build/pdf.worker.mjs?worker', () => ({
-      default: class FakeWorker {
-        constructor() {
-          workerConstructCount += 1
-        }
-      },
-    }))
+    // #39 switched the worker load from `?worker` (constructor
+    // factory) to `?url` (string) + a manual `new Worker(url)`. We
+    // no longer need to mock the `?worker` import; instead we swap
+    // the global `Worker` constructor so we can count spawns and
+    // avoid jsdom's missing Worker implementation.
+    vi.doMock('pdfjs-dist/build/pdf.worker.mjs?url', () => ({ default: '/assets/pdf.worker.js' }))
+    ;(globalThis as unknown as { Worker: unknown }).Worker = class FakeWorker {
+      constructor() {
+        workerConstructCount += 1
+      }
+    }
     const { __resetPdfjsForTesting } = await import('../../src/content/extraction/formats/pdf')
     __resetPdfjsForTesting()
   })
 
   afterEach(() => {
     vi.doUnmock('pdfjs-dist')
-    vi.doUnmock('pdfjs-dist/build/pdf.worker.mjs?worker')
+    vi.doUnmock('pdfjs-dist/build/pdf.worker.mjs?url')
+    ;(globalThis as unknown as { Worker: typeof OriginalWorker }).Worker = OriginalWorker
     vi.resetModules()
   })
 

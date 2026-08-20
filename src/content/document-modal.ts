@@ -148,26 +148,62 @@ const STYLES = `
   }
   .scanning {
     display: flex;
-    align-items: center;
-    gap: 12px;
+    flex-direction: column;
+    gap: 8px;
     padding: 8px 20px 20px;
     font-size: 13px;
     color: rgba(255, 255, 255, 0.85);
   }
-  .spinner {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 2px solid rgba(255, 255, 255, 0.2);
-    border-top-color: #7dd3fc;
-    animation: alg-spin 0.9s linear infinite;
-    flex: 0 0 auto;
+  .scanning__label {
+    display: block;
   }
-  @keyframes alg-spin { to { transform: rotate(360deg); } }
+  /*
+   * Indeterminate progress bar. We deliberately don't show a fake
+   * percentage — extraction time depends on the file and the parser,
+   * and any bar that "fills up" would be dishonest. A moving indigo
+   * strip traversing a dim track communicates activity without
+   * implying progress state.
+   */
+  .progress {
+    position: relative;
+    height: 4px;
+    width: 100%;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.10);
+    border-radius: 999px;
+  }
+  .progress__bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 35%;
+    background: linear-gradient(
+      90deg,
+      rgba(125, 211, 252, 0),
+      rgba(125, 211, 252, 0.95) 50%,
+      rgba(125, 211, 252, 0) 100%
+    );
+    border-radius: 999px;
+    animation: alg-progress 1.4s ease-in-out infinite;
+    will-change: transform;
+  }
+  /* -35% start → 100% end keeps the strip fully off-screen at both
+     ends so the eye never sees it stop against the track edge. */
+  @keyframes alg-progress {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(285%); }
+  }
   @media (prefers-reduced-motion: reduce) {
-    .spinner {
+    /* Reduced-motion fallback: static, centered, translucent bar
+       (no animation, no transform). Still reads as "something is
+       happening" alongside the aria-busy state below. */
+    .progress__bar {
       animation: none;
-      opacity: 0.7;
+      transform: none;
+      left: 30%;
+      width: 40%;
+      background: rgba(125, 211, 252, 0.55);
     }
   }
   .actions {
@@ -343,14 +379,27 @@ export function openDocumentModal(opts: {
 
   const scanning = document.createElement('div')
   scanning.className = 'scanning'
-  // role="status" makes screen readers announce the scanning text
-  // when it appears without needing focus to move to it.
+  // role="status" + aria-live=polite lets AT announce the scanning
+  // label when the view appears (and again when it transitions to
+  // sensitive / unable), without stealing focus away from Cancel.
+  // aria-busy=true tells AT that the region is still being populated
+  // — pairs with the indeterminate progress bar below.
   scanning.setAttribute('role', 'status')
-  const spinner = document.createElement('span')
-  spinner.className = 'spinner'
-  spinner.setAttribute('aria-hidden', 'true')
+  scanning.setAttribute('aria-live', 'polite')
+  scanning.setAttribute('aria-busy', 'true')
   const scanningText = document.createElement('span')
-  scanning.append(spinner, scanningText)
+  scanningText.className = 'scanning__label'
+  // Indeterminate progress bar. `aria-hidden` on the visual track
+  // keeps AT from double-announcing (the parent status region owns
+  // the announcement). Deliberately no `<progress>` element — that
+  // implies a knowable value, which we don't have.
+  const progress = document.createElement('div')
+  progress.className = 'progress'
+  progress.setAttribute('aria-hidden', 'true')
+  const progressBar = document.createElement('div')
+  progressBar.className = 'progress__bar'
+  progress.appendChild(progressBar)
+  scanning.append(scanningText, progress)
 
   const severity = document.createElement('div')
   severity.className = 'severity'
@@ -399,6 +448,7 @@ export function openDocumentModal(opts: {
     chips.hidden = true
     scanningText.textContent = 'Inspecting for sensitive content before upload.'
     scanning.hidden = false
+    scanning.setAttribute('aria-busy', 'true')
     uploadBtn.hidden = true
     dialog.replaceChildren(heading, scanning, actions)
     // Focus the cancel button so Escape / Enter behaves obviously in
@@ -429,6 +479,7 @@ export function openDocumentModal(opts: {
     }
     chips.hidden = opts.categories.length === 0
     scanning.hidden = true
+    scanning.setAttribute('aria-busy', 'false')
     uploadBtn.hidden = false
     const children: Node[] = [heading, body]
     if (opts.hasCriticalOrHigh) children.push(severity)
@@ -456,6 +507,7 @@ export function openDocumentModal(opts: {
     severity.hidden = true
     chips.hidden = true
     scanning.hidden = true
+    scanning.setAttribute('aria-busy', 'false')
     uploadBtn.hidden = false
     dialog.replaceChildren(heading, body, actions)
     // See the note in `applySensitive`: dialog.focus() (not

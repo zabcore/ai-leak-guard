@@ -58,6 +58,67 @@ describe('openDocumentModal — mount + isolation', () => {
 })
 
 describe('openDocumentModal — scanning state', () => {
+  it('renders an indeterminate progress bar, no fake percentage', () => {
+    openDocumentModal({ opener: null })
+    const shadow = __getModalShadowForTests()
+    // A `<progress>` element would imply a knowable value; A4.1 uses
+    // a plain div-based indeterminate bar instead.
+    expect(shadow?.querySelector('progress')).toBeNull()
+    const track = shadow?.querySelector('.progress') as HTMLElement | null
+    const bar = shadow?.querySelector('.progress__bar') as HTMLElement | null
+    expect(track).not.toBeNull()
+    expect(bar).not.toBeNull()
+    // No percentage anywhere in the USER-VISIBLE copy — check the
+    // dialog subtree only, not shadow.textContent (which includes
+    // the <style> block and its CSS `0%` / `100%` keyframe stops).
+    const dialog = shadow?.querySelector('.dialog') as HTMLElement | null
+    expect(dialog?.textContent ?? '').not.toMatch(/\d+\s?%/)
+    // Visual track is aria-hidden — the parent status region owns
+    // the announcement, so AT doesn't double-read it.
+    expect(track?.getAttribute('aria-hidden')).toBe('true')
+  })
+
+  it('scanning container advertises role=status + aria-busy=true', () => {
+    openDocumentModal({ opener: null })
+    const shadow = __getModalShadowForTests()
+    const scanning = shadow?.querySelector('.scanning') as HTMLElement | null
+    expect(scanning).not.toBeNull()
+    expect(scanning?.getAttribute('role')).toBe('status')
+    expect(scanning?.getAttribute('aria-live')).toBe('polite')
+    expect(scanning?.getAttribute('aria-busy')).toBe('true')
+  })
+
+  it('aria-busy flips to false once inspection resolves', () => {
+    const ctrl = openDocumentModal({ opener: null })
+    const shadow = __getModalShadowForTests()
+    const scanning = shadow?.querySelector('.scanning') as HTMLElement | null
+    expect(scanning?.getAttribute('aria-busy')).toBe('true')
+    ctrl.showSensitive({
+      fileCount: 1,
+      totalMaskable: 1,
+      categories: [DetectorCategory.HEALTHCARE_PATIENT_ID],
+      hasCriticalOrHigh: true,
+    })
+    expect(scanning?.getAttribute('aria-busy')).toBe('false')
+    ctrl.close('cancel')
+    return ctrl.outcome
+  })
+
+  it('Cancel button stays interactive during scanning (Escape resolves cancel)', async () => {
+    // Cancel is the whole point of the "Checking…" state — it lets
+    // the user bail on a slow extraction. Escape is the canonical
+    // way to invoke it, and here we assert it still works even while
+    // the modal is in the animated scanning view.
+    const ctrl = openDocumentModal({ opener: null })
+    const shadow = __getModalShadowForTests()
+    // Cancel is not `[disabled]`, and it's focused per applyScanning.
+    const cancel = shadow?.querySelector('.btn--secondary') as HTMLButtonElement | null
+    expect(cancel).not.toBeNull()
+    expect(cancel?.disabled).toBe(false)
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await expect(ctrl.outcome).resolves.toBe('cancel')
+  })
+
   it('primary button (Upload anyway) is hidden during scanning', () => {
     openDocumentModal({ opener: null })
     expect(isDocumentModalOpen()).toBe(true)

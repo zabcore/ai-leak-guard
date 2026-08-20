@@ -26,8 +26,24 @@ const local = {
   },
 }
 
-;(globalThis as unknown as { chrome: { storage: { local: typeof local } } }).chrome = {
+// Minimal `chrome.runtime.getURL` shim. #39's worker-URL resolver
+// gates on this API, and several tests need to construct
+// extension-origin URLs without a real extension environment.
+const FAKE_EXTENSION_ID = 'testextidtestextidtestextidtestex'
+const runtime = {
+  getURL: (path: string): string => {
+    const rel = path.startsWith('/') ? path.slice(1) : path
+    return `chrome-extension://${FAKE_EXTENSION_ID}/${rel}`
+  },
+}
+
+;(
+  globalThis as unknown as {
+    chrome: { storage: { local: typeof local }; runtime: typeof runtime }
+  }
+).chrome = {
   storage: { local },
+  runtime,
 }
 
 beforeEach(() => {

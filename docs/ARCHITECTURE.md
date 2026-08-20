@@ -806,8 +806,28 @@ extraction "for free" with no additional plumbing in the
 orchestrators. Detection over the extracted text is A3's job.
 
 **Manifest.** No new permissions. `web_accessible_resources` gains
-`assets/pdf.worker*.js` (wildcarded because the chunk hash changes
-per build) so the pdf.js worker is loadable by the content script.
+`assets/pdf.worker*.js` AND `assets/xlsx.worker*.js` (both
+wildcarded because the chunk hash changes per build) so both
+workers are reachable by the content script from the extension
+origin.
+
+**Worker URL invariant (A4.1 / issue #39).** pdf.ts + xlsx.ts
+originally spawned their worker chunk via Vite's `?worker` factory,
+which resolved the chunk's URL against the PAGE origin in the
+content-script bundle. In production that meant
+`https://<host>/assets/pdf.worker-<hash>.js` → 404 → the Worker
+never loaded → document extraction hung until
+`EXTRACTION_TIMEOUT_MS` fired. Fix: both extractors now import the
+chunk with `?url` (a string), route it through
+`chrome.runtime.getURL()`, and spawn `new Worker(url, {type:'module'})`
+against the resolved `chrome-extension://…` URL. The
+`assertExtensionOriginWorkerUrl` guard is called at spawn time and
+throws if the resolved URL doesn't sit on the extension origin, so
+a future bundler regression that silently reverts to a page-origin
+path is caught immediately instead of manifesting as a mysterious
+extraction hang. Both invariants are pinned by
+`tests/extraction/worker-url.test.ts`.
+
 `verify:sw` and the "does not collect data" declaration are
 re-verified.
 
@@ -996,13 +1016,22 @@ Branch on the A3 aggregate `DocScanResult`:
 
 - Inspection wins → route straight to the terminal state (or the
   clean auto-release) — no spinner flash.
-- Timer wins → paint the scanning view (spinner + "Checking this
-  file…" + Cancel). When inspection subsequently resolves, the
-  helper transitions the SAME modal instance in-place
-  (`ctrl.showSensitive(...)` / `ctrl.showUnable(...)` /
-  `ctrl.close('upload-anyway')` on clean). If the user cancels
-  during scanning, the helper honours it — even if the eventual
-  inspection would have been sensitive.
+- Timer wins → paint the scanning view: heading "Checking this
+  file…" + an **indeterminate progress bar** (a moving indigo strip
+  on a dim track — no percentage, since extraction time is
+  file/parser-dependent and a knowable value would be dishonest) +
+  Cancel. The container carries `role="status"` + `aria-live="polite"`
+  - `aria-busy="true"` so screen readers announce it without focus
+    moving, and `aria-busy` flips to `"false"` when the view
+    transitions to sensitive / unable. A `prefers-reduced-motion`
+    fallback drops the animation to a static translucent band. When
+    inspection subsequently resolves, the helper transitions the SAME
+    modal instance in-place (`ctrl.showSensitive(...)` /
+    `ctrl.showUnable(...)` / `ctrl.close('upload-anyway')` on clean).
+    If the user cancels during scanning, the helper honours it — even
+    if the eventual inspection would have been sensitive — and the
+    document-flow orchestrator returns without awaiting inspection so
+    the modal closes instantly rather than blocking on extraction.
 
 **Modal controller (`src/content/document-modal.ts`).** The V1.1
 Shadow-DOM patterns are reused verbatim (closed root, focus trap

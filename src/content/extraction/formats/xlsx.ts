@@ -21,6 +21,7 @@
 // requests at runtime.
 
 import type { FormatOutput } from '../extract'
+import { resolveExtensionWorkerUrl } from './worker-url'
 
 export interface ExtractXlsxOptions {
   readonly signal?: AbortSignal
@@ -65,9 +66,21 @@ export function __setXlsxWorkerFactoryForTesting(factory: WorkerFactory | null):
 
 async function loadDefaultFactory(): Promise<WorkerFactory> {
   if (cachedFactory !== null) return cachedFactory
-  const mod = await import('./xlsx.worker.ts?worker')
-  const WorkerCtor = mod.default as unknown as new () => XlsxWorkerLike
-  cachedFactory = (): XlsxWorkerLike => new WorkerCtor()
+  // `?url` returns the bundled xlsx-worker chunk's URL string. Kept
+  // dynamic (not top-level) so tests injecting a `workerFactory`
+  // — either via `__setXlsxWorkerFactoryForTesting` or a per-call
+  // opts override — never touch this import. Route the URL through
+  // `resolveExtensionWorkerUrl` so the Worker is spawned against
+  // `chrome-extension://…` rather than the page origin (see pdf.ts
+  // and #39 for the full write-up on the 404-hang regression the
+  // `?worker` factory used to produce).
+  const { default: xlsxWorkerUrl } = (await import('./xlsx.worker.ts?url')) as { default: string }
+  const workerUrl = resolveExtensionWorkerUrl(xlsxWorkerUrl)
+  // `type: 'module'` matches the ESM shape Vite emits for the
+  // TypeScript worker source. `terminate()` on the wrapper stays
+  // the sole cleanup handle — see the outer function's `cleanup`.
+  cachedFactory = (): XlsxWorkerLike =>
+    new Worker(workerUrl, { type: 'module' }) as unknown as XlsxWorkerLike
   return cachedFactory
 }
 

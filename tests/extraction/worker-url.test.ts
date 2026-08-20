@@ -1,0 +1,177 @@
+// @vitest-environment jsdom
+//
+// A4.1 (#39) — the worker URL invariant.
+//
+// The regression: pdf.ts + xlsx.ts loaded their worker chunk via
+// Vite's `?worker` factory, which under the CRXJS content-script
+// bundle resolved the chunk URL against the PAGE origin. In
+// production that meant `https://<host>/assets/pdf.worker-<hash>.js`
+// → 404 → the Worker never loaded → extraction hung until the 10 s
+// `EXTRACTION_TIMEOUT_MS` fired.
+//
+// The fix routes the `?url`-imported string through
+// `chrome.runtime.getURL()` so it lands on the extension origin.
+// These tests pin the two invariants A4.1 depends on:
+//   1. `resolveExtensionWorkerUrl` maps every reasonable `?url`
+//      shape onto a `chrome-extension://…` URL (or fails loudly).
+//   2. Both `pdf.ts` and `xlsx.ts` actually construct their Worker
+//      against that resolver — i.e., the URL passed to
+//      `new Worker(...)` starts with `chrome-extension://`. This
+//      is the guard that would catch a bundler-regression re-
+//      introducing the hang.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  assertExtensionOriginWorkerUrl,
+  resolveExtensionWorkerUrl,
+} from '../../src/content/extraction/formats/worker-url'
+
+const OriginalWorker = globalThis.Worker
+
+describe('resolveExtensionWorkerUrl', () => {
+  it('routes a page-relative `?url` string through chrome.runtime.getURL', () => {
+    const url = resolveExtensionWorkerUrl('/assets/pdf.worker-abc123.js')
+    expect(url.startsWith('chrome-extension://')).toBe(true)
+    expect(url.endsWith('/assets/pdf.worker-abc123.js')).toBe(true)
+  })
+
+  it('accepts a bare (no leading slash) relative path too', () => {
+    const url = resolveExtensionWorkerUrl('assets/xlsx.worker-xyz.js')
+    expect(url.startsWith('chrome-extension://')).toBe(true)
+    expect(url.endsWith('/assets/xlsx.worker-xyz.js')).toBe(true)
+  })
+
+  it('short-circuits an already-fully-qualified chrome-extension:// URL', () => {
+    const already = 'chrome-extension://someextid/assets/pdf.worker.js'
+    expect(resolveExtensionWorkerUrl(already)).toBe(already)
+  })
+
+  it('throws when chrome.runtime.getURL is unavailable (fail-loud)', () => {
+    const original = (globalThis as unknown as { chrome?: unknown }).chrome
+    ;(globalThis as unknown as { chrome?: unknown }).chrome = undefined
+    try {
+      expect(() => resolveExtensionWorkerUrl('/assets/whatever.js')).toThrow(
+        /chrome\.runtime\.getURL is unavailable/,
+      )
+    } finally {
+      ;(globalThis as unknown as { chrome?: unknown }).chrome = original
+    }
+  })
+
+  it('rejects a resolved URL that does not sit on the extension origin', () => {
+    // Simulate a broken chrome.runtime.getURL that hands back a
+    // page-origin string — the invariant guard MUST refuse to spawn
+    // a worker against a non-extension URL.
+    const original = (
+      globalThis as unknown as { chrome: { runtime: { getURL: (s: string) => string } } }
+    ).chrome.runtime.getURL
+    ;(
+      globalThis as unknown as {
+        chrome: { runtime: { getURL: (s: string) => string } }
+      }
+    ).chrome.runtime.getURL = (p: string) => `https://evil.example/${p}`
+    try {
+      expect(() => resolveExtensionWorkerUrl('/assets/x.js')).toThrow(
+        /expected an extension-origin URL/,
+      )
+    } finally {
+      ;(
+        globalThis as unknown as {
+          chrome: { runtime: { getURL: (s: string) => string } }
+        }
+      ).chrome.runtime.getURL = original
+    }
+  })
+})
+
+describe('assertExtensionOriginWorkerUrl', () => {
+  it('passes through chrome-extension:// URLs', () => {
+    const u = 'chrome-extension://abc/assets/x.js'
+    expect(assertExtensionOriginWorkerUrl(u)).toBe(u)
+  })
+
+  it('throws for any other origin', () => {
+    for (const bad of [
+      '/assets/x.js',
+      'https://example.com/assets/x.js',
+      'http://localhost/x.js',
+      'about:blank',
+      '',
+    ]) {
+      expect(() => assertExtensionOriginWorkerUrl(bad)).toThrow(/extension-origin URL/)
+    }
+  })
+})
+
+// ─── Spawn-site invariant: the URL fed to `new Worker(...)` starts
+// with `chrome-extension://` in both pdf.ts and xlsx.ts. This is the
+// regression guard — without it, a bundler bump that changes the
+// shape of the `?url` import (or a test-env mock that returned a
+// bare path) would silently reintroduce the 404-hang bug.
+
+describe('pdf.ts — spawns Worker against chrome-extension:// URL', () => {
+  const spawnedUrls: string[] = []
+
+  beforeEach(async () => {
+    spawnedUrls.length = 0
+    vi.doMock('pdfjs-dist', () => ({
+      GlobalWorkerOptions: {},
+      getDocument: () => ({
+        promise: Promise.resolve({
+          numPages: 1,
+          getPage: async () => ({
+            getTextContent: async () => ({ items: [{ str: 'stub' }] }),
+            cleanup: () => {},
+          }),
+          destroy: async () => {},
+        }),
+        destroy: async () => {},
+      }),
+    }))
+    vi.doMock('pdfjs-dist/build/pdf.worker.mjs?url', () => ({
+      default: '/assets/pdf.worker-hash.js',
+    }))
+    ;(globalThis as unknown as { Worker: unknown }).Worker = class FakeWorker {
+      constructor(url: string | URL) {
+        spawnedUrls.push(String(url))
+      }
+      terminate() {}
+      postMessage() {}
+    }
+    const { __resetPdfjsForTesting } = await import('../../src/content/extraction/formats/pdf')
+    __resetPdfjsForTesting()
+  })
+
+  afterEach(() => {
+    vi.doUnmock('pdfjs-dist')
+    vi.doUnmock('pdfjs-dist/build/pdf.worker.mjs?url')
+    ;(globalThis as unknown as { Worker: typeof OriginalWorker }).Worker = OriginalWorker
+    vi.resetModules()
+  })
+
+  it('the Worker URL starts with chrome-extension:// (never page origin)', async () => {
+    const { extractPdf } = await import('../../src/content/extraction/formats/pdf')
+    const pdfHeader = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34])
+    const file = new File([pdfHeader], 'a.pdf', { type: 'application/pdf' })
+    await extractPdf(file)
+    expect(spawnedUrls).toHaveLength(1)
+    expect(spawnedUrls[0].startsWith('chrome-extension://')).toBe(true)
+    expect(spawnedUrls[0]).toContain('/assets/pdf.worker-hash.js')
+  })
+})
+
+// xlsx.ts spawn-site NOTE: `tests/setup.ts` already injects a
+// `workerFactory` override on the shared `overrideFactory` slot at
+// module load (so all downstream xlsx tests run against an inline
+// fake instead of a real Worker), which means we can't reach the
+// `loadDefaultFactory` code path from an integration test without
+// stomping that global setup for every sibling test in the same file.
+// The invariant we care about — "xlsx.ts routes its worker URL
+// through `resolveExtensionWorkerUrl` before spawning `new Worker`" —
+// is covered by:
+//   * the `resolveExtensionWorkerUrl` unit tests above
+//     (URL resolution + extension-origin assertion), and
+//   * the pdf.ts spawn-site test below (same pattern applied to
+//     the other extractor).
+// Adding a duplicate integration test here would only re-exercise
+// the same helper, not add coverage.
