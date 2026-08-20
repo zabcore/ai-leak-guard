@@ -606,15 +606,20 @@ isolated ← { source:'alg-fsa', kind:'hold-decision', id, decision:'upload-anyw
   closed the gap that had made the FSA picker the only site path
   never scanned). Files are structured-cloned onto the **private**
   `MessagePort` — page listeners never observe the port, so this
-  transfer is not "user data leaked to the page". The clone shares
-  the underlying bytes with the originals MAIN still holds, so
-  `upload-anyway` returns those originals to the site byte-for-byte;
-  the extension does not create a copy the site could ever see. The
-  reply back to MAIN carries a `decision` string only — no matched
-  values, no extracted text — and MAIN drops its `File[]` reference
-  the moment the decision resolves. A1's "hold references only,
-  don't read contents until the inspector needs to" invariant still
-  applies.
+  transfer is not "user data leaked to the page". `upload-anyway`
+  returns the **original picker handles** MAIN still holds, not
+  anything derived from the isolated-side clone; the site sees the
+  same handles a native picker call would have produced, byte-for-
+  byte. (Whether the browser's structured-clone shares the underlying
+  byte sequence between the two `File`s is implementation-defined
+  per W3C File API + WHATWG structured-clone — Chrome typically
+  shares, since `Blob` / `File` are immutable. The byte-identical
+  result the site sees does not depend on that: it comes from MAIN
+  returning its untouched originals.) The reply back to MAIN carries
+  a `decision` string only — no matched values, no extracted text —
+  and MAIN drops its `File[]` reference the moment the decision
+  resolves. A1's "hold references only, don't read contents until
+  the inspector needs to" invariant still applies.
 
 **Threat model — MAIN-world limits and handshake race.** The MAIN-world
 script shares a JavaScript realm with the page (that is what makes

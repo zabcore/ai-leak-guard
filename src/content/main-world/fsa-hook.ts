@@ -27,10 +27,15 @@
 // page":
 //   • The transfer runs on the private `MessagePort`, not
 //     `window.postMessage`; page listeners never observe it.
-//   • `File` structured-clone shares the underlying bytes with the
-//     originals still held in MAIN, so `upload-anyway` still returns
-//     the ORIGINAL handles byte-for-byte — the extension does not
-//     make a copy the site could ever see.
+//   • `upload-anyway` returns the ORIGINAL `FileSystemFileHandle[]`
+//     the picker produced — MAIN keeps that reference and hands it
+//     back to the site. The isolated-world clone is a separate
+//     value the wrapper never surfaces, so the site sees the same
+//     handles a native picker call would have produced, byte-for-
+//     byte. (Whether the browser's structured-clone shares the
+//     underlying byte sequence is implementation-defined; we don't
+//     depend on it — the site's byte-identical result comes from
+//     returning MAIN's originals, not from clone-sharing.)
 //   • The reply stays decision-only (`upload-anyway` / `cancel`); no
 //     matched-value bytes ever come back over the port.
 //   • MAIN drops its `File[]` reference the moment the decision
@@ -259,10 +264,12 @@ export function askOverPort(
       files: metadata,
       blobs,
     }
-    // `File` is structured-cloneable, so postMessage on a
-    // `MessagePort` hands the isolated world a fresh `File`
-    // referencing the same underlying bytes — no transfer list, no
-    // marshalling cost, no ownership hand-off (MAIN keeps its refs).
+    // `File` is structured-cloneable, so postMessage on the private
+    // `MessagePort` hands the isolated world a fresh `File`. No
+    // transfer list and no ownership hand-off — MAIN keeps its
+    // originals and returns them to the site on upload-anyway. Any
+    // marshalling cost is up to the browser (Chrome typically shares
+    // the immutable byte sequence rather than copying).
     port.postMessage(request)
   })
 }

@@ -15,16 +15,22 @@
 // closes that gap:
 //
 //   • Hold-request now also carries a **structured-cloneable `File[]`**
-//     alongside the `FsaFileMetadata[]`. `File` implements the
-//     Structured Clone algorithm, so the browser hands the isolated
-//     world a fresh `File` referencing the same underlying bytes at
-//     zero marshalling cost — the bytes never round-trip through
-//     JavaScript.
+//     alongside the `FsaFileMetadata[]`. The isolated inspector reads
+//     these to extract text + run detection locally. Whether the
+//     browser shares the underlying byte sequence between MAIN's
+//     originals and the isolated-side clones is implementation-
+//     defined (Chrome typically does, since `Blob` / `File` are
+//     immutable — see W3C FileAPI + WHATWG structured-clone) — we
+//     don't rely on it.
 //   • The transfer runs on the EXTENSION-PRIVATE `MessagePort`, not
 //     `window.postMessage`. Page scripts can't observe or forge it
 //     (see the port-handoff notes below), so this is not "user data
 //     leaked to the page" — it's the extension's isolated side
 //     receiving the files it needs to run detection locally.
+//   • `upload-anyway` returns the **original picker handles** MAIN
+//     still holds — the wrapper never returns anything derived from
+//     the clone, so the site sees the same handles it would have got
+//     from a native picker call, byte-for-byte.
 //   • The reply is still decision-only (`upload-anyway`/`cancel`).
 //     No matched-value bytes ever cross back to MAIN. The A1
 //     "hold references only, don't read contents until the
@@ -60,9 +66,9 @@ export interface FsaHoldRequest {
    * isolated inspector reads bytes from these to extract text and
    * run detection; the reply back to MAIN stays decision-only.
    *
-   * Cloned `File`s share the underlying bytes with the originals
-   * still held in MAIN, so `upload-anyway` returns those originals
-   * to the site byte-for-byte (never a copy the extension made).
+   * `upload-anyway` returns the ORIGINAL picker handles MAIN still
+   * holds — independent of these clones. The wrapper never surfaces
+   * anything derived from the clone to the site.
    */
   readonly blobs: readonly File[]
 }
