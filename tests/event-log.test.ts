@@ -15,14 +15,13 @@
 //   • Best-effort: a throwing `storage.set` must NOT reject the
 //     `appendEvent` promise into a caller.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DetectorCategory } from '../src/detector/types'
 import {
   MAX_EVENTS,
   appendEvent,
   getEvents,
   summariseEvents,
-  __resetEventLogWriteChainForTests,
   type AlgEvent,
 } from '../src/shared/event-log'
 
@@ -39,9 +38,10 @@ function makeEvent(overrides: Partial<AlgEvent> = {}): AlgEvent {
   }
 }
 
-beforeEach(() => {
-  __resetEventLogWriteChainForTests()
-})
+// The setup shim's `chrome.storage.local` is cleared in `beforeEach`
+// by tests/setup.ts, so each test here starts with an empty log —
+// no explicit reset needed here now that writes serialise inside
+// the shim's own chain.
 
 describe('event-log — ring buffer', () => {
   it('appends events in oldest-first order', async () => {
@@ -205,16 +205,14 @@ describe('event-log — projection drops hostile extra fields', () => {
 
   it('rejects an event with an invalid action (allowlist enforcement)', async () => {
     // A caller that fabricates a novel action string must NOT get
-    // that novel string into storage.
+    // any part of that record into storage. The projection at
+    // `appendEvent` rejects the whole event — the log stays empty.
+    // Assert length explicitly so this can't vacuously pass if the
+    // append path silently stopped writing.
     const invalid = { ...makeEvent(), action: 'exfil-patient-data' } as unknown as AlgEvent
     await appendEvent(invalid)
-    const raw = (await chrome.storage.local.get('events')).events as unknown[]
-    // Either not written at all, or projected off — in both cases
-    // no persisted entry carries the bad action.
-    for (const entry of raw ?? []) {
-      const r = entry as { action?: string }
-      expect(r.action).not.toBe('exfil-patient-data')
-    }
+    const raw = (await chrome.storage.local.get('events')).events as unknown[] | undefined
+    expect(raw ?? []).toHaveLength(0)
   })
 
   it('rejects an event with an invalid category (allowlist enforcement)', async () => {
@@ -223,11 +221,8 @@ describe('event-log — projection drops hostile extra fields', () => {
       categories: ['patient_full_name_in_the_clear'],
     } as unknown as AlgEvent
     await appendEvent(invalid)
-    const raw = (await chrome.storage.local.get('events')).events as unknown[]
-    for (const entry of raw ?? []) {
-      const r = entry as { categories?: string[] }
-      expect(r.categories ?? []).not.toContain('patient_full_name_in_the_clear')
-    }
+    const raw = (await chrome.storage.local.get('events')).events as unknown[] | undefined
+    expect(raw ?? []).toHaveLength(0)
   })
 })
 

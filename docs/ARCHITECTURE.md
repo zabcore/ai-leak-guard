@@ -387,7 +387,7 @@ side-effect-free.
   },
   // V1.2 A5 (#40): metadata-only per-decision event log.
   // Bounded ring buffer, oldest-first — see MAX_EVENTS (200) in
-  // src/shared/event-log.ts. Field shape is fixed and enforced by
+  // src/shared/event-log-schema.ts. Field shape is fixed and enforced by
   // a persisted-payload test that asserts NO `value` / `text` /
   // `content` / `name` / `filename` key EVER lands in storage.
   events: Array<{

@@ -194,13 +194,3 @@ export function summariseEvents(events: readonly AlgEvent[]): EventSummary {
   }
 }
 
-/**
- * Test seam retained for backwards compatibility with older
- * tests that reset the write chain. The chain moved to the
- * service worker in A5.1, so this is now a no-op on the
- * content-script side — kept exported so any lingering caller
- * doesn't error out at import time.
- */
-export function __resetEventLogWriteChainForTests(): void {
-  // no-op: writes are serialised in the service worker.
-}

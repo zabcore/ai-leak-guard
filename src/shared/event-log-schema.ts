@@ -102,9 +102,12 @@ export function projectAlgEvent(x: unknown): AlgEvent {
     throw new Error('[AI Leak Guard] event-log: input does not match AlgEvent schema')
   }
   // Explicit fresh object — any extra fields on `x` fall away.
-  // Categories go through a `.map(String)` + validation-driven
-  // filter so a subclassed array or hostile toString proxy can't
-  // sneak through.
+  // `categories` is re-materialised with `.map` so a subclassed
+  // Array can't carry extra own properties into storage. Element
+  // validity is already guaranteed by `isProjectedAlgEvent` above
+  // (every entry is required to be an allowlisted string), so the
+  // `as DetectorCategory` here is a safe type assertion, not a
+  // trust-me cast.
   return {
     ts: x.ts,
     site: x.site,

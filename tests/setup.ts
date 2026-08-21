@@ -62,6 +62,20 @@ const ALLOWED_ACTIONS = new Set([
   'unable-to-inspect',
 ])
 
+// Same values as `DetectorCategory` in `src/detector/types.ts`,
+// inlined for the same reason `SHIM_MAX_EVENTS` is (avoids an
+// import cycle at test-setup eval time). If the production
+// allowlist ever adds a category, mirror it here so the shim
+// stays consistent with the real service worker's projection.
+const ALLOWED_CATEGORIES = new Set([
+  'identity',
+  'healthcare_patient_id',
+  'government_financial',
+  'provider_id',
+  'clinical_context',
+  'developer_credential',
+])
+
 function shimProject(x: unknown): ShimEventShape | null {
   if (x === null || typeof x !== 'object') return null
   const r = x as Record<string, unknown>
@@ -69,7 +83,8 @@ function shimProject(x: unknown): ShimEventShape | null {
   if (typeof r.site !== 'string') return null
   if (r.eventType !== 'paste' && r.eventType !== 'document') return null
   if (typeof r.action !== 'string' || !ALLOWED_ACTIONS.has(r.action)) return null
-  if (!Array.isArray(r.categories) || r.categories.some((c) => typeof c !== 'string')) return null
+  if (!Array.isArray(r.categories)) return null
+  if (r.categories.some((c) => typeof c !== 'string' || !ALLOWED_CATEGORIES.has(c))) return null
   if (typeof r.count !== 'number' || !Number.isFinite(r.count) || r.count < 0) return null
   if (typeof r.hadCriticalOrHigh !== 'boolean') return null
   return {
