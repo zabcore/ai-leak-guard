@@ -14,7 +14,16 @@ import { describe, expect, it } from 'vitest'
 
 interface Manifest {
   permissions?: readonly string[]
+  // `optional_permissions` and `optional_host_permissions` are
+  // dormant grants — Chrome can ask the user for them at runtime.
+  // A future well-meaning edit that declared, say,
+  // `optional_permissions: ['downloads']` would expand the
+  // extension's permission surface without failing the existing
+  // required-list checks. This test refuses either declaration
+  // to keep the permission story exactly what the docs promise.
+  optional_permissions?: readonly string[]
   host_permissions?: readonly string[]
+  optional_host_permissions?: readonly string[]
   options_ui?: { page?: string; open_in_tab?: boolean }
   action?: { default_popup?: string }
   content_scripts?: readonly unknown[]
@@ -33,6 +42,15 @@ describe('manifest — A5.1 permission delta', () => {
     expect(manifest.permissions ?? []).not.toContain('activeTab')
     expect(manifest.permissions ?? []).not.toContain('tabs')
     expect(manifest.permissions ?? []).not.toContain('scripting')
+    // Same story for optional permissions — a declared-but-not-
+    // yet-requested `downloads` (or `activeTab`, `tabs`, etc.)
+    // still expands the manifest's permission surface as far as
+    // the Chrome Web Store review is concerned. Reject any
+    // declaration outright rather than allowlisting specific
+    // values, so a novel permission we didn't think of can't
+    // slip in either.
+    expect(manifest.optional_permissions ?? []).toEqual([])
+    expect(manifest.optional_host_permissions ?? []).toEqual([])
   })
 
   it('host_permissions are unchanged (only the four in-scope AI tool sites + legacy chat.openai.com + copilot)', () => {

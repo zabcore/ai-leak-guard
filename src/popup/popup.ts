@@ -161,12 +161,27 @@ async function init(): Promise<void> {
       // environment (some MV3 unit-test contexts don't populate
       // `chrome.runtime`) so the click is a silent no-op instead of
       // throwing.
+      //
+      // In MV3 `openOptionsPage` returns `Promise<void>`; a rejected
+      // promise (extension missing an options page, browser refuses
+      // to open it, etc.) would otherwise become an unhandled
+      // rejection. The `try/catch` still catches synchronous
+      // throws from older polyfills / callback-shim shapes; the
+      // `.catch` handler routes async rejections into the same
+      // warning path.
       const runtime = (
-        globalThis as unknown as { chrome?: { runtime?: { openOptionsPage?: () => void } } }
+        globalThis as unknown as {
+          chrome?: { runtime?: { openOptionsPage?: () => void | Promise<void> } }
+        }
       ).chrome?.runtime
       if (runtime && typeof runtime.openOptionsPage === 'function') {
         try {
-          runtime.openOptionsPage()
+          const result = runtime.openOptionsPage() as void | Promise<void>
+          if (result && typeof (result as Promise<void>).then === 'function') {
+            void (result as Promise<void>).catch((err: unknown) => {
+              console.warn('[AI Leak Guard] openOptionsPage failed:', err)
+            })
+          }
         } catch (err) {
           console.warn('[AI Leak Guard] openOptionsPage failed:', err)
         }
