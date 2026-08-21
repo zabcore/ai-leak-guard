@@ -1,9 +1,11 @@
 # AI Leak Guard — Privacy Promise
 
 ## The promise, in one sentence
+
 Your text never leaves your browser. Detection and masking happen locally on your device.
 
 ## What we do NOT collect
+
 AI Leak Guard does not collect, transmit, store, or have access to any of the following:
 
 - The text you paste into AI tools
@@ -22,35 +24,52 @@ AI Leak Guard does not collect, transmit, store, or have access to any of the fo
 - Usage analytics tied to your identity
 
 ## What stays local on your device
+
 The following data is stored only in your browser, in `chrome.storage.local`, and is never sent anywhere:
 
 - The local counter of sensitive items masked (e.g., "47 sensitive items masked")
 - Your on/off toggle preference
+- A local activity log — up to 200 recent decisions — that records **metadata only**:
+  - When the decision happened (timestamp)
+  - Which site (e.g., `chatgpt`, `claude`)
+  - Whether it was a paste or a document upload
+  - What you chose (protected, pasted-as-is, uploaded anyway, auto-cleared, cancelled, or "couldn't inspect")
+  - How many sensitive items were detected, and which broad categories (e.g., "SSN / financial", "credentials")
+  - Whether any of them were high-severity
+
+  The activity log **never** stores the matched values, the pasted text, file contents, or filenames. It exists so the popup can honestly show your recent activity ("Claude · document · 3 items · uploaded anyway · 2m ago") without ever holding the underlying content. The log is a bounded ring buffer — the oldest entry is dropped when a new one arrives past the cap.
 
 This data is accessible only to the extension itself, on your device. Uninstalling the extension removes it.
 
 ## Outbound network requests
+
 AI Leak Guard makes **no outbound network requests**. Detection patterns are bundled with the extension and updated only through Chrome's normal extension-update mechanism (from the Chrome Web Store). There is no analytics endpoint, no telemetry server, no error reporting service, no third-party SDK that phones home.
 
 ## No accounts, no registration
+
 AI Leak Guard does not require an account, email address, or any registration to use. There is nothing to sign up for.
 
 ## No third parties
+
 The extension does not load code, scripts, fonts, or assets from any third-party service at runtime. It does not include analytics SDKs (no Google Analytics, no Mixpanel, no PostHog, no Sentry). It does not embed third-party widgets.
 
 ## Permissions explained
+
 The extension requests the following Chrome permissions, and here's why each is needed:
 
-- **`storage`** — to save your local counter of items masked and your on/off preference on your device
+- **`storage`** — to save your local counter of items masked, your on/off preference, and the local metadata-only activity log on your device
 - **Host permissions** — limited to the specific AI tool websites (ChatGPT, Claude, Gemini, Perplexity, Copilot). The extension does NOT have access to other websites you visit. The pasted text is read from the paste event's own clipboard data on those sites, which is why no separate `clipboardRead` permission is requested.
 
 ## Source code is open
+
 The full source code of AI Leak Guard is publicly available on GitHub. You can audit exactly what the extension does. If the code ever transmits user content, it will be visible there.
 
 Repository: https://github.com/zabcore/ai-leak-guard
 
 ## Changes to this policy
+
 If the privacy promise ever changes — for example, if we add an opt-in analytics feature in a future version — the change will be:
+
 - Documented in the extension changelog
 - Communicated in the Chrome Web Store listing update notes
 - Made opt-in by default (you must explicitly enable it)
@@ -59,8 +78,10 @@ If the privacy promise ever changes — for example, if we add an opt-in analyti
 We will never change the V1 promise (zero user text transmission) without an explicit, opt-in user action.
 
 ## Contact
+
 For privacy questions or to report a concern, file an issue at:
 https://github.com/zabcore/ai-leak-guard/issues
 
 ## Plain-English summary
+
 You install a free Chrome extension. It watches when you paste things into ChatGPT, Claude, Gemini, Perplexity, or Microsoft Copilot. If it sees something risky (an API key, an SSN, a credit card), it replaces that part with a placeholder before the AI tool receives it. None of your text is sent anywhere. None of it is stored on any server. The extension counts how many times it's helped you, and that count lives only on your computer. That's it.

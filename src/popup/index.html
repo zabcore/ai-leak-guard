@@ -23,6 +23,56 @@
         <span class="toggle__label" id="toggle-label">Enabled</span>
       </label>
 
+      <!--
+        V1.2 A5 (#40) — activity breakdown. Populated by popup.ts
+        from the local metadata event log (chrome.storage.local
+        `events`). Everything shown here is METADATA ONLY — counts,
+        actions, category labels, and site ids. No matched values,
+        pasted text, or filenames ever appear.
+      -->
+      <section class="activity" aria-labelledby="activity-heading" hidden id="activity-section">
+        <h2 class="activity__heading" id="activity-heading">Activity</h2>
+
+        <dl class="activity__grid">
+          <div class="activity__stat">
+            <dt>Detected</dt>
+            <dd id="stat-detected">0</dd>
+          </div>
+          <div class="activity__stat">
+            <dt>Protected</dt>
+            <dd id="stat-protected">0</dd>
+          </div>
+          <div class="activity__stat">
+            <dt>As-is / released</dt>
+            <dd id="stat-as-is-or-released">0</dd>
+          </div>
+          <div class="activity__stat">
+            <dt>Cancelled</dt>
+            <dd id="stat-cancelled">0</dd>
+          </div>
+        </dl>
+
+        <section
+          class="activity__section"
+          aria-labelledby="per-site-heading"
+          hidden
+          id="per-site-section"
+        >
+          <h3 class="activity__subheading" id="per-site-heading">By site</h3>
+          <ul class="activity__site-list" id="per-site-list"></ul>
+        </section>
+
+        <section
+          class="activity__section"
+          aria-labelledby="recent-heading"
+          hidden
+          id="recent-section"
+        >
+          <h3 class="activity__subheading" id="recent-heading">Recent</h3>
+          <ol class="activity__recent" id="recent-list"></ol>
+        </section>
+      </section>
+
       <footer class="popup__footer">Local-only. No data leaves your device.</footer>
     </main>
     <script type="module" src="./popup.ts"></script>

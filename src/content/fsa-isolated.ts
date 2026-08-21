@@ -82,7 +82,7 @@ export interface FsaHandlerDeps {
    */
   readonly resolveDecision: (
     inspectionPromise: Promise<FileInspection>,
-    opts: { readonly opener: Element | null },
+    opts: { readonly opener: Element | null; readonly siteId?: string },
   ) => Promise<DocumentModalOutcome>
   /**
    * Optional seam that overrides `inspectFiles` — kept ONLY for the
@@ -91,6 +91,20 @@ export interface FsaHandlerDeps {
    * the handler calls the real `inspectFiles`.
    */
   readonly inspect?: (files: readonly File[]) => Promise<FileInspection>
+  /**
+   * Site adapter id for the A5 metadata event log. Empty string
+   * skips logging — matches `DocumentDecisionDeps.logSiteId`.
+   * Content-script wiring in `content/index.ts` passes
+   * `adapter.id`; unit tests default to `''` and only exercise
+   * this field when they explicitly assert log wiring.
+   *
+   * This lives on the handler's dep bag (not just inside the
+   * inline `resolveDecision` wrapper we install in the content
+   * script) so a future refactor that swaps the wrapper won't
+   * silently drop the identifier — the FSA path would otherwise
+   * fall out of the activity log without anyone noticing.
+   */
+  readonly siteId?: string
 }
 
 /**
@@ -151,7 +165,10 @@ export async function handleFsaHoldRequest(
   // rest of the flow.
   const inspect = deps.inspect ?? inspectFiles
   const inspectionPromise = inspect(request.blobs)
-  const outcome = await deps.resolveDecision(inspectionPromise, { opener: null })
+  const outcome = await deps.resolveDecision(inspectionPromise, {
+    opener: null,
+    siteId: deps.siteId,
+  })
   reply(outcome)
   // Structured-clone refs to the picker's `File[]` are only held by
   // this handler's scope + the inspection result. Returning here

@@ -40,7 +40,7 @@ export type HoldResult =
 export interface HoldDeps {
   readonly resolveDecision: (
     inspectionPromise: Promise<FileInspection>,
-    opts: { readonly opener: Element | null },
+    opts: { readonly opener: Element | null; readonly siteId?: string },
   ) => Promise<DocumentModalOutcome>
   readonly releaseFiles: (state: ExtractedFiles) => ReleaseOutcome
   readonly clearInput: (input: HTMLInputElement) => void
@@ -73,13 +73,16 @@ export async function holdFiles(
   state: ExtractedFiles,
   opener: Element | null,
   deps: HoldDeps = defaultDeps,
+  siteId?: string,
 ): Promise<HoldResult> {
   // Kick off extraction + detection concurrently with the decision
   // helper so the "Checking…" state can paint immediately on a slow
-  // scan (and skip entirely on a fast one).
+  // scan (and skip entirely on a fast one). `siteId` is forwarded
+  // so the A5 event log can attribute each decision to the site
+  // where it happened.
   const inspect = deps.inspect ?? inspectFiles
   const inspectionPromise = inspect(state.files)
-  const outcome = await deps.resolveDecision(inspectionPromise, { opener })
+  const outcome = await deps.resolveDecision(inspectionPromise, { opener, siteId })
 
   if (outcome === 'cancel') {
     // Instant cancel: don't await inspectionPromise. A user who hit

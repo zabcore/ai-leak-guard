@@ -35,8 +35,27 @@ while (queue.length > 0) {
     process.exit(1)
   }
 
+  // Strip string / template / regex literals + comments BEFORE
+  // scanning so a benign string constant that happens to mention
+  // `document` (e.g., an AlgEventType schema union) doesn't
+  // register as a DOM reference. What we actually care about is
+  // real code accessing the globals — `document.foo`,
+  // `window['bar']`, `document = …`, etc. — never the substring.
+  //
+  // The stripper is deliberately regex-based rather than a full
+  // parser: minified output has no line breaks and one-token-at-
+  // a-time parsing here would balloon the script. Regex passes
+  // are order-sensitive (block comments before line comments so
+  // `//` inside `/* */` doesn't win) but that's a bounded set.
+  const scannable = code
+    .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1') // line comments (skip URLs after `:`)
+    .replace(/`(?:\\.|[^`\\])*`/g, '``') // template literals
+    .replace(/'(?:\\.|[^'\\])*'/g, "''") // single-quoted strings
+    .replace(/"(?:\\.|[^"\\])*"/g, '""') // double-quoted strings
+
   for (const token of FORBIDDEN) {
-    if (new RegExp(`\\b${token}\\b`).test(code)) {
+    if (new RegExp(`\\b${token}\\b`).test(scannable)) {
       console.error(
         `[verify-sw] ${relative('.', file)} references \`${token}\`, which is undefined in an ` +
           `MV3 service worker. The service worker would fail to register. ` +
@@ -46,9 +65,21 @@ while (queue.length > 0) {
     }
   }
 
+  // Import specs live INSIDE string literals — walk the original
+  // code (not the stripped version) so we don't lose the graph.
   for (const match of code.matchAll(IMPORT_RE)) {
     const spec = match[1]
-    queue.push(resolve(dirname(file), spec), resolve(DIST, spec))
+    // Relative imports (`./foo.js`, `../bar.js`) resolve against
+    // the CURRENT chunk's directory — that's the only shape Vite
+    // emits for cross-chunk imports. Root-relative shapes like
+    // `/assets/foo.js` are worker-URL strings, resolved via
+    // `chrome.runtime.getURL` at runtime, not JS imports; skip
+    // them so the queue doesn't chase a bogus path.
+    if (spec.startsWith('.')) {
+      queue.push(resolve(dirname(file), spec))
+    } else if (!spec.startsWith('/')) {
+      queue.push(resolve(DIST, spec))
+    }
   }
 }
 

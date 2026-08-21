@@ -33,6 +33,7 @@
 import type { FileInspection } from './file-inspector'
 import type { AggregateScanResult } from './extraction/scan-result'
 import type { ExtractionReason } from './extraction/extract'
+import { appendEvent, type AlgAction, type AlgEvent } from '../shared/event-log'
 import {
   openDocumentModal,
   type DocumentModalController,
@@ -59,6 +60,19 @@ export interface DocumentDecisionDeps {
   readonly clearTimer: (id: number) => void
   /** Anti-flicker delay in ms. Tests override to 0 or a large value. */
   readonly flickerDelayMs: number
+  /**
+   * Site adapter id used by the metadata event log (see
+   * `src/shared/event-log.ts`). Passed in by the caller — the
+   * decision helper is site-agnostic on its own, but the log needs
+   * a per-event site label so the popup can render a per-site
+   * breakdown. Empty string skips logging.
+   */
+  readonly logSiteId: string
+  /**
+   * Best-effort event-log seam. Tests inject a spy; production uses
+   * the real `appendEvent`. NEVER throws into the flow.
+   */
+  readonly logEvent: (event: AlgEvent) => void
 }
 
 const defaultDeps: DocumentDecisionDeps = {
@@ -66,6 +80,17 @@ const defaultDeps: DocumentDecisionDeps = {
   setTimer: (fn, ms) => setTimeout(fn, ms) as unknown as number,
   clearTimer: (id) => clearTimeout(id),
   flickerDelayMs: FLICKER_DELAY_MS,
+  logSiteId: '',
+  logEvent: (event) => {
+    // Best-effort: `appendEvent` is itself never-throws, but we
+    // still guard here so a synchronous seam swap in a test can't
+    // punch through into the flow.
+    try {
+      void appendEvent(event)
+    } catch {
+      // Deliberately swallowed.
+    }
+  },
 }
 
 /**
@@ -84,10 +109,46 @@ export async function resolveDocumentDecision(
   inspectionPromise: Promise<FileInspection>,
   opts: {
     readonly opener: Element | null
+    /**
+     * Site adapter id for the metadata event log (empty string
+     * skips logging). Content-script callers pass `adapter.id`;
+     * tests default to `''` so the log stays silent unless
+     * explicitly exercised.
+     */
+    readonly siteId?: string
     readonly deps?: Partial<DocumentDecisionDeps>
   },
 ): Promise<DocumentModalOutcome> {
-  const deps: DocumentDecisionDeps = { ...defaultDeps, ...(opts.deps ?? {}) }
+  const deps: DocumentDecisionDeps = {
+    ...defaultDeps,
+    ...(opts.deps ?? {}),
+    // `siteId` on opts wins over any `deps.logSiteId` so the caller
+    // that owns the adapter (content-script index.ts) can hand it
+    // through without also touching `deps`.
+    logSiteId: opts.siteId ?? opts.deps?.logSiteId ?? defaultDeps.logSiteId,
+  }
+
+  // Metadata-only event log helper. Reuses the already-computed
+  // aggregate (never re-scans, never touches file content) and
+  // stays best-effort — a storage failure MUST NOT deny the
+  // upload. `logSiteId === ''` (production content script hadn't
+  // wired it yet, or a test seam) skips the log entirely.
+  const log = (action: AlgAction, aggregate: AggregateScanResult | null): void => {
+    if (deps.logSiteId === '') return
+    try {
+      deps.logEvent({
+        ts: Date.now(),
+        site: deps.logSiteId,
+        eventType: 'document',
+        action,
+        categories: aggregate?.categories ?? [],
+        count: aggregate?.totalMaskable ?? 0,
+        hadCriticalOrHigh: aggregate?.anyCriticalOrHigh ?? false,
+      })
+    } catch {
+      // Never let the log break the flow.
+    }
+  }
 
   // Race inspection against the anti-flicker timer. The winner
   // decides whether we ever paint the scanning view.
@@ -119,6 +180,7 @@ export async function resolveDocumentDecision(
       // running. The modal has already resolved; we forward the
       // outcome (always `'cancel'` in this branch since the primary
       // button is hidden during scanning).
+      log('cancelled', null)
       return raceResult
     }
   } else {
@@ -141,44 +203,55 @@ export async function resolveDocumentDecision(
     if (scanningModal !== null && !cancelledDuringScanning) {
       scanningModal.close('upload-anyway')
     }
+    log('auto-cleared', aggregate)
     return 'upload-anyway'
   }
 
   if (aggregate.state === 'sensitive') {
-    if (scanningModal !== null && !cancelledDuringScanning) {
-      scanningModal.showSensitive({
-        fileCount: inspection.perFile.length,
-        totalMaskable: aggregate.totalMaskable,
-        categories: aggregate.categories,
-        hasCriticalOrHigh: aggregate.anyCriticalOrHigh,
-      })
-      return scanningModal.outcome
-    }
-    const modal = deps.openModal({ opener: opts.opener })
+    const modal = pickOrOpenModal(deps, opts.opener, scanningModal, cancelledDuringScanning)
     modal.showSensitive({
       fileCount: inspection.perFile.length,
       totalMaskable: aggregate.totalMaskable,
       categories: aggregate.categories,
       hasCriticalOrHigh: aggregate.anyCriticalOrHigh,
     })
-    return modal.outcome
+    const outcome = await modal.outcome
+    log(outcome === 'upload-anyway' ? 'uploaded-anyway' : 'cancelled', aggregate)
+    return outcome
   }
 
   // aggregate.state === 'unable_to_inspect'
   const reason = firstUnableReason(inspection)
-  if (scanningModal !== null && !cancelledDuringScanning) {
-    scanningModal.showUnable({
-      fileCount: inspection.perFile.length,
-      reason,
-    })
-    return scanningModal.outcome
-  }
-  const modal = deps.openModal({ opener: opts.opener })
+  const modal = pickOrOpenModal(deps, opts.opener, scanningModal, cancelledDuringScanning)
   modal.showUnable({
     fileCount: inspection.perFile.length,
     reason,
   })
-  return modal.outcome
+  const outcome = await modal.outcome
+  // On unable, category/count intentionally stay empty/zero — there
+  // was no successful detection to attribute the release to. The
+  // separate `unable-to-inspect` action + reason (captured by the
+  // modal for the user) is the honest signal, not a fabricated
+  // categories list.
+  log(outcome === 'upload-anyway' ? 'unable-to-inspect' : 'cancelled', null)
+  return outcome
+}
+
+/**
+ * Prefer the already-painted scanning modal (upgrade in place, keep
+ * the user's focus/state), otherwise open a fresh one. Extracted
+ * because the sensitive + unable branches picked between these the
+ * same way — a copy-paste that started to drift when the event-log
+ * hookup added a `const outcome = await modal.outcome`.
+ */
+function pickOrOpenModal(
+  deps: DocumentDecisionDeps,
+  opener: Element | null,
+  scanning: DocumentModalController | null,
+  cancelled: boolean,
+): DocumentModalController {
+  if (scanning !== null && !cancelled) return scanning
+  return deps.openModal({ opener })
 }
 
 /**

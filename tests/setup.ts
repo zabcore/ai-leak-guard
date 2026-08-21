@@ -26,14 +26,132 @@ const local = {
   },
 }
 
-// Minimal `chrome.runtime.getURL` shim. #39's worker-URL resolver
-// gates on this API, and several tests need to construct
-// extension-origin URLs without a real extension environment.
+// Minimal `chrome.runtime` shim covering both the worker-URL
+// resolver (#39 — `getURL`) and the A5 event-log's cross-process
+// `sendMessage` path (#40 CR — writes now live in the service
+// worker so concurrent tabs don't race). In tests there IS no
+// real service worker, so the shim performs the append inline
+// against `chrome.storage.local` — same read-modify-write logic
+// the production service worker uses, just running in-process.
 const FAKE_EXTENSION_ID = 'testextidtestextidtestextidtestex'
+
+// Same MAX_EVENTS as production — kept as a literal here so this
+// shim doesn't need to import the schema module at test-setup
+// eval time (which would create an import cycle for tests
+// stubbing the event-log module).
+const SHIM_MAX_EVENTS = 200
+const SHIM_STORAGE_KEY = 'events'
+const SHIM_APPEND_TYPE = 'alg-event-append'
+
+interface ShimEventShape {
+  ts: number
+  site: string
+  eventType: 'paste' | 'document'
+  action: string
+  categories: readonly string[]
+  count: number
+  hadCriticalOrHigh: boolean
+}
+
+const ALLOWED_ACTIONS = new Set([
+  'protected',
+  'as-is',
+  'cancelled',
+  'uploaded-anyway',
+  'auto-cleared',
+  'unable-to-inspect',
+])
+
+// Same values as `DetectorCategory` in `src/detector/types.ts`,
+// inlined for the same reason `SHIM_MAX_EVENTS` is (avoids an
+// import cycle at test-setup eval time). If the production
+// allowlist ever adds a category, mirror it here so the shim
+// stays consistent with the real service worker's projection.
+const ALLOWED_CATEGORIES = new Set([
+  'identity',
+  'healthcare_patient_id',
+  'government_financial',
+  'provider_id',
+  'clinical_context',
+  'developer_credential',
+])
+
+function shimProject(x: unknown): ShimEventShape | null {
+  if (x === null || typeof x !== 'object') return null
+  const r = x as Record<string, unknown>
+  if (typeof r.ts !== 'number' || !Number.isFinite(r.ts) || r.ts < 0) return null
+  if (typeof r.site !== 'string') return null
+  if (r.eventType !== 'paste' && r.eventType !== 'document') return null
+  if (typeof r.action !== 'string' || !ALLOWED_ACTIONS.has(r.action)) return null
+  if (!Array.isArray(r.categories)) return null
+  if (r.categories.some((c) => typeof c !== 'string' || !ALLOWED_CATEGORIES.has(c))) return null
+  if (typeof r.count !== 'number' || !Number.isFinite(r.count) || r.count < 0) return null
+  if (typeof r.hadCriticalOrHigh !== 'boolean') return null
+  return {
+    ts: r.ts,
+    site: r.site,
+    eventType: r.eventType,
+    action: r.action,
+    categories: r.categories as string[],
+    count: r.count,
+    hadCriticalOrHigh: r.hadCriticalOrHigh,
+  }
+}
+
+let shimWriteChain: Promise<void> = Promise.resolve()
+
+async function shimAppendOne(rawEvent: unknown): Promise<void> {
+  const projected = shimProject(rawEvent)
+  if (projected === null) return
+  const stored = await local.get(SHIM_STORAGE_KEY)
+  const raw = stored[SHIM_STORAGE_KEY]
+  const current = Array.isArray(raw) ? (raw.filter(shimProject) as ShimEventShape[]) : []
+  const next =
+    current.length >= SHIM_MAX_EVENTS
+      ? [...current.slice(-SHIM_MAX_EVENTS + 1), projected]
+      : [...current, projected]
+  const trimmed = next.length > SHIM_MAX_EVENTS ? next.slice(-SHIM_MAX_EVENTS) : next
+  await local.set({ [SHIM_STORAGE_KEY]: trimmed })
+}
+
+// `onMessage.addListener` shim — the service-worker module wires
+// its append handler through here at import time, and without a
+// stub the import throws with "Cannot read properties of
+// undefined (reading 'addListener')". Tests that need to invoke
+// the handler directly can pull it off `runtime.onMessage.__listeners`.
+interface MessageListener {
+  (message: unknown, sender: unknown, sendResponse: (response?: unknown) => void): boolean | void
+}
+const messageListeners: MessageListener[] = []
+const onMessage = {
+  __listeners: messageListeners,
+  addListener: (fn: MessageListener) => {
+    messageListeners.push(fn)
+  },
+}
+
 const runtime = {
+  onMessage,
   getURL: (path: string): string => {
     const rel = path.startsWith('/') ? path.slice(1) : path
     return `chrome-extension://${FAKE_EXTENSION_ID}/${rel}`
+  },
+  sendMessage: async (message: unknown): Promise<{ ok: true } | undefined> => {
+    if (
+      message === null ||
+      typeof message !== 'object' ||
+      (message as Record<string, unknown>).type !== SHIM_APPEND_TYPE
+    ) {
+      return undefined
+    }
+    const rawEvent = (message as Record<string, unknown>).event
+    const done = shimWriteChain.then(() => shimAppendOne(rawEvent))
+    shimWriteChain = done.then(
+      () => undefined,
+      () => undefined,
+    )
+    await done
+    return { ok: true }
   },
 }
 

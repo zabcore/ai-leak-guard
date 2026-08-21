@@ -385,8 +385,77 @@ side-effect-free.
   prefs: {
     enabled: boolean,
   },
+  // V1.2 A5 (#40): metadata-only per-decision event log.
+  // Bounded ring buffer, oldest-first — see MAX_EVENTS (200) in
+  // src/shared/event-log-schema.ts. Field shape is fixed and enforced by
+  // a persisted-payload test that asserts NO `value` / `text` /
+  // `content` / `name` / `filename` key EVER lands in storage.
+  events: Array<{
+    ts: number,
+    site: string,                     // 'chatgpt'|'claude'|'gemini'|'perplexity'
+    eventType: 'paste' | 'document',
+    action:
+      | 'protected' | 'as-is'                 // paste only
+      | 'cancelled'                           // both paste and document
+      | 'uploaded-anyway' | 'auto-cleared'
+      | 'unable-to-inspect',                  // document only
+    categories: DetectorCategory[],   // distinct maskable categories (empty when none/unable)
+    count: number,                    // maskable items detected (0 for clean/unable)
+    hadCriticalOrHigh: boolean,
+  }>,
 }
 ```
+
+### Event log — moat rule + wiring
+
+The log stores **metadata only, never content.** No matched value,
+masked/reconstructed text, extracted document text, or filename
+ever lands in `events[]`. This keeps the "ZabCore never receives
+patient content" claim honest and is the exact record shape a
+future paid-tier dashboard would aggregate, so nothing changes
+downstream when we ship that — the on-device schema is already
+free of content.
+
+`appendEvent` is documented **never-throws**: projects the event
+through the allowlist (`projectAlgEvent` in
+`src/shared/event-log-schema.ts` — the single moat-rule choke
+point that drops any content-shaped extras), then posts a
+`chrome.runtime.sendMessage({type: 'alg-event-append', event})`
+to the service worker. The service worker owns the ONLY writer
+of the `events` key — content-script `writeChain` serialisation
+would race across tabs (each open ChatGPT / Claude tab has its
+own module instance, so two tabs appending at the same time
+would each `get` the same array and `set` back over each other).
+The service worker is a single Chrome-wide instance across all
+tabs and frames, so funnelling writes through it makes the
+read-modify-write serialisation actually mean something. See
+`src/background/service-worker.ts`.
+
+A storage failure, an unreachable service worker, or a projection
+rejection all log a warning; the paste / document flow never
+awaits or gates on the append (the user's action MUST land
+regardless of whether we could record a metadata note about it).
+The projection is applied at BOTH boundaries — content-script
+side (before sendMessage) and service-worker side (before write)
+— so a schema regression at either end is caught.
+
+**Wiring points** (all pass the already-computed detection /
+aggregate result — never re-scan, never receive raw content):
+
+- **Paste** (`src/content/index.ts` — `logPasteEvent`):
+  - `protected` — user took the masked version
+  - `as-is` — user pasted the original despite detection
+  - `cancelled` — user cancelled the preview modal
+- **Document** (`src/content/document-decision.ts`):
+  - `auto-cleared` — clean file, auto-proceeded without a modal
+  - `uploaded-anyway` — released despite the sensitive warning
+  - `cancelled` — cancelled the modal in any state
+  - `unable-to-inspect` — released the uninspectable file
+
+The document helper takes `siteId` via `opts.siteId` so the popup's
+per-site breakdown is honest across both hold paths (change / drop
+/ paste through `document-flow.ts` and the FSA picker through
+`fsa-isolated.ts`, both of which forward `adapter.id`).
 
 ## Rules update mechanism
 

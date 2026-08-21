@@ -19,6 +19,8 @@ import { resolveDocumentDecision } from './document-decision'
 import { clearFileInput, consumePassThroughIfArmed } from './upload-release'
 import { showReattachNudge } from './document-nudge'
 import { installFsaMessageHandler } from './fsa-isolated'
+import { appendEvent, type AlgAction, type AlgEvent } from '../shared/event-log'
+import type { DetectorCategory, Finding } from '../detector/types'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -63,6 +65,39 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 // native paste would do — no toast, no undo, no counter increment.
 function insertRaw(target: Element, text: string): boolean {
   return adapter.insertText(target, text) || document.execCommand('insertText', false, text)
+}
+
+// V1.2 A5 (#40) metadata-only paste event helper. Same site label
+// the document path uses, same never-throws posture. Called only
+// from paste-decision terminals where we already have the
+// `detectDetailed` result; NEVER re-scans and NEVER receives the
+// raw text.
+function logPasteEvent(action: AlgAction, findings: readonly Finding[]): void {
+  try {
+    const maskable = findings.filter(isMaskable)
+    const catSet = new Set<DetectorCategory>()
+    for (const f of maskable) {
+      if (f.category) catSet.add(f.category)
+    }
+    // `hasCriticalOrHigh` derived from findings — mirrors the same
+    // computation `detectDetailed` returns without a re-scan.
+    const hadCriticalOrHigh = findings.some(
+      (f) => f.effectiveSensitivity === 'critical' || f.effectiveSensitivity === 'high',
+    )
+    const event: AlgEvent = {
+      ts: Date.now(),
+      site: adapter.id,
+      eventType: 'paste',
+      action,
+      categories: [...catSet],
+      count: maskable.length,
+      hadCriticalOrHigh,
+    }
+    void appendEvent(event)
+  } catch (err) {
+    // Never let event-log wiring break the paste flow.
+    console.warn('[AI Leak Guard] paste event log failed:', err)
+  }
 }
 
 function protectedPaste(target: Element, originalText: string, siteAdapter: SiteAdapter): void {
@@ -136,6 +171,12 @@ function handleHoldResult(result: HoldResult, kind: 'change' | 'drop' | 'paste')
 installFsaMessageHandler(window, {
   isActive: () => documentFlowActive(),
   isAnotherModalOpen: () => isDocumentModalOpen() || isPreviewModalOpen(),
+  // `siteId` sits on the handler's dep bag so the FSA path stays
+  // wired into the A5 activity log even if a future refactor
+  // swaps the `resolveDecision` seam. The handler forwards
+  // `deps.siteId` into `resolveDocumentDecision`'s opts on every
+  // call — belt-and-braces vs. the inline wrapper.
+  siteId: adapter.id,
   resolveDecision: (inspectionPromise, opts) => resolveDocumentDecision(inspectionPromise, opts),
 })
 
@@ -179,7 +220,7 @@ window.addEventListener(
             event.stopImmediatePropagation()
             event.stopPropagation()
             const target = event.target as Element | null
-            void holdFiles(extracted, target).then((result) => {
+            void holdFiles(extracted, target, undefined, adapter.id).then((result) => {
               handleHoldResult(result, 'paste')
             })
             return
@@ -230,15 +271,18 @@ window.addEventListener(
         if (outcome === 'protected') {
           restoreSelection(target, savedRange)
           protectedPaste(target, text, adapter)
+          logPasteEvent('protected', findings)
           return
         }
         if (outcome === 'as-is') {
           restoreSelection(target, savedRange)
           insertRaw(target, text)
+          logPasteEvent('as-is', findings)
           return
         }
         // Cancel: insert nothing. Focus was already returned to `target` by
         // the modal on close, so the input is ready for the next keystroke.
+        logPasteEvent('cancelled', findings)
       })
     } catch (err) {
       // Never break the user's paste flow; on any error let the original through.
@@ -287,7 +331,7 @@ window.addEventListener(
       event.stopImmediatePropagation()
       event.stopPropagation()
       const opener = (event.target as Element | null) ?? null
-      void holdFiles(extracted, opener).then((result) => {
+      void holdFiles(extracted, opener, undefined, adapter.id).then((result) => {
         handleHoldResult(result, 'change')
       })
     } catch (err) {
@@ -320,7 +364,7 @@ window.addEventListener(
       event.stopImmediatePropagation()
       event.stopPropagation()
       const opener = (event.target as Element | null) ?? null
-      void holdFiles(extracted, opener).then((result) => {
+      void holdFiles(extracted, opener, undefined, adapter.id).then((result) => {
         handleHoldResult(result, 'drop')
       })
     } catch (err) {
