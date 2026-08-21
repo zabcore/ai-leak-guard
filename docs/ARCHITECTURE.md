@@ -45,7 +45,8 @@ ai-leak-guard/
 │   │   ├── toast.ts              # Shadow DOM confirmation toast (no Undo in V1.1)
 │   │   ├── document-flag.ts      # V1.2 A1 feature-flag guard (default OFF)
 │   │   ├── document-flow.ts      # V1.2 A1 hold state machine
-│   │   ├── document-modal.ts     # V1.2 A1 placeholder confirm modal
+│   │   ├── document-decision.ts  # V1.2 A4 shared clean/sensitive/unable helper
+│   │   ├── document-modal.ts     # V1.2 A4 warning modal (scanning/sensitive/unable)
 │   │   ├── document-nudge.ts     # V1.2 A1 re-attach nudge (Shadow DOM one-liner)
 │   │   ├── file-extraction.ts    # V1.2 A1 File[] extraction from change/drop/paste
 │   │   ├── file-inspector.ts     # V1.2 A1 inspector STUB (no parsing, no findings)
@@ -480,13 +481,19 @@ Same event ordering rationale as V1.1 paste — see "Paste interception
 ordering" above. When the flag is OFF, `documentFlowActive()` returns
 false and every one of these branches is a strict no-op.
 
-**Hold state machine (`src/content/document-flow.ts`):**
+**Hold state machine (`src/content/document-flow.ts`, A4-final):**
 
-```
-extract → inspect (stub) → showDocumentModal
+```text
+extract → inspect → resolveDocumentDecision
     ├─ 'upload-anyway' → releaseFiles(state)
     └─ 'cancel'        → clearInput(origin) if change; else drop
 ```
+
+`resolveDocumentDecision` branches on the A3 `AggregateScanResult`
+— clean auto-releases, sensitive / unable open the matching modal
+view, and the cancellable "Checking…" state paints between them
+when extraction is slow. See the A4 section further below for the
+full state machine.
 
 The inspector at A1 is a **stub** (`src/content/file-inspector.ts`)
 that returns `findings: []` for any input and never reads file
@@ -673,15 +680,17 @@ picker call. A dedicated guard test asserts this end-to-end.
 
 **A3.1 — scan wiring on the FSA path.** When the flag is ON and no
 other modal is open, the isolated handler runs `inspectFiles(request.blobs)`
-before opening the placeholder document modal. Same
-`inspectFiles` (`src/content/file-inspector.ts`) the
-change / drop / paste paths call — same extraction, same V1.1
-detector, same `AggregateScanResult`. The `showModal` seam receives
-`{ fileCount, inspection }`; the placeholder A3.1 modal only reads
-`fileCount`, and A4 will render its summary from `inspection`
-without any change to this handler. A parity test in
-`tests/fsa-isolated.test.ts` locks the two paths' outputs together
-by running the same file through both.
+and routes the pending inspection through the shared
+`resolveDecision` seam (`FsaHandlerDeps.resolveDecision`, which
+production wires to `resolveDocumentDecision` — the same helper the
+change / drop / paste path uses). Same `inspectFiles`
+(`src/content/file-inspector.ts`) both file paths call — same
+extraction, same V1.1 detector, same `AggregateScanResult`. The
+helper branches on `aggregate.state`: `clean` auto-resolves
+`upload-anyway` without ever opening a modal; `sensitive` /
+`unable_to_inspect` open the warning modal in the matching view. A
+parity test in `tests/fsa-isolated.test.ts` locks the two paths'
+outputs together by running the same file through both.
 
 **Silent release, no re-attach.** Upload-anyway returns the exact
 handles the native picker returned — the site cannot tell we were
@@ -797,8 +806,75 @@ extraction "for free" with no additional plumbing in the
 orchestrators. Detection over the extracted text is A3's job.
 
 **Manifest.** No new permissions. `web_accessible_resources` gains
-`assets/pdf.worker*.js` (wildcarded because the chunk hash changes
-per build) so the pdf.js worker is loadable by the content script.
+`assets/pdf.worker*.js` AND `assets/xlsx.worker*.js` (both
+wildcarded because the chunk hash changes per build) so both
+workers are reachable by the content script from the extension
+origin.
+
+**Worker URL invariant (A4.1 / issue #39, refined A4.2).** pdf.ts +
+xlsx.ts originally spawned their worker chunk via Vite's `?worker`
+factory, which resolved the chunk's URL against the PAGE origin in
+the content-script bundle — `https://<host>/assets/pdf.worker-<hash>.js`
+→ 404 → Worker never loaded → extraction hung until the 10 s
+timeout fired. A4.1 fixed the URL by importing the chunk with
+`?url`, routing it through `chrome.runtime.getURL()`, and spawning
+`new Worker(chrome-extension://…, {type:'module'})`. Guard:
+`assertExtensionOriginWorkerUrl` throws if the resolved URL doesn't
+sit on the active extension's origin, catching cross-extension
+hijack (the qualified-URL path) and stubbed-getURL regressions (the
+resolved path).
+
+**A4.3 refinement — self-contained workers.** A4.2's XLSX path used
+`import xlsxWorkerUrl from './xlsx.worker.ts?url'`, which is a Vite
+footgun: `?url` on a TypeScript module returns the raw source as a
+`data:video/mp2t;base64,<raw-TS>` static asset. The built chunk was
+a ~3 KB shim exporting that data URL, and the blob-spawned worker
+ran uncompiled TypeScript that threw on the first `import`. Every
+real `.xlsx` upload on claude.ai came back `parse-error`. Fix: the
+import is now `?worker&url` (Vite compiles + bundles the worker,
+returns the built chunk's URL — ~360 KB with SheetJS inlined), the
+`vite.config.ts` `worker` clause forces `format: 'iife'` +
+`inlineDynamicImports: true` so the worker is fully self-contained
+(a blob module worker can't resolve a relative `./chunk-hash.js`
+import against its own origin), and xlsx.ts spawns as CLASSIC (no
+`{type: 'module'}`) to match. A runtime guard in
+`spawnExtensionWorkerFromBlob` detects the `data:video/mp2t` raw-
+shim shape and throws with a clear message so this footgun surfaces
+at spawn time — not four seconds later as a generic `parse-error`.
+The pdf.js worker is untouched by the Vite `worker` config (it's
+imported via `?url` on the pre-built self-contained `.mjs` file,
+not `?worker`) and its blob module-worker path remains intact.
+
+**A4.2 refinement — strict-CSP sites.** claude.ai (confirmed) — and
+other strict-CSP surfaces likely to follow — reject
+`new Worker(chrome-extension://…)` from a content-script context
+even when the resource is in `web_accessible_resources`: the page's
+`worker-src` clause doesn't allow the extension scheme. Verified
+in-page that `blob:` workers (classic and module) ARE allowed on
+all four current target sites. So the extractors now:
+
+1. Resolve the extension URL exactly as before
+   (`resolveExtensionWorkerUrl`), preserving the same-origin
+   invariant against the active extension.
+2. `fetch(extensionUrl)` from the content-script context — content
+   scripts can fetch their own WAR resources without extra
+   permissions and without triggering the page's `connect-src`
+   (extension-privileged fetch).
+3. Wrap the response body in a `Blob({type:'text/javascript'})` and
+   spawn `new Worker(URL.createObjectURL(blob), {type:'module'})`.
+4. Revoke the object URL on the next microtask — the browser has
+   already initiated the worker fetch synchronously during
+   `new Worker(...)`, so revoke doesn't tear the Worker down.
+
+The single seam is `spawnExtensionWorkerFromBlob`; a direct
+`new Worker(chrome-extension://…)` would silently regress on
+strict-CSP sites, so the helper is where the invariant lives.
+Fallback if any site also blocks `blob:` workers: move extraction
+to an offscreen document — not needed for the current four.
+Invariants pinned by `tests/extraction/worker-url.test.ts` (fetch
+source is chrome-extension, spawn URL is blob:) and the pdf spawn-
+site test in `tests/extraction/hardening.test.ts`.
+
 `verify:sw` and the "does not collect data" declaration are
 re-verified.
 
@@ -940,6 +1016,91 @@ call the same function.
 
 **Flag OFF.** Nothing above runs unless `documentFlowActive()` opens
 `inspectFiles`. Existing paste + A1 + A1.1 + A2 tests stay green.
+
+## Document warning modal (V1.2 A4 — flagged OFF)
+
+A4 replaces the A1 placeholder confirm modal with the real warning
+UX and unifies the two hold paths (change/drop/paste via
+`document-flow.ts`, ChatGPT FSA via `fsa-isolated.ts`) onto a single
+decision helper so their behavior cannot drift. Product rule:
+**documents scan-and-WARN, never block.** Clean files auto-proceed
+with NO modal; the modal appears only for `sensitive` or
+`unable_to_inspect`.
+
+**Shared decision helper (`src/content/document-decision.ts`).**
+Both hold paths funnel through:
+
+```text
+resolveDocumentDecision(inspectionPromise, { opener })
+  → 'upload-anyway' | 'cancel'
+```
+
+Branch on the A3 aggregate `DocScanResult`:
+
+- `clean` → resolve `'upload-anyway'` with **no modal shown**. On
+  the change/FSA paths this is a silent release; on drop/paste the
+  release step needs a re-attach, and the nudge copy is reworded
+  as informational ("No sensitive items found. Drop/paste the file
+  again to send it to the site.") because the user was never
+  warned in the first place.
+- `sensitive` → open the modal in the sensitive view:
+  "N sensitive items found in this file" (or "…across M files"),
+  friendly category chips (`healthcare_patient_id`→"Patient
+  identifiers (MRN)", `identity`→"Personal identity",
+  `government_financial`→"SSN / financial", `provider_id`→"Provider
+  ID (NPI)", `developer_credential`→"Credentials"), and an
+  emphasised "Includes high-severity items." line when
+  `hasCriticalOrHigh` is true. Primary is **[Upload anyway]**.
+- `unable_to_inspect` → open the modal in the unable view with a
+  reason-aware sub-line: encrypted / no-text-layer / too-large /
+  timeout / unsupported-type / parse-error / scan-error each get
+  a distinct honest copy. Primary is still **[Upload anyway]** — a
+  file we couldn't read is not proof it's dangerous.
+
+**Cancellable "Checking…" state.** Extraction can take up to
+`EXTRACTION_TIMEOUT_MS` per file; the helper races
+`inspectionPromise` against a `FLICKER_DELAY_MS` (250 ms) timer:
+
+- Inspection wins → route straight to the terminal state (or the
+  clean auto-release) — no spinner flash.
+- Timer wins → paint the scanning view: heading "Checking this
+  file…" + an **indeterminate progress bar** (a moving indigo strip
+  on a dim track — no percentage, since extraction time is
+  file/parser-dependent and a knowable value would be dishonest) +
+  Cancel. The container carries `role="status"` + `aria-live="polite"`
+  - `aria-busy="true"` so screen readers announce it without focus
+    moving, and `aria-busy` flips to `"false"` when the view
+    transitions to sensitive / unable. A `prefers-reduced-motion`
+    fallback drops the animation to a static translucent band. When
+    inspection subsequently resolves, the helper transitions the SAME
+    modal instance in-place (`ctrl.showSensitive(...)` /
+    `ctrl.showUnable(...)` / `ctrl.close('upload-anyway')` on clean).
+    If the user cancels during scanning, the helper honours it — even
+    if the eventual inspection would have been sensitive — and the
+    document-flow orchestrator returns without awaiting inspection so
+    the modal closes instantly rather than blocking on extraction.
+
+**Modal controller (`src/content/document-modal.ts`).** The V1.1
+Shadow-DOM patterns are reused verbatim (closed root, focus trap
+over primary → secondary → close, Escape / × / backdrop cancel,
+capture-phase keydown so ChatGPT/Claude's Enter-to-send doesn't
+fire while the modal is up, focus returns to the opener on close).
+A4 replaces `showDocumentModal(opts)` with `openDocumentModal({opener})
+→ DocumentModalController` so the decision helper can start in the
+scanning view and transition to a result view without unmounting.
+
+**Metadata-only rendering.** The modal API accepts only
+`totalMaskable`, `categories`, `hasCriticalOrHigh`, `fileCount`,
+`reason` — never `Finding.value`. A dedicated component test
+asserts a known SSN literal is absent from the modal's shadow DOM
+after `showSensitive(...)`. This mirrors A5's metadata-only event
+log discipline; no clean-copy / remove-item controls exist in
+V1.2.
+
+**Flag OFF.** `documentFlowActive()` (paste path) and `isActive`
+(FSA path) still gate the entire chain. When the flag is off no
+inspection runs, no modal opens, and the site sees byte-for-byte
+native behaviour.
 
 ## What this architecture explicitly does NOT include in V1
 

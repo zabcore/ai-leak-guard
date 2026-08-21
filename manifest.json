@@ -59,7 +59,12 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["assets/pdf.worker*.js", "assets/pdf.worker*.js.map"],
+      "resources": [
+        "assets/pdf.worker*.js",
+        "assets/pdf.worker*.js.map",
+        "assets/xlsx.worker*.js",
+        "assets/xlsx.worker*.js.map"
+      ],
       "matches": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",

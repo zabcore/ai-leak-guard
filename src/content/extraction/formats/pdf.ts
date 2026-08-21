@@ -17,8 +17,14 @@
 //     the flag is currently a no-op in this version; we still set it
 //     so that older / forked / future pdf.js builds cannot fall back
 //     to a font-program eval path on this codebase.
-//   • The worker script is bundled locally via `?worker` — no CDN
-//     `workerSrc`.
+//   • The worker script is bundled locally via `?url` + a manual
+//     `new Worker(...)` call. `?worker` returned a constructor that
+//     resolved its script through the PAGE origin in the content-
+//     script bundle, so the worker chunk 404'd on the host site and
+//     pdf extraction hung until the 10 s extraction timer fired
+//     (see `worker-url.ts` for the full write-up). Routing the URL
+//     through `chrome.runtime.getURL()` fixes the origin; the
+//     invariant is asserted at spawn time.
 //
 // The worker is lazily instantiated on first use (matches the parent
 // module's dynamic import strategy). We cache the IN-FLIGHT
@@ -32,6 +38,7 @@
 
 import type { FormatOutput } from '../extract'
 import { EXTRACTOR_ERROR_ENCRYPTED, EXTRACTOR_ERROR_NO_TEXT_LAYER } from '../extract'
+import { spawnExtensionWorkerFromBlob } from './worker-url'
 
 // Injectable pdf.js loader — production path uses the real
 // `pdfjs-dist`; tests can `vi.mock('pdfjs-dist')` to replace the
@@ -67,12 +74,32 @@ async function ensureWorkerConfigured(mod: PdfjsModule): Promise<void> {
   ).GlobalWorkerOptions
   if (!opts) return
   if (opts.workerPort || opts.workerSrc) return
-  // Import the worker with Vite's `?worker` suffix; the bundler
-  // emits it as a separate chunk and returns a `Worker` constructor.
-  // Ships alongside the extension — no runtime network.
-  const workerCtor = (await import('pdfjs-dist/build/pdf.worker.mjs?worker'))
-    .default as unknown as new () => Worker
-  opts.workerPort = new workerCtor()
+  // Dynamic `?url` import: Vite emits the worker chunk as a bundled
+  // asset and returns its page-relative URL as a string default
+  // export. Kept dynamic (not top-level) so tests that pre-populate
+  // `workerPort` never touch this import — a top-level `?url` import
+  // triggers Vite's module loader for every test that imports pdf.ts,
+  // even ones that mock pdfjs-dist entirely.
+  const { default: pdfWorkerUrl } = (await import('pdfjs-dist/build/pdf.worker.mjs?url')) as {
+    default: string
+  }
+  // Spawn the worker via a `blob:` URL wrapping the extension-hosted
+  // worker code. Strict-CSP sites (claude.ai confirmed) block
+  // `new Worker(chrome-extension://…)` even for WAR resources — the
+  // page's `worker-src` clause doesn't allow the extension scheme,
+  // so the worker never loads and extraction throws `parse-error`.
+  // `blob:` workers are accepted by every current target site.
+  // `spawnExtensionWorkerFromBlob` still routes through
+  // `resolveExtensionWorkerUrl` so the FETCH source is pinned to
+  // our extension origin — the invariant just moved from "spawn URL"
+  // to "fetch URL".
+  //
+  // `type: 'module'` matches pdf.js's `.mjs` worker build. No `eval`
+  // path — `isEvalSupported: false` is enforced on the loading task
+  // itself for defence in depth against forked pdf.js builds.
+  opts.workerPort = (await spawnExtensionWorkerFromBlob(pdfWorkerUrl, {
+    type: 'module',
+  })) as unknown as Worker
 }
 
 /**

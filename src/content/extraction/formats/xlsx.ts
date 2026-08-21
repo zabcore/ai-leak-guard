@@ -21,6 +21,7 @@
 // requests at runtime.
 
 import type { FormatOutput } from '../extract'
+import { spawnExtensionWorkerFromBlob } from './worker-url'
 
 export interface ExtractXlsxOptions {
   readonly signal?: AbortSignal
@@ -40,7 +41,11 @@ export interface XlsxWorkerLike {
   onerror: ((event: unknown) => void) | null
 }
 
-export type WorkerFactory = () => XlsxWorkerLike
+// The default factory is async now (it fetches the extension-hosted
+// worker code and wraps it in a `blob:` URL — see `worker-url.ts`
+// for why); tests that inject a synchronous fake still work because
+// `await` on a non-Promise unwraps to the value.
+export type WorkerFactory = () => XlsxWorkerLike | Promise<XlsxWorkerLike>
 
 interface WorkerResult {
   readonly kind: 'text' | 'reason'
@@ -65,9 +70,37 @@ export function __setXlsxWorkerFactoryForTesting(factory: WorkerFactory | null):
 
 async function loadDefaultFactory(): Promise<WorkerFactory> {
   if (cachedFactory !== null) return cachedFactory
-  const mod = await import('./xlsx.worker.ts?worker')
-  const WorkerCtor = mod.default as unknown as new () => XlsxWorkerLike
-  cachedFactory = (): XlsxWorkerLike => new WorkerCtor()
+  // `?worker&url` — NOT `?url` — returns the URL of the COMPILED,
+  // bundled worker chunk. A previous A4.2 attempt used `?url` on
+  // the `.ts` source directly, which is a Vite footgun: Vite treats
+  // `?url` on a TypeScript module as "give me the raw source as a
+  // static asset URL" and emits a `data:video/mp2t;base64,<raw-TS>`
+  // pointer instead of compiling anything. The resulting blob
+  // worker ran uncompiled TypeScript (`import * as XLSX from 'xlsx'`
+  // is a syntax error at runtime) and threw immediately, so every
+  // real XLSX upload came back as `parse-error` on claude.ai. With
+  // `?worker&url` Vite compiles the worker, inlines its deps (see
+  // the `worker: { format: 'iife', inlineDynamicImports: true }`
+  // clause in `vite.config.ts` — self-contained is a hard
+  // requirement for blob-spawned workers), and returns the built
+  // chunk's URL. The extractor then fetches that chunk and spawns
+  // it from a `blob:` URL. Strict-CSP sites (claude.ai) reject
+  // `new Worker(chrome-extension://…)` even for WAR resources; the
+  // blob-URL path is accepted on every current target site (see
+  // `worker-url.ts` for the full CSP write-up).
+  //
+  // Kept dynamic (not top-level) so tests injecting a
+  // `workerFactory` — either via `__setXlsxWorkerFactoryForTesting`
+  // or a per-call opts override — never touch this import.
+  const { default: xlsxWorkerUrl } = (await import('./xlsx.worker.ts?worker&url')) as {
+    default: string
+  }
+  // Spawn as CLASSIC (no `{type: 'module'}`) — matches the IIFE
+  // output format Vite produces for our local workers. `terminate()`
+  // on the wrapper stays the sole cleanup handle — see the outer
+  // function's `cleanup`.
+  cachedFactory = async (): Promise<XlsxWorkerLike> =>
+    (await spawnExtensionWorkerFromBlob(xlsxWorkerUrl)) as unknown as XlsxWorkerLike
   return cachedFactory
 }
 
@@ -83,7 +116,15 @@ export async function extractXlsx(
   const factory = opts.workerFactory ?? overrideFactory ?? (await loadDefaultFactory())
   if (opts.signal?.aborted) return { kind: 'reason', reason: 'timeout' }
 
-  const worker = factory()
+  const worker = await factory()
+  if (opts.signal?.aborted) {
+    try {
+      worker.terminate()
+    } catch {
+      /* terminate must never throw upward */
+    }
+    return { kind: 'reason', reason: 'timeout' }
+  }
 
   return new Promise<FormatOutput>((resolve) => {
     let settled = false

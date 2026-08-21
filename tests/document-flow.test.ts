@@ -7,9 +7,11 @@ import type { ReleaseOutcome } from '../src/content/upload-release'
 
 function makeDeps(overrides: Partial<HoldDeps> = {}): HoldDeps {
   return {
-    showModal: overrides.showModal ?? (() => Promise.resolve('cancel')),
+    resolveDecision:
+      overrides.resolveDecision ?? (() => Promise.resolve<DocumentModalOutcome>('cancel')),
     releaseFiles: overrides.releaseFiles ?? (() => 'released'),
     clearInput: overrides.clearInput ?? (() => {}),
+    inspect: overrides.inspect,
   }
 }
 
@@ -22,8 +24,11 @@ function dropState(...files: File[]): ExtractedFiles {
 }
 
 describe('holdFiles', () => {
-  it('opens the modal with the correct file count', async () => {
-    const showModal: HoldDeps['showModal'] = vi.fn(() =>
+  it('hands the pending inspection + opener to resolveDecision', async () => {
+    // Type the mock with the seam's own signature (Vitest 4.x infers
+    // `mock.calls` from the supplied function type) — no runtime cast
+    // needed to read the recorded arguments.
+    const resolveDecision = vi.fn<HoldDeps['resolveDecision']>(() =>
       Promise.resolve<DocumentModalOutcome>('cancel'),
     )
     const input = document.createElement('input')
@@ -32,12 +37,11 @@ describe('holdFiles', () => {
       new File(['a'], 'a.pdf', { type: 'application/pdf' }),
       new File(['b'], 'b.pdf', { type: 'application/pdf' }),
     ]
-    await holdFiles(changeState(input, ...files), input, makeDeps({ showModal }))
-    const mock = showModal as unknown as ReturnType<typeof vi.fn>
-    expect(mock).toHaveBeenCalledOnce()
-    const call = mock.mock.calls[0] as [{ fileCount: number; opener: Element | null }]
-    expect(call[0].fileCount).toBe(2)
-    expect(call[0].opener).toBe(input)
+    await holdFiles(changeState(input, ...files), input, makeDeps({ resolveDecision }))
+    expect(resolveDecision).toHaveBeenCalledOnce()
+    const [pendingInspection, opts] = resolveDecision.mock.calls[0]
+    expect(pendingInspection).toBeInstanceOf(Promise)
+    expect(opts.opener).toBe(input)
   })
 
   it('on Upload anyway → invokes releaseFiles and returns the release outcome', async () => {
@@ -49,14 +53,16 @@ describe('holdFiles', () => {
       changeState(input, file),
       input,
       makeDeps({
-        showModal: () => Promise.resolve('upload-anyway'),
+        resolveDecision: () => Promise.resolve('upload-anyway'),
         releaseFiles: release,
       }),
     )
     expect(release).toHaveBeenCalledOnce()
     expect(result.outcome).toBe('upload-anyway')
-    if (result.outcome === 'upload-anyway') expect(result.release).toBe('released')
-    expect(result.inspection.perFile).toHaveLength(1)
+    if (result.outcome === 'upload-anyway') {
+      expect(result.release).toBe('released')
+      expect(result.inspection.perFile).toHaveLength(1)
+    }
   })
 
   it('on Cancel → clears the origin input for a change event', async () => {
@@ -68,14 +74,49 @@ describe('holdFiles', () => {
       changeState(input, file),
       input,
       makeDeps({
-        showModal: () => Promise.resolve('cancel'),
+        resolveDecision: () => Promise.resolve('cancel'),
         clearInput,
       }),
     )
     expect(clearInput).toHaveBeenCalledOnce()
     expect(clearInput.mock.calls[0][0]).toBe(input)
     expect(result.outcome).toBe('cancel')
-    expect(result.inspection.perFile).toHaveLength(1)
+    // Cancel deliberately does NOT carry inspection — the flow returns
+    // instantly on cancel and never awaits the pending scan.
+  })
+
+  it('on Cancel → returns BEFORE inspection settles', async () => {
+    // Ordering test, not a wall-time test. We inject a deferred
+    // inspection promise that never resolves during the test body, so
+    // the ONLY way `holdFiles` can return is by skipping the await on
+    // it. A regressed implementation that awaits inspection would
+    // hang forever here.
+    const clearInput = vi.fn()
+    const input = document.createElement('input')
+    input.type = 'file'
+    const file = new File(['x'], 'a.pdf', { type: 'application/pdf' })
+    let resolveInspection!: (value: never) => void
+    const inspectPromise = new Promise<never>((resolve) => {
+      resolveInspection = resolve
+    })
+    const inspect = vi.fn(() => inspectPromise)
+
+    const result = await holdFiles(
+      changeState(input, file),
+      input,
+      makeDeps({
+        resolveDecision: () => Promise.resolve('cancel'),
+        clearInput,
+        inspect,
+      }),
+    )
+    expect(result.outcome).toBe('cancel')
+    expect(clearInput).toHaveBeenCalledOnce()
+    expect(inspect).toHaveBeenCalledOnce()
+    // Only NOW do we let the inspection promise resolve — the test's
+    // arrival at this line already proved cancel returned first.
+    // Resolving prevents an unhandled-promise warning.
+    resolveInspection(undefined as never)
   })
 
   it('on Cancel with a drop event → does NOT try to clear an input (there is none)', async () => {
@@ -85,7 +126,7 @@ describe('holdFiles', () => {
       dropState(file),
       null,
       makeDeps({
-        showModal: () => Promise.resolve('cancel'),
+        resolveDecision: () => Promise.resolve('cancel'),
         clearInput,
       }),
     )
@@ -100,7 +141,7 @@ describe('holdFiles', () => {
       dropState(file),
       null,
       makeDeps({
-        showModal: () => Promise.resolve('upload-anyway'),
+        resolveDecision: () => Promise.resolve('upload-anyway'),
         releaseFiles: release,
         clearInput,
       }),
@@ -108,7 +149,9 @@ describe('holdFiles', () => {
     expect(release).toHaveBeenCalledOnce()
     expect(clearInput).not.toHaveBeenCalled()
     expect(result.outcome).toBe('upload-anyway')
-    if (result.outcome === 'upload-anyway') expect(result.release).toBe('needs-user-reattach')
-    expect(result.inspection.perFile).toHaveLength(1)
+    if (result.outcome === 'upload-anyway') {
+      expect(result.release).toBe('needs-user-reattach')
+      expect(result.inspection.perFile).toHaveLength(1)
+    }
   })
 })

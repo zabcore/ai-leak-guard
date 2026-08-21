@@ -61,7 +61,9 @@ function makeDeps(overrides: Partial<FsaHandlerDeps> = {}): FsaHandlerDeps {
   return {
     isActive: overrides.isActive ?? (() => true),
     isAnotherModalOpen: overrides.isAnotherModalOpen ?? (() => false),
-    showModal: overrides.showModal ?? (() => Promise.resolve('cancel')),
+    // Stub the shared decision helper so tests don't need the
+    // real Shadow-DOM modal running under jsdom.
+    resolveDecision: overrides.resolveDecision ?? (() => Promise.resolve('cancel')),
     // Stub inspection by default so tests avoid pdf.js lazy-loads
     // and jsdom quirks. Individual tests can pass their own to
     // observe the argument or force a delay.
@@ -117,62 +119,67 @@ async function performHandshake(): Promise<MessagePort> {
 }
 
 describe('handleFsaHoldRequest — decision routing via the reply seam', () => {
-  it('flag OFF → replies upload-anyway without calling showModal', async () => {
-    const showModal = vi.fn(() => Promise.resolve<'upload-anyway' | 'cancel'>('cancel'))
+  it('flag OFF → replies upload-anyway without calling resolveDecision', async () => {
+    const resolveDecision = vi.fn(() => Promise.resolve<'upload-anyway' | 'cancel'>('cancel'))
     const reply = vi.fn()
     await handleFsaHoldRequest(
       holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }]),
-      makeDeps({ isActive: () => false, showModal }),
+      makeDeps({ isActive: () => false, resolveDecision }),
       reply,
     )
     expect(reply).toHaveBeenCalledTimes(1)
     expect(reply).toHaveBeenCalledWith('upload-anyway')
-    expect(showModal).not.toHaveBeenCalled()
+    expect(resolveDecision).not.toHaveBeenCalled()
   })
 
   it('another modal already open → replies cancel (drop-on-the-floor)', async () => {
-    const showModal = vi.fn()
+    const resolveDecision = vi.fn()
     const reply = vi.fn()
     await handleFsaHoldRequest(
       holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }]),
-      makeDeps({ isAnotherModalOpen: () => true, showModal }),
+      makeDeps({ isAnotherModalOpen: () => true, resolveDecision }),
       reply,
     )
     expect(reply).toHaveBeenCalledTimes(1)
     expect(reply).toHaveBeenCalledWith('cancel')
-    expect(showModal).not.toHaveBeenCalled()
+    expect(resolveDecision).not.toHaveBeenCalled()
   })
 
-  it('flag ON + no other modal → opens the modal and forwards the outcome', async () => {
-    const showModal: FsaHandlerDeps['showModal'] = vi.fn(() =>
+  it('flag ON + no other modal → routes through resolveDecision and forwards the outcome', async () => {
+    // Typed via the seam's own signature — Vitest 4.x infers
+    // `mock.calls` from the supplied function type.
+    const resolveDecision = vi.fn<FsaHandlerDeps['resolveDecision']>(() =>
       Promise.resolve<'upload-anyway' | 'cancel'>('upload-anyway'),
     )
     const reply = vi.fn()
     await handleFsaHoldRequest(
       holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }]),
-      makeDeps({ showModal }),
+      makeDeps({ resolveDecision }),
       reply,
     )
     expect(reply).toHaveBeenCalledTimes(1)
     expect(reply).toHaveBeenCalledWith('upload-anyway')
-    const mock = showModal as unknown as ReturnType<typeof vi.fn>
-    expect(mock).toHaveBeenCalledOnce()
-    const call = mock.mock.calls[0] as [{ fileCount: number; inspection: FileInspection }]
-    expect(call[0].fileCount).toBe(1)
-    // A3.1: showModal now receives the A3 inspection alongside
-    // fileCount so A4 can render its summary from it.
-    expect(call[0].inspection).toBeDefined()
-    expect(call[0].inspection.aggregate.state).toBe('clean')
-    expect(call[0].inspection.perFile).toHaveLength(1)
+    expect(resolveDecision).toHaveBeenCalledOnce()
+    const [pendingInspection, opts] = resolveDecision.mock.calls[0]
+    // The FSA path passes a pending inspection promise (not a
+    // resolved value) so the decision helper can race it against
+    // the flicker delay.
+    expect(pendingInspection).toBeInstanceOf(Promise)
+    const inspection = await pendingInspection
+    expect(inspection.aggregate.state).toBe('clean')
+    expect(inspection.perFile).toHaveLength(1)
+    // No opener element from the FSA path — the picker was invoked
+    // by the page's own JS; there's no editor to return focus to.
+    expect(opts).toEqual({ opener: null })
   })
 
   it('flag OFF → does NOT run inspection (bytes are not touched on the pass-through path)', async () => {
     const inspect = vi.fn(() => Promise.resolve(fakeInspection([])))
-    const showModal = vi.fn(() => Promise.resolve<'upload-anyway' | 'cancel'>('cancel'))
+    const resolveDecision = vi.fn(() => Promise.resolve<'upload-anyway' | 'cancel'>('cancel'))
     const reply = vi.fn()
     await handleFsaHoldRequest(
       holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }]),
-      makeDeps({ isActive: () => false, inspect, showModal }),
+      makeDeps({ isActive: () => false, inspect, resolveDecision }),
       reply,
     )
     expect(inspect).not.toHaveBeenCalled()
@@ -181,11 +188,11 @@ describe('handleFsaHoldRequest — decision routing via the reply seam', () => {
 
   it('another modal already open → does NOT run inspection either', async () => {
     const inspect = vi.fn(() => Promise.resolve(fakeInspection([])))
-    const showModal = vi.fn()
+    const resolveDecision = vi.fn()
     const reply = vi.fn()
     await handleFsaHoldRequest(
       holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }]),
-      makeDeps({ isAnotherModalOpen: () => true, inspect, showModal }),
+      makeDeps({ isAnotherModalOpen: () => true, inspect, resolveDecision }),
       reply,
     )
     expect(inspect).not.toHaveBeenCalled()
@@ -194,10 +201,12 @@ describe('handleFsaHoldRequest — decision routing via the reply seam', () => {
 
   it('A3.1: inspect() is called with the request.blobs (File[]) so extraction + detection can run', async () => {
     const inspect = vi.fn((files: readonly File[]) => Promise.resolve(fakeInspection(files)))
-    const showModal = vi.fn(() => Promise.resolve<'upload-anyway' | 'cancel'>('upload-anyway'))
+    const resolveDecision = vi.fn(() =>
+      Promise.resolve<'upload-anyway' | 'cancel'>('upload-anyway'),
+    )
     const reply = vi.fn()
     const req = holdRequest([{ name: 'a.pdf', size: 1, type: 'application/pdf' }])
-    await handleFsaHoldRequest(req, makeDeps({ inspect, showModal }), reply)
+    await handleFsaHoldRequest(req, makeDeps({ inspect, resolveDecision }), reply)
     expect(inspect).toHaveBeenCalledOnce()
     const passedFiles = inspect.mock.calls[0]?.[0] as readonly File[]
     // Same reference the request carried — no marshalling loss.
@@ -222,11 +231,16 @@ describe('handleFsaHoldRequest — parity with the change / drop / paste path', 
     const reference = await inspectFiles([file])
 
     // FSA path: drive the handler with NO `inspect` override so the
-    // real `inspectFiles` runs from `request.blobs`.
+    // real `inspectFiles` runs from `request.blobs`. The decision
+    // helper is stubbed so we can observe the pending inspection
+    // promise the handler hands it.
     let observed: FileInspection | null = null
-    const showModal = (opts: { fileCount: number; inspection: FileInspection }) => {
-      observed = opts.inspection
-      return Promise.resolve<'upload-anyway' | 'cancel'>('cancel')
+    const resolveDecision = async (
+      inspectionPromise: Promise<FileInspection>,
+      _opts: { opener: Element | null },
+    ): Promise<'upload-anyway' | 'cancel'> => {
+      observed = await inspectionPromise
+      return 'cancel'
     }
     // Use holdRequest's metadata but override its dummy blob with the
     // real File so the two paths see the same bytes.
@@ -242,7 +256,7 @@ describe('handleFsaHoldRequest — parity with the change / drop / paste path', 
       {
         isActive: () => true,
         isAnotherModalOpen: () => false,
-        showModal,
+        resolveDecision,
         // no `inspect` — use production `inspectFiles`
       },
       () => {},
@@ -333,7 +347,7 @@ describe('installFsaMessageHandler — private-channel handshake & round-trip', 
   it('replies to a valid hold-request on the port with a matching id and forwarded decision', async () => {
     uninstall = installFsaMessageHandler(
       window,
-      makeDeps({ showModal: () => Promise.resolve('upload-anyway') }),
+      makeDeps({ resolveDecision: () => Promise.resolve('upload-anyway') }),
     )
     const port = await performHandshake()
     // Empty picker so the round-trip through jsdom's MessageChannel
@@ -353,21 +367,21 @@ describe('installFsaMessageHandler — private-channel handshake & round-trip', 
   })
 
   it('IGNORES a malformed hold-request on the port — no reply, no modal', async () => {
-    const showModal = vi.fn()
-    uninstall = installFsaMessageHandler(window, makeDeps({ showModal }))
+    const resolveDecision = vi.fn()
+    uninstall = installFsaMessageHandler(window, makeDeps({ resolveDecision }))
     const port = await performHandshake()
     const seen: unknown[] = []
     port.addEventListener('message', (event) => seen.push(event.data))
     port.postMessage({ source: FSA_MESSAGE_SOURCE, kind: 'hold-request', id: 'x' /* no files */ })
     await flush()
     expect(seen).toHaveLength(0)
-    expect(showModal).not.toHaveBeenCalled()
+    expect(resolveDecision).not.toHaveBeenCalled()
     port.close()
   })
 
-  it('replies cancel when showModal throws — the wrapper then throws AbortError, mirroring native cancel', async () => {
-    const showModal = vi.fn(() => Promise.reject(new Error('modal blew up')))
-    uninstall = installFsaMessageHandler(window, makeDeps({ showModal }))
+  it('replies cancel when resolveDecision throws — the wrapper then throws AbortError, mirroring native cancel', async () => {
+    const resolveDecision = vi.fn(() => Promise.reject(new Error('decision blew up')))
+    uninstall = installFsaMessageHandler(window, makeDeps({ resolveDecision }))
     const port = await performHandshake()
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     // Empty picker — see note in the "replies to a valid hold-request"
@@ -403,8 +417,8 @@ describe('installFsaMessageHandler — adversarial regression (CodeRabbit CRITIC
   //      influence anything on the port.
 
   it('ignores a hold-request posted over window.postMessage (must arrive on the port)', async () => {
-    const showModal = vi.fn()
-    uninstall = installFsaMessageHandler(window, makeDeps({ showModal }))
+    const resolveDecision = vi.fn()
+    uninstall = installFsaMessageHandler(window, makeDeps({ resolveDecision }))
     // Complete the handshake so we're in the steady state.
     const port = await performHandshake()
     // Now forge a hold-request via window.postMessage — this is
@@ -422,7 +436,7 @@ describe('installFsaMessageHandler — adversarial regression (CodeRabbit CRITIC
       }),
     )
     await flush()
-    expect(showModal).not.toHaveBeenCalled()
+    expect(resolveDecision).not.toHaveBeenCalled()
     expect(portGotAnyMessage).toBe(false)
     expect(postSpy.mock.calls.filter((c) => isFsaHoldDecision(c[0]))).toHaveLength(0)
     port.close()
