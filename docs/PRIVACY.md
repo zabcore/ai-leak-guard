@@ -41,6 +41,18 @@ The following data is stored only in your browser, in `chrome.storage.local`, an
 
 This data is accessible only to the extension itself, on your device. Uninstalling the extension removes it.
 
+### Full activity page + local export
+The popup has a "View all activity →" link that opens a full **Activity** page (the extension's options page). It shows the same metadata-only records — timestamp, site, paste/document, action, category chips, count — with room to scroll through the full 200-event history.
+
+The activity page also has **Export** buttons for CSV and JSON. Both exports are built entirely in your browser:
+
+- The file is assembled in-page as a `Blob`, handed to a temporary anchor with a `download` attribute, and clicked programmatically. Nothing about this touches the network.
+- Only the local metadata fields are exported — the same seven: `ts` (as an ISO timestamp), `site`, `eventType`, `action`, `categories`, `count`, `hadCriticalOrHigh`. No matched values, no pasted text, no file contents, no filenames appear in the export.
+- The extension does **not** request Chrome's `downloads` permission; the anchor-click mechanism needs no permission.
+- The exported file lands wherever your browser saves downloads. It is a local file on your device — the extension does not upload it, and there is no cloud sync in the free version.
+
+If a future paid tier adds cross-device sync or team dashboards, that will be an explicit opt-in with a separate, prominent notice — the free extension will never start uploading your activity silently.
+
 ## Outbound network requests
 
 AI Leak Guard makes **no outbound network requests**. Detection patterns are bundled with the extension and updated only through Chrome's normal extension-update mechanism (from the Chrome Web Store). There is no analytics endpoint, no telemetry server, no error reporting service, no third-party SDK that phones home.

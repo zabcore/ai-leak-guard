@@ -457,6 +457,53 @@ per-site breakdown is honest across both hold paths (change / drop
 / paste through `document-flow.ts` and the FSA picker through
 `fsa-isolated.ts`, both of which forward `adapter.id`).
 
+### Popup + activity page + export (A5.1)
+
+The extension surfaces the event log in TWO places, both fed from
+`chrome.storage.local` via `getEvents()`:
+
+- **Popup** (`src/popup/index.html` + `popup.ts`) — a compact
+  summary the user sees on the browser-action click. The
+  headline number is `counters.total` and counts INDIVIDUAL
+  sensitive items masked on the paste path (one match = one
+  item). The Activity tiles are derived from `summariseEvents()`
+  and count EVENTS (one paste or one file upload = one event).
+  The two units are labelled and styled distinctly (headline is
+  a 48px number with "Sensitive items masked"; each tile is a
+  smaller number with an "events" trailing unit) so a glance
+  never blurs "items" into "events". A "View all activity →"
+  button calls `chrome.runtime.openOptionsPage()`.
+
+- **Activity page** (`src/popup/activity.html` + `activity.ts`,
+  registered as the extension's `options_ui` with
+  `open_in_tab: true`) — renders the full ring buffer
+  newest-first with per-row timestamp, site, event type, action
+  badge, friendly category chips (same copy as the A4 modal),
+  and item count. Empty state on a fresh install; a "showing
+  the most recent 200" caption when the buffer is at
+  `MAX_EVENTS`. Every cell writes via `textContent` from
+  AlgEvent schema fields — no innerHTML, no template with
+  attribute injection.
+
+- **Local export** (`src/popup/export.ts`) — CSV + JSON
+  serialisers that project each event onto the seven-field
+  allowlist (`EXPORT_FIELDS`), convert `ts` to ISO 8601, and
+  hand the resulting text to a `Blob` + `URL.createObjectURL`
+  + `<a download>` click. `URL.revokeObjectURL` on the next
+  microtask. NO `fetch`, NO network, NO new permission —
+  `chrome.downloads` is intentionally NOT requested. The
+  manifest-permissions test enforces this. Filename shape:
+  `ai-leak-guard-activity-YYYYMMDD.{csv,json}`.
+
+The moat rule holds through the export path: a no-content guard
+test enumerates the forbidden field set
+(`value` / `text` / `content` / `name` / `filename` / `body` /
+`raw`) and asserts NO row in either serialiser carries one, even
+when a hostile input event stapled them on. The activity page
+render is tested with a hostile-value fixture — a known SSN
+literal and a filename literal MUST be absent from the rendered
+DOM.
+
 ## Rules update mechanism
 
 - Detection rules are bundled with the extension (see `src/detector/rules.ts`).
