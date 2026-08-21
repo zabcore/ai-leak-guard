@@ -395,9 +395,10 @@ side-effect-free.
     site: string,                     // 'chatgpt'|'claude'|'gemini'|'perplexity'
     eventType: 'paste' | 'document',
     action:
-      | 'protected' | 'as-is' | 'cancelled'   // paste
+      | 'protected' | 'as-is'                 // paste only
+      | 'cancelled'                           // both paste and document
       | 'uploaded-anyway' | 'auto-cleared'
-      | 'unable-to-inspect',                  // document
+      | 'unable-to-inspect',                  // document only
     categories: DetectorCategory[],   // distinct maskable categories (empty when none/unable)
     count: number,                    // maskable items detected (0 for clean/unable)
     hadCriticalOrHigh: boolean,
@@ -415,14 +416,28 @@ future paid-tier dashboard would aggregate, so nothing changes
 downstream when we ship that — the on-device schema is already
 free of content.
 
-`appendEvent` is documented **never-throws**: reads the ring
-buffer, appends the new event, trims to `MAX_EVENTS`, writes
-back. A storage failure logs a warning; the paste / document flow
-never awaits or gates on the append (the user's action MUST land
+`appendEvent` is documented **never-throws**: projects the event
+through the allowlist (`projectAlgEvent` in
+`src/shared/event-log-schema.ts` — the single moat-rule choke
+point that drops any content-shaped extras), then posts a
+`chrome.runtime.sendMessage({type: 'alg-event-append', event})`
+to the service worker. The service worker owns the ONLY writer
+of the `events` key — content-script `writeChain` serialisation
+would race across tabs (each open ChatGPT / Claude tab has its
+own module instance, so two tabs appending at the same time
+would each `get` the same array and `set` back over each other).
+The service worker is a single Chrome-wide instance across all
+tabs and frames, so funnelling writes through it makes the
+read-modify-write serialisation actually mean something. See
+`src/background/service-worker.ts`.
+
+A storage failure, an unreachable service worker, or a projection
+rejection all log a warning; the paste / document flow never
+awaits or gates on the append (the user's action MUST land
 regardless of whether we could record a metadata note about it).
-Writes are serialised through a single promise chain so concurrent
-appends can't clobber each other's read-modify-write (same
-pattern `counter.ts` uses).
+The projection is applied at BOTH boundaries — content-script
+side (before sendMessage) and service-worker side (before write)
+— so a schema regression at either end is caught.
 
 **Wiring points** (all pass the already-computed detection /
 aggregate result — never re-scan, never receive raw content):

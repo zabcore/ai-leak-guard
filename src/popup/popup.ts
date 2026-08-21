@@ -48,7 +48,10 @@ const ACTION_LABELS: Readonly<Record<AlgEvent['action'], string>> = {
 function relativeTime(ts: number, now: number = Date.now()): string {
   const diffMs = Math.max(0, now - ts)
   const sec = Math.floor(diffMs / 1000)
-  if (sec < 45) return 'just now'
+  // "just now" for everything under one FULL minute — the previous
+  // 45s threshold produced a `0m ago` line for the 45–59s range,
+  // which reads as either a bug or a rounding glitch.
+  if (sec < 60) return 'just now'
   const min = Math.floor(sec / 60)
   if (min < 60) return `${min}m ago`
   const hr = Math.floor(min / 60)

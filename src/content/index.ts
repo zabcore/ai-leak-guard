@@ -171,8 +171,13 @@ function handleHoldResult(result: HoldResult, kind: 'change' | 'drop' | 'paste')
 installFsaMessageHandler(window, {
   isActive: () => documentFlowActive(),
   isAnotherModalOpen: () => isDocumentModalOpen() || isPreviewModalOpen(),
-  resolveDecision: (inspectionPromise, opts) =>
-    resolveDocumentDecision(inspectionPromise, { ...opts, siteId: adapter.id }),
+  // `siteId` sits on the handler's dep bag so the FSA path stays
+  // wired into the A5 activity log even if a future refactor
+  // swaps the `resolveDecision` seam. The handler forwards
+  // `deps.siteId` into `resolveDocumentDecision`'s opts on every
+  // call — belt-and-braces vs. the inline wrapper.
+  siteId: adapter.id,
+  resolveDecision: (inspectionPromise, opts) => resolveDocumentDecision(inspectionPromise, opts),
 })
 
 // One listener on `window` in the capture phase. Two reasons this beats

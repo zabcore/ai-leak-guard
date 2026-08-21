@@ -164,6 +164,73 @@ describe('summariseEvents', () => {
   })
 })
 
+describe('event-log — projection drops hostile extra fields', () => {
+  it('an event carrying `value`/`text`/`filename` lands in storage without those fields', async () => {
+    // Feed a "well-shaped" AlgEvent that ALSO carries content-shaped
+    // extras. `appendEvent` should project it through the allowlist
+    // and persist only the seven allowed fields; the service worker
+    // then projects AGAIN on receive as belt-and-braces.
+    const hostile = {
+      ...makeEvent({ ts: 999 }),
+      value: '123-45-6789',
+      text: 'Patient MRN 42',
+      filename: 'ssn-list.xlsx',
+      body: 'unrelated',
+      __proto__: { evil: true },
+    } as unknown as AlgEvent
+    await appendEvent(hostile)
+
+    // Read the raw storage payload directly — the setup shim runs
+    // the shim's `shimAppendOne` inline, which mirrors the real
+    // service worker's projection.
+    const raw = (await chrome.storage.local.get('events')).events as unknown[]
+    expect(Array.isArray(raw)).toBe(true)
+    const persisted = raw[raw.length - 1] as Record<string, unknown>
+    const allowedKeys = [
+      'ts',
+      'site',
+      'eventType',
+      'action',
+      'categories',
+      'count',
+      'hadCriticalOrHigh',
+    ].sort()
+    // The persisted record's OWN keys must be exactly the allowlist.
+    expect(Object.keys(persisted).sort()).toEqual(allowedKeys)
+    // Belt-and-braces on the specific hostile fields.
+    for (const key of ['value', 'text', 'filename', 'body', 'evil']) {
+      expect(persisted).not.toHaveProperty(key)
+    }
+  })
+
+  it('rejects an event with an invalid action (allowlist enforcement)', async () => {
+    // A caller that fabricates a novel action string must NOT get
+    // that novel string into storage.
+    const invalid = { ...makeEvent(), action: 'exfil-patient-data' } as unknown as AlgEvent
+    await appendEvent(invalid)
+    const raw = (await chrome.storage.local.get('events')).events as unknown[]
+    // Either not written at all, or projected off — in both cases
+    // no persisted entry carries the bad action.
+    for (const entry of raw ?? []) {
+      const r = entry as { action?: string }
+      expect(r.action).not.toBe('exfil-patient-data')
+    }
+  })
+
+  it('rejects an event with an invalid category (allowlist enforcement)', async () => {
+    const invalid = {
+      ...makeEvent(),
+      categories: ['patient_full_name_in_the_clear'],
+    } as unknown as AlgEvent
+    await appendEvent(invalid)
+    const raw = (await chrome.storage.local.get('events')).events as unknown[]
+    for (const entry of raw ?? []) {
+      const r = entry as { categories?: string[] }
+      expect(r.categories ?? []).not.toContain('patient_full_name_in_the_clear')
+    }
+  })
+})
+
 describe('getEvents — defensive read', () => {
   it('returns [] when the stored value is not an array', async () => {
     await chrome.storage.local.set({ events: 'not-an-array' })

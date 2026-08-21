@@ -200,5 +200,5 @@ body {
   color: #4b5563;
   border-left: 2px solid #e5e7eb;
   margin-bottom: 2px;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }

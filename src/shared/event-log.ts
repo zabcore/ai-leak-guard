@@ -1,104 +1,68 @@
-// V1.2 A5 (#40) local metadata-only event log.
+// V1.2 A5 (#40) local metadata-only event log — content-script API.
 //
-// The moat rule (non-negotiable): the log stores **metadata only,
-// never content.** No matched values, no masked/reconstructed text,
-// no file text, no filenames. This is what keeps the extension's
-// "ZabCore never receives patient content" claim honest AND is the
-// exact event shape a future paid-tier dashboard would aggregate —
-// so nothing has to change downstream when we ship that: the on-
-// device schema is already free of content.
+// Public surface stays the same:
+//   • `AlgEvent` / `AlgAction` / `AlgEventType` / `MAX_EVENTS` types.
+//   • `appendEvent(event)` — best-effort emit; NEVER throws.
+//   • `getEvents()` — read-only fetch for the popup.
+//   • `summariseEvents(events)` — pure roll-up for the popup.
 //
-// The log lives in `chrome.storage.local` under a single key
-// (`events`). It's a bounded ring buffer — new events append,
-// the oldest is dropped when we cross `MAX_EVENTS`. `appendEvent`
-// is documented never-throws: a storage failure logs a warning but
-// must NOT reject up into the paste or document flow (the user's
-// paste MUST land regardless of whether we could persist a
-// metadata record about it).
+// A5.1 (post-CR) change: writes are no longer performed inside
+// this module. Each content-script context has its own module
+// instance and its own `writeChain` closure — two tabs appending
+// at the same time would each `get` the same array, `push`, and
+// `set`, and the last writer would silently overwrite the other.
+// Extension service workers are a single Chrome-wide instance;
+// funnelling writes through `chrome.runtime.sendMessage` and
+// having the service worker do the read-modify-write is the only
+// way to actually serialise across tabs. See
+// `src/background/service-worker.ts` for the receiver + the
+// allowlist projection at the choke point.
 //
-// This module is the ONLY shared surface the paste + document
-// paths use for logging. Callers pass in a fully-formed `AlgEvent`
-// they built from the ALREADY-COMPUTED detection result / scan
-// aggregate — the log never re-scans, never re-reads content, and
-// never receives a value string in the first place.
+// The moat rule is still enforced HERE too: we project the event
+// through `projectAlgEvent` before sending, so a hostile /
+// accidental extra field can't even leave the content script.
+// The service worker projects again on receipt — belt-and-braces
+// at both boundaries.
 
-import type { DetectorCategory } from '../detector/types'
+import { projectAlgEvent, isProjectedAlgEvent, type AlgEvent } from './event-log-schema'
 
-/** Which decision path emitted the event. */
-export type AlgEventType = 'paste' | 'document'
-
-/**
- * What the user ended up doing.
- *
- * Paste path:
- *   • `protected`        — took the masked version of a detected paste
- *   • `as-is`            — pasted the original despite detection
- *   • `cancelled`        — cancelled the preview modal
- *
- * Document path:
- *   • `uploaded-anyway`  — released despite the sensitive warning
- *   • `cancelled`        — cancelled the document modal (any state)
- *   • `auto-cleared`     — clean file, auto-proceeded without a modal
- *   • `unable-to-inspect`— couldn't read the file to check it
- */
-export type AlgAction =
-  | 'protected'
-  | 'as-is'
-  | 'cancelled'
-  | 'uploaded-anyway'
-  | 'auto-cleared'
-  | 'unable-to-inspect'
-
-/**
- * One decision-point event. Fields are the ENTIRE persisted shape;
- * a `no-content` guard test asserts no `value` / `text` / `name` /
- * `filename` key is EVER written to storage.
- */
-export interface AlgEvent {
-  /** `Date.now()` at the moment of the decision. */
-  readonly ts: number
-  /** Site adapter id: `chatgpt` / `claude` / `gemini` / `perplexity`. */
-  readonly site: string
-  readonly eventType: AlgEventType
-  readonly action: AlgAction
-  /**
-   * Distinct taxonomy categories DETECTED (post-`isMaskable`). Empty
-   * for `auto-cleared` (clean file) and `unable-to-inspect` (nothing
-   * to detect against). Never carries a raw value.
-   */
-  readonly categories: readonly DetectorCategory[]
-  /** Number of maskable items detected. `0` for clean / unable. */
-  readonly count: number
-  /** Mirrors `DetectionResult.hasCriticalOrHigh` when available. */
-  readonly hadCriticalOrHigh: boolean
-}
-
-/**
- * Ring-buffer cap. 200 is plenty for a "recent activity" popup
- * (weeks of typical use) and small enough that even the fattest
- * `AlgEvent` (~200 bytes) stays well under any `chrome.storage.local`
- * per-key quota. Trims the oldest first — the popup always shows
- * the tail.
- */
-export const MAX_EVENTS = 200
+export {
+  MAX_EVENTS,
+  type AlgEvent,
+  type AlgAction,
+  type AlgEventType,
+  isProjectedAlgEvent,
+  projectAlgEvent,
+} from './event-log-schema'
 
 const STORAGE_KEY = 'events'
+const APPEND_MESSAGE_TYPE = 'alg-event-append'
 
 /**
- * Read all persisted events. Callers should treat the returned
- * array as read-only. Never throws — a broken/absent record
- * degrades to `[]` so the popup renders an empty state instead of
- * a red banner.
+ * Read all persisted events. Kept as a plain `chrome.storage.local.get`
+ * because the popup's read path is single-instance (only one popup
+ * open at a time) and idempotent — no race concerns on the read
+ * side. Every record is re-projected through the allowlist on
+ * read too, so a polluted historical entry (edited at
+ * chrome://extensions, or written by a pre-projection build)
+ * cannot leak content into the popup DOM.
  */
 export async function getEvents(): Promise<readonly AlgEvent[]> {
   try {
     const stored = await chrome.storage.local.get(STORAGE_KEY)
     const raw = stored[STORAGE_KEY]
     if (!Array.isArray(raw)) return []
-    // Defensive filter: drop anything that doesn't look like an
-    // AlgEvent. Guards against a future schema bump reading an old
-    // shape, or a manual chrome://extensions storage edit.
-    return raw.filter(isAlgEvent)
+    const out: AlgEvent[] = []
+    for (const entry of raw) {
+      if (!isProjectedAlgEvent(entry)) continue
+      try {
+        out.push(projectAlgEvent(entry))
+      } catch {
+        // Projection failure on a record that PASSED the predicate
+        // shouldn't happen, but silently drop just in case.
+      }
+    }
+    return out
   } catch (err) {
     console.warn('[AI Leak Guard] event log read failed:', err)
     return []
@@ -106,58 +70,56 @@ export async function getEvents(): Promise<readonly AlgEvent[]> {
 }
 
 /**
- * Best-effort append. Reads the current buffer, appends, trims to
- * `MAX_EVENTS`, and writes back. Serialised through a single
- * promise chain so two concurrent appends can't clobber each
- * other's read-modify-write (same pattern `counter.ts` uses).
+ * Best-effort append. Projects the event through the allowlist
+ * (drops any content-shaped stray fields BEFORE they cross the
+ * message boundary), then posts a `chrome.runtime.sendMessage`
+ * to the service worker which performs the actual serialised
+ * read-modify-write.
  *
- * NEVER throws into the caller. A storage failure logs a warning
- * and the paste / document flow continues unaffected. Callers
- * should still `void` the returned promise — awaiting it isn't
- * wrong, but no code path should gate on its outcome.
+ * NEVER throws. A projection failure, an unreachable service
+ * worker, or a `sendMessage` rejection all just log a warning —
+ * the paste / document flow continues unaffected.
+ *
+ * Returns a promise so callers CAN await for testing purposes;
+ * production code paths `void` the return value and don't gate on
+ * it.
  */
-export function appendEvent(event: AlgEvent): Promise<void> {
-  return enqueueWrite(async () => {
-    try {
-      const current = await getEvents()
-      const next: AlgEvent[] =
-        current.length >= MAX_EVENTS ? current.slice(-MAX_EVENTS + 1) : [...current]
-      next.push(event)
-      // Belt-and-braces: after the (potential) trim + push, cap
-      // again so a MAX_EVENTS bump doesn't accidentally let a
-      // buggy caller write an unbounded array.
-      const trimmed = next.length > MAX_EVENTS ? next.slice(-MAX_EVENTS) : next
-      await chrome.storage.local.set({ [STORAGE_KEY]: trimmed })
-    } catch (err) {
-      // Deliberately swallowed. The paste/upload MUST proceed even
-      // if we can't record a metadata note about it.
-      console.warn('[AI Leak Guard] event log append failed:', err)
-    }
-  })
+export async function appendEvent(rawEvent: AlgEvent): Promise<void> {
+  let projected: AlgEvent
+  try {
+    projected = projectAlgEvent(rawEvent)
+  } catch (err) {
+    console.warn('[AI Leak Guard] event log: rejected malformed event:', err)
+    return
+  }
+  try {
+    // `sendMessage` throws synchronously if `chrome.runtime` is
+    // unavailable (e.g., during teardown), and rejects async on
+    // "receiving end does not exist" if the service worker isn't
+    // ready. Both are best-effort — swallow either.
+    await sendAppendRequest(projected)
+  } catch (err) {
+    console.warn('[AI Leak Guard] event log append failed:', err)
+  }
 }
 
-let writeChain: Promise<void> = Promise.resolve()
-function enqueueWrite(op: () => Promise<void>): Promise<void> {
-  const result = writeChain.then(op, op)
-  writeChain = result.then(
-    () => undefined,
-    () => undefined,
-  )
-  return result
-}
-
-function isAlgEvent(x: unknown): x is AlgEvent {
-  if (x === null || typeof x !== 'object') return false
-  const r = x as Record<string, unknown>
-  return (
-    typeof r.ts === 'number' &&
-    typeof r.site === 'string' &&
-    (r.eventType === 'paste' || r.eventType === 'document') &&
-    typeof r.action === 'string' &&
-    Array.isArray(r.categories) &&
-    typeof r.count === 'number' &&
-    typeof r.hadCriticalOrHigh === 'boolean'
-  )
+async function sendAppendRequest(event: AlgEvent): Promise<void> {
+  // Guard against `chrome.runtime` being undefined — the shim in
+  // `tests/setup.ts` only wires `chrome.storage`, so a test that
+  // uses the real `appendEvent` (rather than the direct
+  // service-worker `appendOne`) needs a no-op path here. That's
+  // the same posture the `chrome.runtime.getURL` guard in
+  // `worker-url.ts` uses.
+  const runtime = (globalThis as unknown as { chrome?: { runtime?: unknown } }).chrome?.runtime as
+    | { sendMessage?: (msg: unknown) => Promise<unknown> }
+    | undefined
+  if (!runtime || typeof runtime.sendMessage !== 'function') {
+    // No service worker to talk to. Nothing to do — the flow
+    // continues; a future paste/upload will get through as soon
+    // as messaging is back.
+    return
+  }
+  await runtime.sendMessage({ type: APPEND_MESSAGE_TYPE, event })
 }
 
 /**
@@ -181,13 +143,12 @@ export interface EventSummary {
 
 /**
  * Fold an event list into the popup's summary shape. Pure — no
- * side effects, no storage reads. Kept exported so tests can
- * feed in fabricated events and assert the derivation.
+ * side effects, no storage reads.
  *
- * "Detected" counts everything the extension REACTED to (i.e., all
- * events except the auto-cleared clean-file case). This is the
- * number the popup surfaces first — the honest "the extension saw
- * something interesting" figure.
+ * "Detected" counts everything the extension REACTED to (i.e.,
+ * all events except the auto-cleared clean-file case). This is
+ * the number the popup surfaces first — the honest "the
+ * extension saw something interesting" figure.
  */
 export function summariseEvents(events: readonly AlgEvent[]): EventSummary {
   const perSite: Record<string, number> = {}
@@ -233,7 +194,13 @@ export function summariseEvents(events: readonly AlgEvent[]): EventSummary {
   }
 }
 
-/** Test seam: forget the write chain so a failing test can't leak state. */
+/**
+ * Test seam retained for backwards compatibility with older
+ * tests that reset the write chain. The chain moved to the
+ * service worker in A5.1, so this is now a no-op on the
+ * content-script side — kept exported so any lingering caller
+ * doesn't error out at import time.
+ */
 export function __resetEventLogWriteChainForTests(): void {
-  writeChain = Promise.resolve()
+  // no-op: writes are serialised in the service worker.
 }
