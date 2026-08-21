@@ -109,4 +109,57 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true
 })
 
-export {}
+// V1.2 M6 (v1.2.0) welcome-tab wiring.
+//
+// On a fresh install (NOT on update / browser update), open the
+// zabcore.com welcome page in a new tab so the user sees the
+// getting-started copy for document protection (which now defaults
+// on, per the M6 flag flip). Fires exactly once — Chrome only
+// emits `reason: 'install'` for the actual install event; a
+// subsequent extension update fires `'update'` and a browser
+// upgrade fires `'chrome_update'`, both of which we ignore.
+//
+// `chrome.tabs.create({url})` needs NO additional permission — the
+// `tabs` permission is only required to READ existing tabs' urls
+// or titles, and no host permission is needed to open an external
+// URL. The manifest-permissions test asserts this by pinning the
+// permissions list to `['storage']` (with `optional_permissions`
+// + `optional_host_permissions` both empty).
+//
+// Best-effort: a rejected `tabs.create` (e.g., in some corporate
+// managed contexts) logs a warning and moves on — the extension
+// itself works whether or not the welcome tab opens.
+export const WELCOME_URL =
+  'https://zabcore.com/welcome?src=chrome_web_store&utm_source=chrome_web_store&utm_medium=extension&utm_campaign=install_v1_2&v=1.2'
+
+/**
+ * Extracted so tests can drive the handler without depending on
+ * `chrome.runtime.onInstalled.addListener` firing. Exported ONLY
+ * for the unit test — production wiring is the anonymous listener
+ * registration below.
+ */
+export function handleInstalled(
+  details: { reason: string },
+  tabs: { create: (opts: { url: string }) => void | Promise<unknown> } | undefined,
+): void {
+  if (details.reason !== 'install') return
+  if (!tabs || typeof tabs.create !== 'function') return
+  try {
+    const result = tabs.create({ url: WELCOME_URL })
+    // `chrome.tabs.create` in MV3 returns a Promise; a rejected
+    // promise on a managed device (or similar) would otherwise
+    // become an unhandled rejection. Route it through the same
+    // warning path the sync try/catch already uses.
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      void (result as Promise<unknown>).catch((err: unknown) => {
+        console.warn('[AI Leak Guard] welcome tab failed to open:', err)
+      })
+    }
+  } catch (err) {
+    console.warn('[AI Leak Guard] welcome tab failed to open:', err)
+  }
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
+  handleInstalled(details, chrome.tabs)
+})

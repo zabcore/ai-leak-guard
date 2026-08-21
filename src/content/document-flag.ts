@@ -1,11 +1,16 @@
 // V1.2 document-protection feature flag.
 //
-// Ships **default OFF** through V1.2 A1, A2, and A3. Flipping it to true
-// enables the file-interception seams (change / drop / paste-with-files),
-// the placeholder confirm modal, and the hold/release orchestration.
-// Flag OFF must be byte-for-byte identical to V1.1.1 — no listeners
-// registered, no side effects at import time — and there is a
-// dedicated flag-OFF guard test that asserts exactly that.
+// V1.2 M6 GA (v1.2.0) ships **default ON**. Every A1–A5.1 gate ran
+// behind this flag while the surface was iterated; the shipping
+// build finally flips it. The flag itself is preserved (not
+// deleted) so a test can still assert the OFF-path behavior and,
+// if a future site regresses, a runtime override can turn the
+// document-flow surface off without a new release.
+//
+// Flipping is the ONE and ONLY behavioural change in the M6
+// release PR. Flag OFF still produces the V1.1.1-identical paste-
+// only behavior (no file-interception listeners, no modal, no
+// hold/release), asserted by the flag-OFF guard test.
 //
 // Reads from an optional `globalThis.__AI_LEAK_GUARD_DOC_FLAG__` if set,
 // so tests (and, in a later release, a local `chrome.storage.local`
@@ -13,7 +18,7 @@
 // this file. Absent that override, the compile-time constant below is
 // authoritative.
 
-const COMPILE_TIME_DEFAULT = false
+const COMPILE_TIME_DEFAULT = true
 
 interface DocumentFlagOverride {
   __AI_LEAK_GUARD_DOC_FLAG__?: boolean

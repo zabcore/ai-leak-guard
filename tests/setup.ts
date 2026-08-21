@@ -130,8 +130,23 @@ const onMessage = {
   },
 }
 
+// M6 onInstalled shim — the service worker wires
+// `chrome.runtime.onInstalled.addListener` at import time, same
+// reason `onMessage` needs a stub above.
+interface InstalledListener {
+  (details: { reason: string }): void
+}
+const installedListeners: InstalledListener[] = []
+const onInstalled = {
+  __listeners: installedListeners,
+  addListener: (fn: InstalledListener) => {
+    installedListeners.push(fn)
+  },
+}
+
 const runtime = {
   onMessage,
+  onInstalled,
   getURL: (path: string): string => {
     const rel = path.startsWith('/') ? path.slice(1) : path
     return `chrome-extension://${FAKE_EXTENSION_ID}/${rel}`
@@ -155,13 +170,36 @@ const runtime = {
   },
 }
 
+// M6 tabs shim — the service worker calls `chrome.tabs.create`
+// from the onInstalled listener. The shim records calls so the
+// onInstalled test (and any future release-flow test) can assert
+// what URL fired. `tabs.create` in MV3 returns Promise<Tab>; we
+// resolve to a stub tab object so the handler's `.then` chain
+// doesn't blow up on a non-promise return.
+interface TabsCreateOpts {
+  readonly url: string
+}
+const tabsCalls: TabsCreateOpts[] = []
+const tabs = {
+  __calls: tabsCalls,
+  create: async (opts: TabsCreateOpts): Promise<{ id: number; url: string }> => {
+    tabsCalls.push(opts)
+    return { id: 1, url: opts.url }
+  },
+}
+
 ;(
   globalThis as unknown as {
-    chrome: { storage: { local: typeof local }; runtime: typeof runtime }
+    chrome: {
+      storage: { local: typeof local }
+      runtime: typeof runtime
+      tabs: typeof tabs
+    }
   }
 ).chrome = {
   storage: { local },
   runtime,
+  tabs,
 }
 
 beforeEach(() => {
