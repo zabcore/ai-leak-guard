@@ -22,3 +22,15 @@ declare module '*?url' {
   const url: string
   export default url
 }
+
+// `?worker&url` returns the URL of the COMPILED, bundled worker
+// chunk (as opposed to `?url` on a `.ts` file, which returns a raw-
+// source shim — see `formats/xlsx.ts` and `formats/worker-url.ts`
+// for the A4.3 write-up on that Vite footgun). The URL still needs
+// to be re-anchored via `chrome.runtime.getURL()` and then spawned
+// through `spawnExtensionWorkerFromBlob` so strict-CSP sites accept
+// the Worker.
+declare module '*?worker&url' {
+  const url: string
+  export default url
+}

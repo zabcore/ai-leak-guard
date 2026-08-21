@@ -824,6 +824,27 @@ sit on the active extension's origin, catching cross-extension
 hijack (the qualified-URL path) and stubbed-getURL regressions (the
 resolved path).
 
+**A4.3 refinement — self-contained workers.** A4.2's XLSX path used
+`import xlsxWorkerUrl from './xlsx.worker.ts?url'`, which is a Vite
+footgun: `?url` on a TypeScript module returns the raw source as a
+`data:video/mp2t;base64,<raw-TS>` static asset. The built chunk was
+a ~3 KB shim exporting that data URL, and the blob-spawned worker
+ran uncompiled TypeScript that threw on the first `import`. Every
+real `.xlsx` upload on claude.ai came back `parse-error`. Fix: the
+import is now `?worker&url` (Vite compiles + bundles the worker,
+returns the built chunk's URL — ~360 KB with SheetJS inlined), the
+`vite.config.ts` `worker` clause forces `format: 'iife'` +
+`inlineDynamicImports: true` so the worker is fully self-contained
+(a blob module worker can't resolve a relative `./chunk-hash.js`
+import against its own origin), and xlsx.ts spawns as CLASSIC (no
+`{type: 'module'}`) to match. A runtime guard in
+`spawnExtensionWorkerFromBlob` detects the `data:video/mp2t` raw-
+shim shape and throws with a clear message so this footgun surfaces
+at spawn time — not four seconds later as a generic `parse-error`.
+The pdf.js worker is untouched by the Vite `worker` config (it's
+imported via `?url` on the pre-built self-contained `.mjs` file,
+not `?worker`) and its blob module-worker path remains intact.
+
 **A4.2 refinement — strict-CSP sites.** claude.ai (confirmed) — and
 other strict-CSP surfaces likely to follow — reject
 `new Worker(chrome-extension://…)` from a content-script context

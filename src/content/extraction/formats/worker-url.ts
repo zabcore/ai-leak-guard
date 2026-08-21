@@ -144,6 +144,22 @@ export function assertExtensionOriginWorkerUrl(url: string): string {
   return url
 }
 
+/**
+ * Detect Vite's raw-source shim shape — a chunk whose entire body is
+ * `var e = "data:video/mp2t;base64,<raw-TS>"` followed by an
+ * export. The pattern is deliberately loose (Vite may rename `e` on
+ * a future release) but pinned on the tell-tale `data:video/mp2t`
+ * MIME string that only appears when a `.ts` module was exported
+ * via `?url`. A production-compiled worker never contains this
+ * pattern — the compiled bytecode is inline, not embedded as a
+ * data-URL string.
+ */
+function looksLikeRawSourceShim(code: string): boolean {
+  // The whole shim is small (~2-4 KB) and always contains the
+  // data:video/mp2t marker within the first few hundred bytes.
+  return code.length < 8_000 && code.includes('data:video/mp2t')
+}
+
 /** Structural shape for the (subset of the) Worker constructor we need. */
 export interface WorkerLike {
   postMessage(message: unknown, transfer?: Transferable[]): void
@@ -197,6 +213,21 @@ export async function spawnExtensionWorkerFromBlob(
     )
   }
   const code = await response.text()
+  // Guard against the `?url`-on-TypeScript footgun. Vite treats
+  // `?url` on a `.ts` module as "give me the raw source as a static
+  // asset" and emits a chunk that just points at a
+  // `data:video/mp2t;base64,<raw-TS>` blob. Spawning that as a
+  // Worker runs uncompiled TypeScript, which throws on the first
+  // `import`. A4.2 shipped exactly this bug for xlsx; A4.3 fixed
+  // the import to `?worker&url` and this guard makes the regression
+  // loud instead of silent — a broken import now throws at spawn
+  // time with a clear message, not four seconds later as a generic
+  // `parse-error`.
+  if (looksLikeRawSourceShim(code)) {
+    throw new Error(
+      `[AI Leak Guard] worker: fetched a raw-source shim (Vite \`?url\` on a .ts file) for ${extensionUrl} — use \`?worker&url\` and configure the worker output to be self-contained instead.`,
+    )
+  }
   const blob = new Blob([code], { type: 'text/javascript' })
   const blobUrl = URL.createObjectURL(blob)
   const WorkerCtor = opts.workerCtor ?? (globalThis as { Worker: typeof Worker }).Worker

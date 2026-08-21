@@ -135,6 +135,70 @@ describe('resolveExtensionWorkerUrl', () => {
   })
 })
 
+describe('spawnExtensionWorkerFromBlob — raw-source-shim guard', () => {
+  // A4.3 regression guard. If a caller ever imports a `.ts` worker
+  // via `?url` (instead of `?worker&url`) Vite emits a chunk whose
+  // body is `var e = "data:video/mp2t;base64,<raw-TS>"` — spawning
+  // that as a Worker runs uncompiled TypeScript and fails on the
+  // first `import`. The helper detects this shape and throws with a
+  // clear message rather than letting the Worker fail four seconds
+  // later as a generic `parse-error`.
+  const OriginalFetch = globalThis.fetch
+  const OriginalCreateObjectURL = URL.createObjectURL
+
+  afterEach(() => {
+    ;(globalThis as unknown as { fetch: typeof OriginalFetch }).fetch = OriginalFetch
+    URL.createObjectURL = OriginalCreateObjectURL
+  })
+
+  it('throws when the fetched chunk is a Vite `?url`-on-.ts shim', async () => {
+    ;(globalThis as unknown as { fetch: unknown }).fetch = async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => 'var e=`data:video/mp2t;base64,Ly8gcmF3IFRTIGhlcmU=`;export{e as default};',
+    })
+    URL.createObjectURL = (() => 'blob:should-not-reach') as typeof URL.createObjectURL
+    const { spawnExtensionWorkerFromBlob } =
+      await import('../../src/content/extraction/formats/worker-url')
+    await expect(spawnExtensionWorkerFromBlob('/assets/x.js')).rejects.toThrow(/raw-source shim/)
+  })
+
+  it('accepts a normal compiled worker chunk', async () => {
+    const spawned: string[] = []
+    ;(globalThis as unknown as { fetch: unknown }).fetch = async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      // Realistic size + no data:video/mp2t marker.
+      text: async () => `(function(){var _=${'x'.repeat(20_000)};/* IIFE worker */})();`,
+    })
+    URL.createObjectURL = ((blob: Blob) =>
+      `blob:ok-${blob.size}-${blob.type}`) as typeof URL.createObjectURL
+    URL.revokeObjectURL = (() => {}) as typeof URL.revokeObjectURL
+    class FakeWorker {
+      constructor(url: string) {
+        spawned.push(url)
+      }
+      terminate(): void {}
+      postMessage(): void {}
+    }
+    const { spawnExtensionWorkerFromBlob } =
+      await import('../../src/content/extraction/formats/worker-url')
+    await spawnExtensionWorkerFromBlob('/assets/x.js', {
+      workerCtor: FakeWorker as unknown as new (
+        u: string,
+        o?: WorkerOptions,
+      ) => {
+        postMessage(m: unknown, t?: Transferable[]): void
+        terminate(): void
+      },
+    })
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0].startsWith('blob:')).toBe(true)
+  })
+})
+
 describe('assertExtensionOriginWorkerUrl', () => {
   it('passes through chrome-extension:// URLs', () => {
     const u = 'chrome-extension://abc/assets/x.js'
