@@ -107,3 +107,98 @@ body {
   font-size: 11px;
   color: #9ca3af;
 }
+
+/* ─── V1.2 A5 (#40) activity section ────────────────────────────────────── */
+
+.activity {
+  margin: 12px 0 16px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+  text-align: left;
+}
+
+.activity__heading {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #4b5563;
+}
+
+.activity__grid {
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+
+.activity__stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.activity__stat dt {
+  margin: 0;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.activity__stat dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.activity__section {
+  margin-top: 10px;
+}
+
+.activity__subheading {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+}
+
+.activity__site-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.activity__site-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #374151;
+}
+
+.activity__site-count {
+  color: #6b7280;
+}
+
+.activity__recent {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.activity__recent li {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: #4b5563;
+  border-left: 2px solid #e5e7eb;
+  margin-bottom: 2px;
+  word-break: break-word;
+}

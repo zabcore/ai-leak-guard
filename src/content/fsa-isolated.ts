@@ -82,7 +82,7 @@ export interface FsaHandlerDeps {
    */
   readonly resolveDecision: (
     inspectionPromise: Promise<FileInspection>,
-    opts: { readonly opener: Element | null },
+    opts: { readonly opener: Element | null; readonly siteId?: string },
   ) => Promise<DocumentModalOutcome>
   /**
    * Optional seam that overrides `inspectFiles` — kept ONLY for the
