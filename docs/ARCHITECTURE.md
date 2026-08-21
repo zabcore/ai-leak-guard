@@ -43,7 +43,7 @@ ai-leak-guard/
 │   │   ├── preview-flow.ts       # Pure logic for the preview-before-send modal
 │   │   ├── preview-modal.ts      # Shadow DOM modal (V1.1 PR 4)
 │   │   ├── toast.ts              # Shadow DOM confirmation toast (no Undo in V1.1)
-│   │   ├── document-flag.ts      # V1.2 A1 feature-flag guard (default OFF)
+│   │   ├── document-flag.ts      # V1.2 A1 feature-flag guard (default ON as of M6 v1.2.0)
 │   │   ├── document-flow.ts      # V1.2 A1 hold state machine
 │   │   ├── document-decision.ts  # V1.2 A4 shared clean/sensitive/unable helper
 │   │   ├── document-modal.ts     # V1.2 A4 warning modal (scanning/sensitive/unable)
@@ -489,11 +489,11 @@ The extension surfaces the event log in TWO places, both fed from
   serialisers that project each event onto the seven-field
   allowlist (`EXPORT_FIELDS`), convert `ts` to ISO 8601, and
   hand the resulting text to a `Blob` + `URL.createObjectURL`
-  + `<a download>` click. `URL.revokeObjectURL` on the next
-  microtask. NO `fetch`, NO network, NO new permission —
-  `chrome.downloads` is intentionally NOT requested. The
-  manifest-permissions test enforces this. Filename shape:
-  `ai-leak-guard-activity-YYYYMMDD.{csv,json}`.
+  - `<a download>` click. `URL.revokeObjectURL` on the next
+    microtask. NO `fetch`, NO network, NO new permission —
+    `chrome.downloads` is intentionally NOT requested. The
+    manifest-permissions test enforces this. Filename shape:
+    `ai-leak-guard-activity-YYYYMMDD.{csv,json}`.
 
 The moat rule holds through the export path: a no-content guard
 test enumerates the forbidden field set
@@ -568,10 +568,15 @@ never blocks**. Two outcomes only —
 **Feature flag:** `src/content/document-flag.ts` exposes
 `isDocumentProtectionEnabled()`. Reads from
 `globalThis.__AI_LEAK_GUARD_DOC_FLAG__` if set (tests + future popup
-plumbing use this), else falls back to a compile-time `false`. The
-flag is re-read on every call so a mid-session flip is honored by the
-next event. A dedicated `tests/document-flag.test.ts` guard asserts
-default OFF.
+plumbing use this), else falls back to a compile-time constant. The
+flag is re-read on every call so a mid-session flip is honored by
+the next event.
+
+**M6 GA (v1.2.0):** the compile-time default flipped to `true`.
+The flag itself is preserved (not deleted) — a future site
+regression can still be disabled at runtime via the override
+without a new release, and `tests/document-flag.test.ts` still
+pins both the ON default AND the runtime-kill-switch behavior.
 
 **Sites in scope:** ChatGPT, Claude, Gemini, Perplexity. Copilot is
 **deferred** for this release; the paste-flow adapter still handles

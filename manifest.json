@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Leak Guard",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Free local-only protection against accidental AI data leaks. Detects and masks sensitive data before you paste into AI tools.",
   "permissions": ["storage"],
   "host_permissions": [

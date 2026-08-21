@@ -42,6 +42,7 @@ The following data is stored only in your browser, in `chrome.storage.local`, an
 This data is accessible only to the extension itself, on your device. Uninstalling the extension removes it.
 
 ### Full activity page + local export
+
 The popup has a "View all activity →" link that opens a full **Activity** page (the extension's options page). It shows the same metadata-only records — timestamp, site, paste/document, action, category chips, count — with room to scroll through the full 200-event history.
 
 The activity page also has **Export** buttons for CSV and JSON. Both exports are built entirely in your browser:
