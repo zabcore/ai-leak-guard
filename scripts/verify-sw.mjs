@@ -9,7 +9,30 @@ import { readFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 
 const DIST = 'dist'
-const FORBIDDEN = ['window', 'document']
+// Match `document` / `window` used as an EXPRESSION — property
+// access (`.foo`), subscript (`[…]`), assignment (`= …` but not
+// `==`), or a function call (`(…)`). This is what actually crashes
+// a MV3 service worker at runtime; a bare identifier appearing
+// inside a string literal (e.g., a schema union like
+// `t.eventType === 'document'`) is not real DOM access and must
+// not false-positive.
+//
+// Design note (post-CR): an earlier revision stripped string /
+// template literals BEFORE running a bare `\bdocument\b` scan.
+// That approach modified the code before checking it and, on
+// template literals with `${…}` interpolations, could have
+// silently stripped an actual `document.foo` access inside
+// `${…}`. Switching to executable-shape patterns avoids modifying
+// the code at all — the check is "does the bundle contain an
+// expression that reads/writes these globals", which is the
+// runtime invariant we care about, and it's exactly what a JS
+// engine sees. Bundlers virtually never leave `document` or
+// `window` as bare identifiers in emitted code without a
+// subsequent access, so the false-negative surface is negligible.
+const FORBIDDEN = [
+  { name: 'document', re: /\bdocument\s*(?:\.|\[|\()|\bdocument\s*=(?!=)/ },
+  { name: 'window', re: /\bwindow\s*(?:\.|\[|\()|\bwindow\s*=(?!=)/ },
+]
 const IMPORT_RE = /(?:from\s*|import\s*\(?\s*|getURL\(\s*)['"]([^'"]+\.js)['"]/g
 
 const manifest = JSON.parse(readFileSync(`${DIST}/manifest.json`, 'utf8'))
@@ -35,29 +58,10 @@ while (queue.length > 0) {
     process.exit(1)
   }
 
-  // Strip string / template / regex literals + comments BEFORE
-  // scanning so a benign string constant that happens to mention
-  // `document` (e.g., an AlgEventType schema union) doesn't
-  // register as a DOM reference. What we actually care about is
-  // real code accessing the globals — `document.foo`,
-  // `window['bar']`, `document = …`, etc. — never the substring.
-  //
-  // The stripper is deliberately regex-based rather than a full
-  // parser: minified output has no line breaks and one-token-at-
-  // a-time parsing here would balloon the script. Regex passes
-  // are order-sensitive (block comments before line comments so
-  // `//` inside `/* */` doesn't win) but that's a bounded set.
-  const scannable = code
-    .replace(/\/\*[\s\S]*?\*\//g, '') // block comments
-    .replace(/(^|[^:])\/\/[^\n]*/g, '$1') // line comments (skip URLs after `:`)
-    .replace(/`(?:\\.|[^`\\])*`/g, '``') // template literals
-    .replace(/'(?:\\.|[^'\\])*'/g, "''") // single-quoted strings
-    .replace(/"(?:\\.|[^"\\])*"/g, '""') // double-quoted strings
-
-  for (const token of FORBIDDEN) {
-    if (new RegExp(`\\b${token}\\b`).test(scannable)) {
+  for (const { name, re } of FORBIDDEN) {
+    if (re.test(code)) {
       console.error(
-        `[verify-sw] ${relative('.', file)} references \`${token}\`, which is undefined in an ` +
+        `[verify-sw] ${relative('.', file)} references \`${name}\`, which is undefined in an ` +
           `MV3 service worker. The service worker would fail to register. ` +
           `(Often caused by the SW entry being bundled with content-script code.)`,
       )
@@ -65,8 +69,6 @@ while (queue.length > 0) {
     }
   }
 
-  // Import specs live INSIDE string literals — walk the original
-  // code (not the stripped version) so we don't lose the graph.
   for (const match of code.matchAll(IMPORT_RE)) {
     const spec = match[1]
     // Relative imports (`./foo.js`, `../bar.js`) resolve against
