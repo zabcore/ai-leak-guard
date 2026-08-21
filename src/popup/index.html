@@ -13,6 +13,13 @@
         <h1 class="popup__title">AI Leak Guard</h1>
       </header>
 
+      <!--
+        The headline number counts INDIVIDUAL sensitive items masked
+        on the paste path (`counters.total` — one match = one item).
+        The Activity tiles below count EVENTS (one message or file =
+        one event). Those two units are deliberately styled and
+        labelled differently so a glance never conflates them.
+      -->
       <div class="popup__count" id="total">0</div>
       <div class="popup__sub"><span id="today">0</span> today</div>
       <div class="popup__caption">Sensitive items masked</div>
@@ -31,24 +38,40 @@
         pasted text, or filenames ever appear.
       -->
       <section class="activity" aria-labelledby="activity-heading" hidden id="activity-section">
-        <h2 class="activity__heading" id="activity-heading">Activity</h2>
+        <h2 class="activity__heading" id="activity-heading">Messages &amp; files checked</h2>
+        <p class="activity__hint">
+          Each tile counts EVENTS. One paste or one file upload is one event. The big number above
+          counts INDIVIDUAL sensitive values it masked.
+        </p>
 
         <dl class="activity__grid">
           <div class="activity__stat">
-            <dt>Detected</dt>
-            <dd id="stat-detected">0</dd>
+            <dt>Flagged</dt>
+            <dd>
+              <span class="activity__num" id="stat-detected">0</span>
+              <span class="activity__unit">events</span>
+            </dd>
           </div>
           <div class="activity__stat">
             <dt>Protected</dt>
-            <dd id="stat-protected">0</dd>
+            <dd>
+              <span class="activity__num" id="stat-protected">0</span>
+              <span class="activity__unit">events</span>
+            </dd>
           </div>
           <div class="activity__stat">
-            <dt>As-is / released</dt>
-            <dd id="stat-as-is-or-released">0</dd>
+            <dt>Sent / released</dt>
+            <dd>
+              <span class="activity__num" id="stat-as-is-or-released">0</span>
+              <span class="activity__unit">events</span>
+            </dd>
           </div>
           <div class="activity__stat">
             <dt>Cancelled</dt>
-            <dd id="stat-cancelled">0</dd>
+            <dd>
+              <span class="activity__num" id="stat-cancelled">0</span>
+              <span class="activity__unit">events</span>
+            </dd>
           </div>
         </dl>
 
@@ -71,6 +94,12 @@
           <h3 class="activity__subheading" id="recent-heading">Recent</h3>
           <ol class="activity__recent" id="recent-list"></ol>
         </section>
+
+        <div class="activity__link-row">
+          <button type="button" class="activity__view-all" id="view-all-activity">
+            View all activity →
+          </button>
+        </div>
       </section>
 
       <footer class="popup__footer">Local-only. No data leaves your device.</footer>

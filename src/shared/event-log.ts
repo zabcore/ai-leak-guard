@@ -193,4 +193,3 @@ export function summariseEvents(events: readonly AlgEvent[]): EventSummary {
     perSite,
   }
 }
-

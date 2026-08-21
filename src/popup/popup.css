@@ -118,12 +118,19 @@ body {
 }
 
 .activity__heading {
-  margin: 0 0 8px;
+  margin: 0 0 4px;
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #4b5563;
+}
+
+.activity__hint {
+  margin: 0 0 10px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #6b7280;
 }
 
 .activity__grid {
@@ -152,9 +159,26 @@ body {
 
 .activity__stat dd {
   margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.activity__num {
   font-size: 14px;
   font-weight: 600;
   color: #111827;
+}
+
+/* Small "events" unit trailing the number — visually distinct from
+   the big headline (48px "N sensitive items masked" above) so the
+   two counts don't blur into "more of the same thing". */
+.activity__unit {
+  font-size: 9px;
+  font-weight: 400;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
 }
 
 .activity__section {
@@ -201,4 +225,30 @@ body {
   border-left: 2px solid #e5e7eb;
   margin-bottom: 2px;
   overflow-wrap: anywhere;
+}
+
+.activity__link-row {
+  margin-top: 12px;
+  text-align: right;
+}
+
+.activity__view-all {
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2563eb;
+  cursor: pointer;
+}
+
+.activity__view-all:hover {
+  text-decoration: underline;
+}
+
+.activity__view-all:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+  border-radius: 4px;
 }

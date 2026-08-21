@@ -1,63 +1,11 @@
 import { getCounters, getPrefs, setPrefs } from '../shared/storage'
 import { localDateKey } from '../shared/counter'
 import { getEvents, summariseEvents, type AlgEvent } from '../shared/event-log'
+import { siteLabel, actionLabel, relativeTime } from './labels'
 
 function setToggleLabel(enabled: boolean): void {
   const label = document.getElementById('toggle-label')
   if (label !== null) label.textContent = enabled ? 'Enabled' : 'Disabled'
-}
-
-/**
- * Friendly site labels for the per-site breakdown + recent list.
- * Kept centralised so the popup + a future paid-tier dashboard can
- * reuse the same phrasing. Falls back to the raw adapter id for
- * anything not listed (defensive against a future site adapter
- * landing before the popup label is updated).
- */
-const SITE_LABELS: Readonly<Record<string, string>> = {
-  chatgpt: 'ChatGPT',
-  claude: 'Claude',
-  gemini: 'Gemini',
-  perplexity: 'Perplexity',
-  copilot: 'Copilot',
-}
-
-function siteLabel(id: string): string {
-  return SITE_LABELS[id] ?? id
-}
-
-/**
- * Friendly action verbs for the recent-activity line. Same rule
- * as `siteLabel` — falls back to the raw action string on an
- * unknown value.
- */
-const ACTION_LABELS: Readonly<Record<AlgEvent['action'], string>> = {
-  protected: 'protected',
-  'as-is': 'pasted as-is',
-  cancelled: 'cancelled',
-  'uploaded-anyway': 'uploaded anyway',
-  'auto-cleared': 'auto-cleared',
-  'unable-to-inspect': "couldn't inspect",
-}
-
-/**
- * Compact relative time — "just now" / "5m ago" / "3h ago" /
- * "2d ago". Metadata only (the timestamp itself is derived from
- * `Date.now()` on the content-script side).
- */
-function relativeTime(ts: number, now: number = Date.now()): string {
-  const diffMs = Math.max(0, now - ts)
-  const sec = Math.floor(diffMs / 1000)
-  // "just now" for everything under one FULL minute — the previous
-  // 45s threshold produced a `0m ago` line for the 45–59s range,
-  // which reads as either a bug or a rounding glitch.
-  if (sec < 60) return 'just now'
-  const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}h ago`
-  const day = Math.floor(hr / 24)
-  return `${day}d ago`
 }
 
 /**
@@ -73,7 +21,7 @@ export function formatRecentLine(event: AlgEvent, now: number = Date.now()): str
   } else if (event.action === 'auto-cleared') {
     parts.push('clean')
   }
-  parts.push(ACTION_LABELS[event.action] ?? event.action)
+  parts.push(actionLabel(event.action))
   parts.push(relativeTime(event.ts, now))
   return parts.join(' · ')
 }
@@ -169,10 +117,17 @@ async function render(): Promise<void> {
 
   const total = document.getElementById('total')
   const today = document.getElementById('today')
+  const caption = document.querySelector('.popup__caption')
   const toggle = document.getElementById('toggle')
 
   if (total !== null) total.textContent = String(counters.total)
   if (today !== null) today.textContent = String(counters.byDay[localDateKey()] ?? 0)
+  // Unit clarity: singular vs plural on the headline caption so a
+  // stray "1 sensitive items masked" doesn't undercut the point of
+  // the label. Metadata only — the caption never renders a value.
+  if (caption !== null) {
+    caption.textContent = counters.total === 1 ? 'Sensitive item masked' : 'Sensitive items masked'
+  }
   if (toggle instanceof HTMLInputElement) toggle.checked = prefs.enabled
   setToggleLabel(prefs.enabled)
 
@@ -195,6 +150,42 @@ async function init(): Promise<void> {
     toggle.addEventListener('change', () => {
       setToggleLabel(toggle.checked)
       void setPrefs({ enabled: toggle.checked })
+    })
+  }
+
+  const viewAll = document.getElementById('view-all-activity')
+  if (viewAll !== null) {
+    viewAll.addEventListener('click', () => {
+      // `openOptionsPage` opens the extension's `options_ui` page —
+      // no new permission required. Guard against a stubbed
+      // environment (some MV3 unit-test contexts don't populate
+      // `chrome.runtime`) so the click is a silent no-op instead of
+      // throwing.
+      //
+      // In MV3 `openOptionsPage` returns `Promise<void>`; a rejected
+      // promise (extension missing an options page, browser refuses
+      // to open it, etc.) would otherwise become an unhandled
+      // rejection. The `try/catch` still catches synchronous
+      // throws from older polyfills / callback-shim shapes; the
+      // `.catch` handler routes async rejections into the same
+      // warning path.
+      const runtime = (
+        globalThis as unknown as {
+          chrome?: { runtime?: { openOptionsPage?: () => void | Promise<void> } }
+        }
+      ).chrome?.runtime
+      if (runtime && typeof runtime.openOptionsPage === 'function') {
+        try {
+          const result = runtime.openOptionsPage() as void | Promise<void>
+          if (result && typeof (result as Promise<void>).then === 'function') {
+            void (result as Promise<void>).catch((err: unknown) => {
+              console.warn('[AI Leak Guard] openOptionsPage failed:', err)
+            })
+          }
+        } catch (err) {
+          console.warn('[AI Leak Guard] openOptionsPage failed:', err)
+        }
+      }
     })
   }
 }

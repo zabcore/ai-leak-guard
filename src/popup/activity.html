@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Leak Guard: Activity</title>
+    <link rel="stylesheet" href="./activity.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page__header">
+        <h1 class="page__title">
+          <span class="page__shield" aria-hidden="true">🛡</span>
+          Activity
+        </h1>
+        <p class="page__lede">
+          Every paste and file upload the extension checked. Metadata only: no matched values, no
+          pasted text, no filenames. This page reads from your browser's local storage and never
+          uploads anything.
+        </p>
+      </header>
+
+      <section class="controls" aria-label="Export activity">
+        <div class="controls__hint">
+          <strong>Export</strong> your activity locally. The download is built in your browser and
+          saved to your device, so nothing leaves your machine.
+        </div>
+        <div class="controls__buttons">
+          <button type="button" id="export-csv" class="btn btn--secondary">Export CSV</button>
+          <button type="button" id="export-json" class="btn btn--secondary">Export JSON</button>
+        </div>
+      </section>
+
+      <section class="activity">
+        <div class="activity__meta" id="activity-meta"></div>
+
+        <div class="activity__empty" id="empty-state" hidden>
+          <p><strong>No activity yet.</strong></p>
+          <p>
+            Once you paste sensitive text or upload a document to a supported AI tool, the check
+            shows up here.
+          </p>
+        </div>
+
+        <div class="activity__table-wrap" id="table-wrap" hidden>
+          <table class="activity__table" aria-label="Activity log">
+            <thead>
+              <tr>
+                <th scope="col">When</th>
+                <th scope="col">Site</th>
+                <th scope="col">Type</th>
+                <th scope="col">Action</th>
+                <th scope="col">Categories</th>
+                <th scope="col" class="activity__count-th">Items</th>
+              </tr>
+            </thead>
+            <tbody id="activity-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="page__footer">
+        AI Leak Guard is local-only. This activity log is stored in your browser
+        (<code>chrome.storage.local</code>), capped at the most recent 200 events, and never
+        transmitted.
+      </footer>
+    </main>
+    <script type="module" src="./activity.ts"></script>
+  </body>
+</html>
