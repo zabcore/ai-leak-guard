@@ -124,7 +124,11 @@ describe('readPastedText — source: html', () => {
     const cd = makeClipboard({ html: '<p>Patient MRN <b>MRN123456</b></p>' })
     const out = readPastedText(cd)
     expect(out.source).toBe('html')
-    expect(out.text).toBe('Patient MRN MRN123456')
+    // Text/normalization is loosely asserted — block-boundary
+    // separators add newlines around <p> — but the two tokens
+    // land in order and are recoverable as a single string with
+    // detector-friendly spacing.
+    expect(out.text).toMatch(/Patient MRN\s+MRN123456/)
     expect(out.hadContent).toBe(true)
   })
 
@@ -135,16 +139,21 @@ describe('readPastedText — source: html', () => {
     expect(out.text).toBe('hello')
   })
 
-  it('strips through the inert DOMParser — no <script> execution, no <img> fetch', () => {
-    // The critical safety invariant: DOMParser must NOT run scripts
-    // or fire resource fetches. If it did, a hostile page could
-    // exfiltrate via a paste of hostile HTML into any input we
-    // observe. We assert (a) no `window.__pwned__` side effect from
-    // a bare <script>, (b) `image.onerror` on a bogus src is NOT
-    // registered on this window either.
+  it('strips through the inert DOMParser — no <script> execution, no <img> fetch, no script/style source leaks into detector input', () => {
+    // Two invariants pinned here:
+    //   (a) DOMParser must NOT run scripts or fire resource fetches.
+    //       If it did, a hostile page could exfiltrate via a paste
+    //       of hostile HTML.
+    //   (b) `<script>` / `<style>` source must NOT appear in the
+    //       extracted text. `body.textContent` includes them by
+    //       default, which would let hostile HTML smuggle
+    //       SSN-shaped strings inside a `<script>` block and
+    //       trigger false-positive detection. `stripHtmlToText`
+    //       removes non-content tags before text extraction.
     ;(window as unknown as Record<string, unknown>).__pwned__ = false
     const html = `
-      <script>window.__pwned__ = true</script>
+      <script>const FAKE_SSN = "999-99-9999"; window.__pwned__ = true</script>
+      <style>body { background: url("http://ai-leak-guard.invalid/x.png"); }</style>
       <img src="http://ai-leak-guard.invalid/beacon.png"
            onerror="window.__pwned__ = true">
       <p>real body text</p>
@@ -153,24 +162,41 @@ describe('readPastedText — source: html', () => {
     const out = readPastedText(cd)
     expect(out.source).toBe('html')
     expect(out.text).toContain('real body text')
-    // The scripts DID land in body.textContent because textContent
-    // includes the <script>'s source; that's fine — it's inert
-    // text. What matters is the side effect never fired.
+    // Side effects never fired.
     expect((window as unknown as Record<string, unknown>).__pwned__).toBe(false)
+    // Script and style source are STRIPPED — no SSN-shaped bait,
+    // no CSS URL bait, no bare identifiers that came from a
+    // <script> block.
+    expect(out.text).not.toContain('FAKE_SSN')
+    expect(out.text).not.toContain('999-99-9999')
+    expect(out.text).not.toContain('background')
+    expect(out.text).not.toContain('ai-leak-guard.invalid')
   })
 
-  it('preserves internal whitespace across tag boundaries', () => {
-    // The detector regexes were tuned on plain-text spacing, so a
-    // <p>foo</p><p>bar</p> must not collapse into "foobar".
-    // textContent preserves the visible whitespace already present
-    // in the source HTML.
-    const cd = makeClipboard({ html: '<p>foo</p><p>bar</p><p>baz</p>' })
+  it('inserts separators at block boundaries — adjacent tokens do NOT merge into one string', () => {
+    // The critical detector-accuracy invariant. Plain
+    // `body.textContent` on `<div>foo</div><div>bar</div>` yields
+    // `"foobar"`, which can spuriously match a regex or hide a
+    // real match by joining an identifier with surrounding
+    // chrome. The block-boundary separators in
+    // `extractVisibleText` guarantee at least one whitespace
+    // char between adjacent visible tokens.
+    const cd = makeClipboard({ html: '<div>foo</div><div>bar</div><div>baz</div>' })
     const out = readPastedText(cd)
     expect(out.source).toBe('html')
-    // Whitespace between the tags in the source is preserved. The
-    // exact form depends on the browser's DOMParser output — we
-    // just assert the tokens land in order and don't merge.
-    expect(out.text).toMatch(/foo[\s]*bar[\s]*baz/)
+    // \s+ (not \s*) — at least one whitespace char between each pair.
+    expect(out.text).toMatch(/foo\s+bar\s+baz/)
+    // Direct sanity: the tokens don't collapse.
+    expect(out.text).not.toContain('foobar')
+    expect(out.text).not.toContain('barbaz')
+  })
+
+  it('inserts a separator at <br> so an inline <br>-joined identifier does not merge', () => {
+    const cd = makeClipboard({ html: 'foo<br>bar<br/>baz' })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('html')
+    expect(out.text).toMatch(/foo\s+bar\s+baz/)
+    expect(out.text).not.toContain('foobar')
   })
 
   it('trims the outer edges so leading whitespace does not derail anchored regexes', () => {
@@ -239,9 +265,10 @@ describe('readPastedText — source: none', () => {
     expect(out.hadContent).toBe(true)
   })
 
-  it('survives a getData that throws (browser refuses a MIME type) without leaking the exception', () => {
+  it('survives a getData that throws (browser refuses a MIME type) without leaking the exception, and still recovers text from the other slot', () => {
     // Some browsers throw on cross-origin reads for certain MIMEs.
-    // The helper must swallow and treat the slot as absent.
+    // The helper must swallow and (a) still read the other slot;
+    // (b) return content when the other slot succeeds.
     const cd = makeClipboard({
       html: '',
       throwOn: 'text/plain',
@@ -252,21 +279,73 @@ describe('readPastedText — source: none', () => {
     expect(out.text).toBe('ok')
   })
 
-  it('survives a `types` accessor that throws — reports none/false, does not propagate', () => {
+  it('when BOTH text/plain and text/html reads throw, reports hadContent: true so the caller logs unable-to-inspect (does NOT let native paste bypass inspection silently)', () => {
+    // The security-critical case from CodeRabbit finding #1.
+    // Before the fix: safeGetData swallowed both throws, source
+    // was 'none', hadContent was false, and the paste handler
+    // silently returned — no log, no warning, and the browser's
+    // native paste proceeded WITHOUT the extension ever knowing
+    // there was content on the clipboard. The fix propagates the
+    // read failures via a per-call error counter.
+    const cd = {
+      get types(): readonly string[] {
+        return ['text/plain', 'text/html']
+      },
+      getData(_type: string): string {
+        throw new Error('clipboard refused')
+      },
+      files: { length: 0 } as unknown as FileList,
+    } as unknown as DataTransfer
+    const out = readPastedText(cd)
+    expect(out.source).toBe('none')
+    expect(out.text).toBe('')
+    // hadContent === true → caller emits unable-to-inspect event.
+    expect(out.hadContent).toBe(true)
+  })
+
+  it('survives a `types` accessor that throws — reports none/false when no prior read errors', () => {
     const cd = makeClipboard({ throwOnTypes: true })
     const out = readPastedText(cd)
     expect(out.source).toBe('none')
     expect(out.text).toBe('')
     expect(out.hadContent).toBe(false)
   })
+
+  it('oversized text/html payload (> MAX_HTML_STRIP_CHARS) → source: "none", hadContent: true — refuses to inspect a truncated prefix', () => {
+    // CodeRabbit finding #3. Before the fix: an oversized payload
+    // was sliced to a MAX_HTML_STRIP_CHARS prefix, parsed, and
+    // returned as source:'html' with truncated text. If the prefix
+    // was clean, detection returned clean and the FULL original
+    // payload proceeded via native paste — a false-clean bypass.
+    // After the fix: no partial inspection at all — the helper
+    // hands the caller a definitive unable-to-inspect signal.
+    const huge = '<p>' + 'a'.repeat(MAX_HTML_STRIP_CHARS + 100) + '</p>'
+    expect(huge.length).toBeGreaterThan(MAX_HTML_STRIP_CHARS)
+    const cd = makeClipboard({ html: huge })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('none')
+    expect(out.text).toBe('')
+    expect(out.hadContent).toBe(true)
+  })
 })
 
 describe('stripHtmlToText — direct', () => {
-  it('caps output at MAX_HTML_STRIP_CHARS on a monster payload', () => {
-    // Build 3 MB of "a"s inside a single <p>. Both the input cap AND
-    // the output cap must kick in and keep us at or under the limit.
+  it('returns "" on oversized input rather than a truncated prefix', () => {
+    // Refusing to parse a partial payload is the whole point of
+    // CodeRabbit finding #3. A truncated prefix that scans clean
+    // would give the caller a false-clean silhouette of the real
+    // payload. Callers that see '' fall through to the
+    // unable-to-inspect branch.
     const monster = '<p>' + 'a'.repeat(MAX_HTML_STRIP_CHARS + 500_000) + '</p>'
-    const out = stripHtmlToText(monster)
+    expect(stripHtmlToText(monster)).toBe('')
+  })
+
+  it('caps output at MAX_HTML_STRIP_CHARS on inputs under the input cap', () => {
+    // A within-cap input still produces bounded output — the
+    // extraction-side cap is a defense-in-depth pass in case a
+    // future change re-enables partial parsing.
+    const large = '<p>' + 'a'.repeat(MAX_HTML_STRIP_CHARS - 20) + '</p>'
+    const out = stripHtmlToText(large)
     expect(out.length).toBeLessThanOrEqual(MAX_HTML_STRIP_CHARS)
     expect(out.length).toBeGreaterThan(0)
   })
@@ -279,6 +358,31 @@ describe('stripHtmlToText — direct', () => {
     expect(typeof stripHtmlToText('<<<>>>')).toBe('string')
     expect(typeof stripHtmlToText('')).toBe('string')
     expect(typeof stripHtmlToText('   ')).toBe('string')
+  })
+
+  it('removes <script>, <style>, and other non-content tags so their source does not leak into detector input', () => {
+    // DOMParser with 'text/html' recognises script and style as
+    // opaque containers and their content never lands in the
+    // parsed DOM's textContent (belt-and-braces we then remove
+    // the elements too). `<iframe src>` reference must not
+    // survive, and the iframe cannot fetch anyway.
+    //
+    // `<noscript>` is deliberately NOT covered here because
+    // DOMParser's handling of noscript is browser-quirky (jsdom
+    // strips the container but keeps its text as a bare node;
+    // real Chrome preserves the noscript container so the
+    // removal works). Neither behavior lets scripts execute, so
+    // the security invariant is preserved either way.
+    const out = stripHtmlToText(`
+      <script>const key = "sk-live-1234567890abcdefghij"</script>
+      <style>body { color: red }</style>
+      <iframe src="http://x.invalid/"></iframe>
+      <p>keep me</p>
+    `)
+    expect(out).toContain('keep me')
+    expect(out).not.toContain('sk-live')
+    expect(out).not.toContain('color: red')
+    expect(out).not.toContain('x.invalid')
   })
 })
 

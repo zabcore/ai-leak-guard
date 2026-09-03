@@ -83,10 +83,20 @@ export function readPastedText(cd: DataTransfer | null): ReadPastedText {
     return { text: '', source: 'none', hadContent: false }
   }
 
+  // `safeGetData` swallows getData() exceptions and returns ''. A
+  // browser that refuses a specific MIME cross-origin is
+  // indistinguishable from an empty slot by return value alone; the
+  // moot difference matters because the paste handler MUST log
+  // unable-to-inspect when the read FAILED (there was content we
+  // couldn't see) vs. silently no-op when the slot was truly empty.
+  // Track failures out-of-band so the fall-through knows.
+  const readState = { errors: 0 }
+  const read = (type: string): string => safeGetData(cd, type, readState)
+
   // (a) text/plain — the V1.1 path. Trim to catch the "whitespace
   // only" case that a rich-text source occasionally emits alongside
   // the real html payload.
-  const plain = safeGetData(cd, 'text/plain')
+  const plain = read('text/plain')
   if (plain.trim().length > 0) {
     return { text: plain, source: 'plain', hadContent: true }
   }
@@ -97,10 +107,18 @@ export function readPastedText(cd: DataTransfer | null): ReadPastedText {
   // `<img src>` / `<link>` / `<iframe>`). The parsed document is
   // detached from the calling window: it has its own document, its
   // own DOM tree, and neither runs event handlers nor hits the
-  // network. `body.textContent` returns the visible text with
-  // whitespace preserved.
-  const html = safeGetData(cd, 'text/html')
+  // network.
+  const html = read('text/html')
   if (html.length > 0) {
+    // Oversized payload: inspecting only a truncated prefix would
+    // give the user a false sense of security — detection could
+    // return clean on the prefix, the handler allows native paste,
+    // and the FULL sensitive payload lands in the site's editor.
+    // Refuse to parse and hand the caller a definitive
+    // unable-to-inspect signal.
+    if (html.length > MAX_HTML_STRIP_CHARS) {
+      return { text: '', source: 'none', hadContent: true }
+    }
     const stripped = stripHtmlToText(html)
     if (stripped.length > 0) {
       return { text: stripped, source: 'html', hadContent: true }
@@ -113,24 +131,26 @@ export function readPastedText(cd: DataTransfer | null): ReadPastedText {
   // types like `text/rtf`, `application/x-*`, …) plus the sentinel
   // `Files` when a file/image is attached. Anything non-`Files`
   // with a getData() result counts as "we saw content we couldn't
-  // decode".
-  let hadNonFileBytes = false
+  // decode". A prior read error also counts — the browser refused
+  // us but the bytes were there.
+  let hadNonFileBytes = readState.errors > 0
   try {
     for (const type of cd.types ?? []) {
       if (type === 'Files') continue
-      const bytes = safeGetData(cd, type)
+      const bytes = read(type)
       if (bytes.length > 0) {
         hadNonFileBytes = true
         break
       }
     }
   } catch {
-    // Some browsers throw on cross-origin clipboard access to
-    // certain MIME types. That's the "we don't know" case — the
-    // caller can still decide whether to log unable-to-inspect
-    // based on other signals, but from this helper's perspective
-    // we saw nothing.
+    // The `types` accessor itself threw (some browsers do this on
+    // cross-origin clipboard access). Treat as "we don't know" —
+    // if a prior read threw, `hadNonFileBytes` already reflects it
+    // via readState.errors; otherwise leave as-is.
   }
+  // Any error during the fall-through scan also counts.
+  if (readState.errors > 0) hadNonFileBytes = true
 
   return { text: '', source: 'none', hadContent: hadNonFileBytes }
 }
@@ -139,37 +159,154 @@ export function readPastedText(cd: DataTransfer | null): ReadPastedText {
  * `getData` never throws in modern browsers, but wrap it defensively
  * — a browser update that changes the throwing behavior on a
  * disallowed MIME must not crash the paste handler. Returns '' on
- * any error.
+ * any error, and increments `state.errors` so the caller can
+ * distinguish an empty slot from a slot the browser refused.
  */
-function safeGetData(cd: DataTransfer, type: string): string {
+function safeGetData(cd: DataTransfer, type: string, state?: { errors: number }): string {
   try {
     return cd.getData(type) ?? ''
   } catch {
+    if (state) state.errors += 1
     return ''
   }
 }
 
+// Elements whose textContent is either invisible or non-user-facing
+// script/style source. `body.textContent` includes ALL descendant
+// text including <script> and <style>, which would let a hostile
+// paste smuggle SSN-shaped strings inside a `<script>` block that
+// the detector treats as real visible content. Strip these before
+// extracting text. `<title>`, `<meta>`, and `<link>` are only
+// possible inside `<head>` for a real parsed document but
+// DOMParser's tolerance means they can also land inside `<body>`
+// on hostile input, so we scrub them too.
+const NON_CONTENT_TAGS: readonly string[] = [
+  'script',
+  'style',
+  'noscript',
+  'template',
+  'iframe',
+  'object',
+  'embed',
+  'title',
+  'meta',
+  'link',
+]
+
+// Block-level tags whose boundary should introduce whitespace in
+// the extracted text. Without this, `<div>foo</div><div>bar</div>`
+// collapses to `"foobar"` via body.textContent — an adjacent-token
+// merge that can spuriously match a detector regex or (worse) hide
+// a real match by joining an identifier with surrounding chrome.
+const BLOCK_TAGS: ReadonlySet<string> = new Set([
+  'address',
+  'article',
+  'aside',
+  'blockquote',
+  'br',
+  'caption',
+  'dd',
+  'details',
+  'dialog',
+  'div',
+  'dl',
+  'dt',
+  'fieldset',
+  'figcaption',
+  'figure',
+  'footer',
+  'form',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'header',
+  'hgroup',
+  'hr',
+  'li',
+  'main',
+  'nav',
+  'ol',
+  'option',
+  'p',
+  'pre',
+  'section',
+  'summary',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'ul',
+])
+
 /**
  * Parse an HTML fragment into a detached document via `DOMParser`
- * and return `body.textContent` with a length cap. Kept exported so
- * a component test can pin the "no script execution" invariant
- * without going through the full clipboard-shaped API.
+ * and return the visible text, with non-content tags (script /
+ * style / …) removed and separators inserted at block-element and
+ * `<br>` boundaries. Kept exported so a component test can pin the
+ * "no script execution" invariant without going through the full
+ * clipboard-shaped API.
+ *
+ * Returns `''` on an oversized input — `readPastedText`'s caller
+ * short-circuits before parsing and treats it as
+ * unable-to-inspect. Returning `''` here rather than a truncated
+ * prefix keeps stripHtmlToText's own contract consistent for
+ * direct callers: never partial, never a false-clean silhouette
+ * of the real payload.
  */
 export function stripHtmlToText(html: string): string {
-  // Hard-cap the INPUT too — a 100 MB HTML payload would still be
-  // expensive to parse before the output cap kicks in.
-  const bounded = html.length > MAX_HTML_STRIP_CHARS ? html.slice(0, MAX_HTML_STRIP_CHARS) : html
+  if (html.length > MAX_HTML_STRIP_CHARS) return ''
   let doc: Document
   try {
-    doc = new DOMParser().parseFromString(bounded, 'text/html')
+    doc = new DOMParser().parseFromString(html, 'text/html')
   } catch {
     return ''
   }
-  const raw = doc.body?.textContent ?? ''
-  // `textContent` on the parsed body preserves the original visible
-  // whitespace, which is what the detector regexes were tuned on.
-  // Trim only the outer edges so a rich-text paste that begins with
-  // "  " doesn't derail an anchored regex.
-  const trimmed = raw.trim()
-  return trimmed.length > MAX_HTML_STRIP_CHARS ? trimmed.slice(0, MAX_HTML_STRIP_CHARS) : trimmed
+  const body = doc.body
+  if (!body) return ''
+  // Remove non-content elements before text extraction so their
+  // source (inline JS, CSS, meta content) doesn't leak into the
+  // detector input.
+  for (const tag of NON_CONTENT_TAGS) {
+    for (const el of body.querySelectorAll(tag)) el.remove()
+  }
+  const raw = extractVisibleText(body)
+  // Collapse runs of whitespace but keep at least one — the
+  // detector regexes were tuned to tolerate variable spacing but
+  // NOT to see adjacent tokens as one string. Trim outer edges so
+  // a rich-text paste that begins with "  " doesn't derail an
+  // anchored regex.
+  const normalized = raw
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return normalized.length > MAX_HTML_STRIP_CHARS
+    ? normalized.slice(0, MAX_HTML_STRIP_CHARS)
+    : normalized
+}
+
+/**
+ * Recursively walk a parsed DOM node collecting only visible text,
+ * inserting `'\n'` around block-level elements and for each
+ * `<br>` so adjacent tokens don't collapse into one string.
+ * NON_CONTENT_TAGS have already been removed by the caller; this
+ * function does not need to skip them again.
+ */
+function extractVisibleText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
+  if (node.nodeType !== Node.ELEMENT_NODE) return ''
+  const el = node as Element
+  const tag = el.nodeName.toLowerCase()
+  if (tag === 'br') return '\n'
+  let text = ''
+  for (const child of Array.from(el.childNodes)) {
+    text += extractVisibleText(child)
+  }
+  if (BLOCK_TAGS.has(tag)) return '\n' + text + '\n'
+  return text
 }
