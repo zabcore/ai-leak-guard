@@ -169,5 +169,11 @@
     }
   }
 
-  console.log(PREFIX, 'NET sniffer installed (MAIN world) on', location.hostname)
+  // Distinct prefix on purpose: a banner starting with "NET " would
+  // prefix-match a console filter for `NET ` and look like a request.
+  console.log(
+    PREFIX,
+    'SNIFFER-INSTALLED',
+    JSON.stringify({ world: 'MAIN', host: location.hostname }),
+  )
 })()
