@@ -1242,3 +1242,64 @@ native behaviour.
 - AI-based classification (ML models, embeddings)
 - Cross-device sync
 - Browsers other than Chrome
+
+## V1.3 M1 — Protection at Send: submit-scan core (flagged OFF)
+
+M1 adds the **site-agnostic** state machine that will gate a message
+send on a scan of the composer, without wiring it into any site yet.
+Adapters (M2/M3) intercept the user's Enter / Send-click, call
+`SubmitCore.handleSendIntent`, and — per the M0 spike — resume the
+send by re-clicking the site's own Send button. Nothing in the live
+content script consults the core in M1, and the flag
+(`src/content/submit/submit-flag.ts`, `isSubmitProtectionEnabled()`)
+defaults to **OFF**, so M1 is a zero-behaviour-change merge.
+
+Files: `src/content/submit/submit-core.ts` (machine), `fingerprint.ts`
+(risk-shape dedup key), `submit-flag.ts`. Test-only adapter:
+`tests/helpers/fake-submit-adapter.ts`.
+
+**States.** `IDLE → HELD_SCANNING → (DECISION) → RESUMING → SUBMITTED`,
+with `FAILED_OPEN` off the scanning phase and terminals
+`RETURNED_TO_EDIT` / `ADAPTER_DISABLED`.
+
+**The invariant that outranks everything.** No timer and no failure
+path may ever auto-submit content a scan has flagged. Fail-open is a
+property of the _automated_ phases only:
+
+- **Watchdog-A (scan)** — armed on `HELD_SCANNING` (composer read +
+  detection + any pending-file wait). Expiry or any throw →
+  `FAILED_OPEN` → the send proceeds and a metadata-only
+  `unable-to-inspect` event (`eventType: 'submit'`) records the
+  incomplete protection. Budget `SCAN_WATCHDOG_MS` (250 ms initial).
+- **DECISION** — deliberately **no auto-send timer**. The send stays
+  held until the user chooses `proceed` or `return-to-edit`. The
+  optional liveness guard (`DECISION_LIVENESS_MS`, default `null`)
+  may only ever resolve to `RETURNED_TO_EDIT`. A throw inside the
+  decision UI also lands on `RETURNED_TO_EDIT`. Test-pinned by
+  "DECISION never auto-sends".
+- **RESUMING** — the resume closure is idempotent (adapter `resume()`
+  at most once, one optional fallback). `'failed'` increments a
+  per-adapter counter; at `RESUME_FAILURE_KILL_THRESHOLD` (3) the
+  adapter is disabled for the session (`ADAPTER_DISABLED`), the core
+  stops taking sends for it (`handled: false` → native send works),
+  and `submitKillSwitch` `{adapterId, ts}` is written so the popup
+  can say so. A user is never left silently unable to send.
+
+**Re-entrancy.** One in-flight send per `(tab, composer)`; a second
+intent during HELD/DECISION/RESUMING coalesces onto the in-flight
+promise — never a second submission.
+
+**Dedup.** The detection result is fingerprinted as
+`category:count|…` (maskable findings only, sorted) in memory,
+scoped to `(tab, composer)`. An acknowledged fingerprint skips the
+modal; any change in category or count re-warns. **Intentional
+trade-off:** keyed on risk _shape_, not identity — swapping one SSN
+for another after acknowledging does not re-warn, because the
+alternative (hashing matched values) would keep a derivative of the
+content in memory. Fingerprints are **never** written to
+`chrome.storage` — release blocker, test-pinned.
+
+**Event log.** `AlgEventType` gains `'submit'`; the seven-field moat
+rule is unchanged. Actions used: `auto-cleared` (clean), `as-is`
+(proceed / dedup-skip), `cancelled` (return-to-edit / liveness /
+decision error), `unable-to-inspect` (fail-open).

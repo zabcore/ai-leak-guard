@@ -252,3 +252,16 @@ body {
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* V1.3 M1 — send-protection session kill-switch notice. Rendered only
+   when `submitKillSwitch` is set (never in M1; no adapter is wired). */
+.popup__notice {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #8a5a00;
+  background: #fff6e0;
+  border: 1px solid #f0d28a;
+  border-radius: 6px;
+  padding: 6px 8px;
+}

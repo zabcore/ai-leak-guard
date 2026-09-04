@@ -24,6 +24,9 @@ const local = {
   clear: async (): Promise<void> => {
     store.clear()
   },
+  remove: async (keys: string | string[]): Promise<void> => {
+    for (const key of Array.isArray(keys) ? keys : [keys]) store.delete(key)
+  },
 }
 
 // Minimal `chrome.runtime` shim covering both the worker-URL
@@ -46,7 +49,7 @@ const SHIM_APPEND_TYPE = 'alg-event-append'
 interface ShimEventShape {
   ts: number
   site: string
-  eventType: 'paste' | 'document'
+  eventType: 'paste' | 'document' | 'submit'
   action: string
   categories: readonly string[]
   count: number
@@ -81,7 +84,7 @@ function shimProject(x: unknown): ShimEventShape | null {
   const r = x as Record<string, unknown>
   if (typeof r.ts !== 'number' || !Number.isFinite(r.ts) || r.ts < 0) return null
   if (typeof r.site !== 'string') return null
-  if (r.eventType !== 'paste' && r.eventType !== 'document') return null
+  if (r.eventType !== 'paste' && r.eventType !== 'document' && r.eventType !== 'submit') return null
   if (typeof r.action !== 'string' || !ALLOWED_ACTIONS.has(r.action)) return null
   if (!Array.isArray(r.categories)) return null
   if (r.categories.some((c) => typeof c !== 'string' || !ALLOWED_CATEGORIES.has(c))) return null
