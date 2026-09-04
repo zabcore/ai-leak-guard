@@ -1,4 +1,4 @@
-import { getCounters, getPrefs, setPrefs } from '../shared/storage'
+import { getCounters, getPrefs, setPrefs, getSubmitKillSwitch } from '../shared/storage'
 import { localDateKey } from '../shared/counter'
 import { getEvents, summariseEvents, type AlgEvent } from '../shared/event-log'
 import { siteLabel, actionLabel, relativeTime } from './labels'
@@ -112,6 +112,35 @@ function setText(id: string, text: string): void {
   if (el !== null) el.textContent = text
 }
 
+/**
+ * V1.3 M1 — surface the send-protection session kill switch so a
+ * user whose adapter was disabled (repeated resume failures) is
+ * told, rather than silently losing send protection on that site.
+ * Renders nothing unless the flag is set; in M1 it never is.
+ * Exported so a component test can pin the copy without a DOM.
+ */
+export function formatKillSwitchLine(adapterId: string): string {
+  return `Send protection is paused on ${siteLabel(adapterId)} for this session (the site's own send is unaffected).`
+}
+
+async function renderSubmitKillSwitch(): Promise<void> {
+  const el = document.getElementById('submit-killswitch')
+  if (!(el instanceof HTMLElement)) return
+  let flag: Awaited<ReturnType<typeof getSubmitKillSwitch>> = null
+  try {
+    flag = await getSubmitKillSwitch()
+  } catch {
+    flag = null
+  }
+  if (flag === null) {
+    el.hidden = true
+    el.textContent = ''
+    return
+  }
+  el.textContent = formatKillSwitchLine(flag.adapterId)
+  el.hidden = false
+}
+
 async function render(): Promise<void> {
   const [counters, prefs] = await Promise.all([getCounters(), getPrefs()])
 
@@ -137,6 +166,12 @@ async function render(): Promise<void> {
     await renderActivity()
   } catch (err) {
     console.warn('[AI Leak Guard] popup activity render failed:', err)
+  }
+  // V1.3 M1 kill-switch notice — same best-effort posture.
+  try {
+    await renderSubmitKillSwitch()
+  } catch (err) {
+    console.warn('[AI Leak Guard] popup kill-switch render failed:', err)
   }
 }
 

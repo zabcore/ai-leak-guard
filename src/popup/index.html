@@ -31,6 +31,15 @@
       </label>
 
       <!--
+        V1.3 M1 — send-protection session kill switch notice. Shown
+        ONLY when `submitKillSwitch` is set in storage (an adapter's
+        resume failed repeatedly and was disabled for the session so
+        the site's native send keeps working). Never rendered in M1
+        itself: no adapter is wired yet. Metadata only (site label).
+      -->
+      <p class="popup__notice" role="status" hidden id="submit-killswitch"></p>
+
+      <!--
         V1.2 A5 (#40) — activity breakdown. Populated by popup.ts
         from the local metadata event log (chrome.storage.local
         `events`). Everything shown here is METADATA ONLY — counts,

@@ -20,7 +20,9 @@
 import type { DetectorCategory } from '../detector/types'
 import { DetectorCategory as DetectorCategoryValues } from '../detector/types'
 
-export type AlgEventType = 'paste' | 'document'
+// V1.3 M1 adds `'submit'` for the send-time scan path (same seven
+// fields, same moat rule; nothing else in the schema changes).
+export type AlgEventType = 'paste' | 'document' | 'submit'
 
 export type AlgAction =
   | 'protected'
@@ -75,7 +77,8 @@ export function isProjectedAlgEvent(x: unknown): x is AlgEvent {
   const r = x as Record<string, unknown>
   if (typeof r.ts !== 'number' || !Number.isFinite(r.ts) || r.ts < 0) return false
   if (typeof r.site !== 'string') return false
-  if (r.eventType !== 'paste' && r.eventType !== 'document') return false
+  if (r.eventType !== 'paste' && r.eventType !== 'document' && r.eventType !== 'submit')
+    return false
   if (typeof r.action !== 'string' || !ALLOWED_ACTIONS.has(r.action as AlgAction)) return false
   if (!Array.isArray(r.categories)) return false
   for (const c of r.categories) {

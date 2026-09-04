@@ -41,3 +41,34 @@ export async function setPrefs(prefs: Partial<Prefs>): Promise<void> {
   const current = await getPrefs()
   await chrome.storage.local.set({ prefs: { ...current, ...prefs } })
 }
+
+// ─── V1.3 M1 submit-protection session kill switch ──────────────────
+//
+// Written by `SubmitCore` when an adapter's `resume()` fails
+// `RESUME_FAILURE_KILL_THRESHOLD` times in a row; read by the popup
+// so the user is told "send protection is off for <site> this
+// session" rather than silently losing sends. Metadata only: the
+// adapter id and a timestamp. Cleared on the next successful startup
+// by the service worker in a later milestone; M1 only defines it.
+
+export interface SubmitKillSwitch {
+  readonly adapterId: string
+  readonly ts: number
+}
+
+export async function getSubmitKillSwitch(): Promise<SubmitKillSwitch | null> {
+  const stored = await chrome.storage.local.get('submitKillSwitch')
+  const raw = stored.submitKillSwitch as Partial<SubmitKillSwitch> | undefined
+  if (!raw || typeof raw.adapterId !== 'string' || typeof raw.ts !== 'number') return null
+  return { adapterId: raw.adapterId, ts: raw.ts }
+}
+
+export async function setSubmitKillSwitch(value: SubmitKillSwitch | null): Promise<void> {
+  if (value === null) {
+    await chrome.storage.local.remove('submitKillSwitch')
+    return
+  }
+  await chrome.storage.local.set({
+    submitKillSwitch: { adapterId: value.adapterId, ts: value.ts },
+  })
+}
