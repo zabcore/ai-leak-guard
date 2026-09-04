@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "ALG M0 spike — send-intercept instrumentation (THROWAWAY)",
+  "version": "0.0.1",
+  "description": "Throwaway V1.3 M0 spike. Logs capture-phase keydown/click on AI chat composers and runs a controlled block-then-resume test. NEVER publish. NEVER merge into the product build.",
+  "permissions": [],
+  "host_permissions": [],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*"
+      ],
+      "js": ["net-sniffer.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://www.perplexity.ai/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
