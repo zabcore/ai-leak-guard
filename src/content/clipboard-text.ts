@@ -296,6 +296,17 @@ export function stripHtmlToText(html: string): string {
  * `<br>` so adjacent tokens don't collapse into one string.
  * NON_CONTENT_TAGS have already been removed by the caller; this
  * function does not need to skip them again.
+ *
+ * Adjacent INLINE children are joined through `joinBoundary` so a
+ * rich-text source that serializes `<span>label</span><span>value</span>`
+ * without whitespace between the tags doesn't glue the two into
+ * `"labelvalue"`. The M6.1 fix inserted separators only at block /
+ * `<br>` boundaries — the owner's re-smoke found real EMR-shape
+ * payloads where label + value are consecutive `<span>`s with no
+ * whitespace at all between them, which would collapse to e.g.
+ * `"Medical record numberMRN 12345678"` or `"SSN123-45-6789"` and
+ * blow past the detector's word-boundary anchors (`\b`), silently
+ * missing the MRN or SSN while the modal claimed protection.
  */
 function extractVisibleText(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? ''
@@ -305,8 +316,44 @@ function extractVisibleText(node: Node): string {
   if (tag === 'br') return '\n'
   let text = ''
   for (const child of Array.from(el.childNodes)) {
-    text += extractVisibleText(child)
+    text = joinBoundary(text, extractVisibleText(child))
   }
   if (BLOCK_TAGS.has(tag)) return '\n' + text + '\n'
   return text
+}
+
+// Word-character anchors used by `joinBoundary`. Unicode-aware
+// (`\p{L}` = any letter, `\p{N}` = any number) so identifiers in
+// non-ASCII names still get un-glued correctly. Regex literals
+// with `/u` are re-usable — no state, no lastIndex concerns.
+const WORD_END = /[\p{L}\p{N}]$/u
+const WORD_START = /^[\p{L}\p{N}]/u
+
+/**
+ * Insert a single space between `acc` and `next` when both sides
+ * end/start with a Unicode word char — otherwise concat verbatim.
+ *
+ * Why this specific rule:
+ *
+ *   • Un-glues `numberMRN` (letter|letter) and `SSN123` (letter|
+ *     digit) — the exact shape rich-text pastes from EMRs produce
+ *     with `<span>Label</span><span>Value</span>` and no
+ *     whitespace between the tags.
+ *   • Does NOT over-separate identifier-internal boundaries:
+ *     `$` + `5` stays `$5` (`$` is not a word char); a dash-split
+ *     identifier `123-45` + `-6789` stays `123-45-6789` (the second
+ *     chunk starts with `-`, not a word char).
+ *   • Even the false-positive direction (a stray space where the
+ *     source had none) is the safe side for a detector — most
+ *     rules tolerate variable whitespace between tokens, none rely
+ *     on tokens being glued.
+ *
+ * Kept an internal helper — no public callers outside this module,
+ * and exporting would invite misuse.
+ */
+function joinBoundary(acc: string, next: string): string {
+  if (acc.length > 0 && next.length > 0 && WORD_END.test(acc) && WORD_START.test(next)) {
+    return acc + ' ' + next
+  }
+  return acc + next
 }

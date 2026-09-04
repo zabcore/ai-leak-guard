@@ -485,3 +485,159 @@ describe('unable-to-inspect log entry — no content ever survives storage proje
     }
   })
 })
+
+// ─── Layer 4: M6.2 inline-boundary regression ───────────────────────────────
+//
+// The M6.1 fix inserted `\n` separators only at block-tag and
+// `<br>` boundaries. That closed the most common leak (adjacent
+// `<div>`s / `<p>`s / `<br>`-joined lines), but the owner's re-smoke
+// against a real EMR-mimic surfaced a subtler shape: label and value
+// serialized as consecutive INLINE elements with NO whitespace
+// between the tags — `<span>Medical record number</span><span>MRN 12345678</span>`,
+// `<span>SSN</span><span>123-45-6789</span>`. `body.textContent`
+// concatenated the two into `"…numberMRN 12345678"` and
+// `"SSN123-45-6789"`, and the detector's `\b`-anchored regexes then
+// missed the MRN and SSN entirely. Dangerous: the modal fires and
+// masks SOME items (a labeled patient_name that happens to include
+// its own separator, a date the pattern matches without a boundary)
+// while the SSN passes through — the user believes they're
+// protected.
+//
+// The fix: in `extractVisibleText`, join concatenated children
+// through `joinBoundary` which inserts a single space between
+// `acc + next` only when both sides start/end with a Unicode word
+// char (`\p{L}` / `\p{N}`). Un-glues `numberMRN` and `SSN123`
+// without over-separating `$5` or dash-split identifiers.
+
+describe('M6.2 — glued inline siblings (EMR-shape) get boundary-preserving join', () => {
+  it('SSN in <span>SSN</span><span>123-45-6789</span> is now detected (was silently missed)', () => {
+    const cd = makeClipboard({
+      html: '<div><span>SSN</span><span>123-45-6789</span></div>',
+    })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('html')
+    // Direct text shape: at least one whitespace char between the
+    // label and the value — proves the boundary fix landed.
+    expect(out.text).toMatch(/SSN\s+123-45-6789/)
+    const detection = detectDetailed(out.text)
+    expect(detection.hasCriticalOrHigh).toBe(true)
+    expect(detection.findings.map((f) => f.ruleId)).toContain('ssn')
+  })
+
+  it('MRN in <span>Medical record number</span><span>MRN 12345678</span> is now detected', () => {
+    // The exact shape the owner's smoke uncovered — the long-form
+    // label ("Medical record number") glued to a value span that
+    // itself repeats the MRN abbreviation. Before the fix, the
+    // concatenation `"…numberMRN 12345678"` blocked the MRN
+    // detector's `\b`-anchored label because `r` and `M` are both
+    // word chars — no word boundary between them.
+    const cd = makeClipboard({
+      html: '<div><span>Medical record number</span><span>MRN 12345678</span></div>',
+    })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('html')
+    expect(out.text).toMatch(/number\s+MRN\s+12345678/)
+    const detection = detectDetailed(out.text)
+    expect(detection.findings.map((f) => f.ruleId)).toContain('mrn')
+  })
+
+  it('NPI in <span>NPI</span><span>1234567893</span> is now detected (checksum-valid)', () => {
+    // 1234567893 is the checksum-valid NPI the existing
+    // detector-healthcare suite pins. Before the fix the glued
+    // `NPI1234567893` failed the NPI regex's `\b\d{10}\b` boundary
+    // because `I` and `1` are both word chars.
+    const cd = makeClipboard({
+      html: '<div><span>NPI</span><span>1234567893</span></div>',
+    })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('html')
+    expect(out.text).toMatch(/NPI\s+1234567893/)
+    const detection = detectDetailed(out.text)
+    expect(detection.findings.map((f) => f.ruleId)).toContain('npi')
+  })
+
+  it('multi-row EMR-shape fragment → SSN, MRN, NPI all detected in a single paste', () => {
+    // The realistic composite the owner smoke-tested against:
+    // label span + value span per row, no whitespace between the
+    // tags on ANY row, wrapped in row-level <div>s. Before the
+    // fix, only the date and the labeled patient_name (whose
+    // separator is baked into the label span) fired — the SSN /
+    // MRN / NPI were silently missed while the modal claimed
+    // protection.
+    const html = `
+      <div><span>Patient Name:</span><span>John Doe</span></div>
+      <div><span>DOB</span><span>01/15/1980</span></div>
+      <div><span>Medical record number</span><span>MRN 12345678</span></div>
+      <div><span>SSN</span><span>123-45-6789</span></div>
+      <div><span>NPI</span><span>1234567893</span></div>
+    `
+    const cd = makeClipboard({ html })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('html')
+
+    const detection = detectDetailed(out.text)
+    const ruleIds = detection.findings.map((f) => f.ruleId)
+    // The three identifiers the owner's smoke found to be missed —
+    // all three must now fire.
+    expect(ruleIds).toContain('ssn')
+    expect(ruleIds).toContain('mrn')
+    expect(ruleIds).toContain('npi')
+    // hasCriticalOrHigh is derived from findings, so the modal
+    // would open on this paste (was already true, but pins the
+    // downstream invariant).
+    expect(detection.hasCriticalOrHigh).toBe(true)
+  })
+
+  it('does NOT over-separate — `$` + `5` stays `$5` (currency literal preserved)', () => {
+    // Non-regression: the join rule is word|word only, so a
+    // currency literal split across inline spans does NOT get a
+    // stray space injected between the sigil and the digits.
+    // `$` is not a Unicode word char (`\p{L}` / `\p{N}`), so
+    // `joinBoundary("$", "5")` returns "$5" verbatim.
+    const cd = makeClipboard({
+      html: '<div><span>$</span><span>5</span> co-pay</div>',
+    })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('html')
+    expect(out.text).toContain('$5')
+    expect(out.text).not.toContain('$ 5')
+  })
+
+  it('does NOT over-separate a dash-split identifier — <span>123-45</span><span>-6789</span> stays 123-45-6789 and SSN still fires', () => {
+    // Non-regression: the second chunk starts with `-`, which is
+    // NOT a word char, so `joinBoundary("123-45", "-6789")`
+    // returns "123-45-6789" verbatim — the SSN pattern still
+    // fires on the contiguous digits.
+    const cd = makeClipboard({
+      html: '<div>SSN <span>123-45</span><span>-6789</span></div>',
+    })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('html')
+    expect(out.text).toContain('123-45-6789')
+    expect(out.text).not.toContain('123-45 -6789')
+    const detection = detectDetailed(out.text)
+    expect(detection.findings.map((f) => f.ruleId)).toContain('ssn')
+  })
+
+  it('inline-only join is orthogonal to block-boundary + <br> separators (existing behaviour preserved)', () => {
+    // Layered assertion: block boundaries still produce their own
+    // `\n` (from the wrapper), and adjacent inline spans inside a
+    // block still get the boundary-preserving join. Neither
+    // mechanism regresses when the other applies.
+    const cd = makeClipboard({
+      html: '<div><span>foo</span><span>bar</span></div><div>baz</div>qux<br>quux',
+    })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('html')
+    // Inline join: `foo` + `bar` → "foo bar" (word|word).
+    expect(out.text).toMatch(/foo\s+bar/)
+    // Block boundary between the two <div>s: at least one \s.
+    expect(out.text).toMatch(/bar[\s]+baz/)
+    // <br> between qux and quux: a separator.
+    expect(out.text).toMatch(/qux\s+quux/)
+    // And nothing collapsed.
+    expect(out.text).not.toContain('foobar')
+    expect(out.text).not.toContain('barbaz')
+    expect(out.text).not.toContain('quxquux')
+  })
+})
