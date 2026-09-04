@@ -266,7 +266,10 @@
         phase: 'window-bubble',
         defaultPrevented: ev.defaultPrevented,
         isTrusted: ev.isTrusted,
-        reactRoot: describe(findReactRoot(ev.target)),
+        // NOTE: React expandos are NOT visible from the isolated world, so
+        // this is always null here; the real answer is the REACT-ROOT line
+        // posted by net-sniffer.js (MAIN world). Kept to document the gap.
+        reactRootFromIsolatedWorld: describe(findReactRoot(ev.target)),
       })
     },
     false,
@@ -339,7 +342,7 @@
         phase: 'window-bubble',
         defaultPrevented: ev.defaultPrevented,
         onSendButton: isSendButtonPath(ev),
-        reactRoot: describe(findReactRoot(ev.target)),
+        reactRootFromIsolatedWorld: describe(findReactRoot(ev.target)), // see KEYDOWN-BUBBLE note
       })
     },
     false,
@@ -521,6 +524,11 @@
   window.addEventListener('message', (ev) => {
     if (ev.source !== window || !ev.data || !ev.data[CHANNEL]) return
     const rec = ev.data[CHANNEL]
+    if (rec.kind === 'react-root') {
+      // Q2 diagnostic from the MAIN world (React expandos are invisible here).
+      log('REACT-ROOT', rec)
+      return
+    }
     const sinceUserSend = performance.now() - state.lastUserSendT
     const sinceResume = state.resumeAt ? performance.now() - state.resumeAt : Infinity
     const entry = {
@@ -688,13 +696,8 @@
         path: r.path,
         t: r.t,
       })),
-      reactRoots: [
-        ...new Set(
-          by('KEYDOWN-BUBBLE')
-            .concat(by('CLICK-BUBBLE'))
-            .map((r) => r.reactRoot),
-        ),
-      ],
+      // From the MAIN-world sniffer — React expandos are invisible here.
+      reactRoot: (by('REACT-ROOT')[0] || {}).reactRoot || null,
     }
     log('SUMMARY', s)
     console.table(s.results)

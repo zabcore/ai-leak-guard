@@ -35,13 +35,74 @@
 
   function emit(kind, payload) {
     const rec = { kind, t: Math.round(performance.now()), ...payload }
-    console.log(PREFIX, 'NET', JSON.stringify(rec))
+    // Raw MAIN-world line. The isolated world re-logs the same record
+    // as `NET` with send/resume/BYPASS correlation fields — that one
+    // is canonical; this one only proves the wrapper fired even if
+    // the isolated world failed to load. Different prefix so a
+    // single request is not counted twice when grepping `NET `.
+    console.log(PREFIX, 'NET-MAIN', JSON.stringify(rec))
     try {
       window.postMessage({ [CHANNEL]: rec }, '*')
     } catch {
       /* ignore */
     }
   }
+
+  // ---- React root / fiber visibility (Q2 diagnostic) ----
+  // React 17+ delegates events at the ROOT CONTAINER, not `document`,
+  // and marks it with an expando `__reactContainer$<hash>`. Those
+  // expandos live in the page realm and are INVISIBLE from a content
+  // script's isolated world, so this probe has to run here. Log-only.
+  function reactRootOf(from) {
+    let el = from instanceof Element ? from : null
+    while (el) {
+      for (const k in el) {
+        if (k.startsWith('__reactContainer$') || k === '_reactRootContainer') return el
+      }
+      el = el.parentElement
+    }
+    return null
+  }
+  function short(el) {
+    if (!el) return null
+    return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '')
+  }
+  let rootReported = false
+  let misses = 0
+  function reportRoot(ev) {
+    if (rootReported) return
+    if (ev.type === 'keydown' && ev.key !== 'Enter') return
+    // Ignore our own floating panel — it is not in the page's React tree
+    // and would otherwise latch a false "no React container" on the
+    // first panel click.
+    if (ev.composedPath().some((n) => n && n.id === 'alg-m0-panel-host')) return
+    const root = reactRootOf(ev.target)
+    // Latch on the first found root; for a non-React page, report
+    // "none" only after three real (non-panel) events so a stray early
+    // click on chrome outside the app can't mislabel the site.
+    if (!root && ++misses < 3) return
+    rootReported = true
+    const rec = {
+      kind: 'react-root',
+      t: Math.round(performance.now()),
+      target: short(ev.target),
+      reactRoot: short(root),
+      hasReactFiber: !!(
+        ev.target && Object.keys(ev.target).some((k) => k.startsWith('__reactFiber$'))
+      ),
+      note: root
+        ? 'React delegates at this container (below window/document in the capture path)'
+        : 'no React container above target — not a React tree, or non-React composer',
+    }
+    console.log(PREFIX, 'REACT-ROOT', JSON.stringify(rec))
+    try {
+      window.postMessage({ [CHANNEL]: rec }, '*')
+    } catch {
+      /* ignore */
+    }
+  }
+  window.addEventListener('keydown', reportRoot, true)
+  window.addEventListener('click', reportRoot, true)
 
   // ---- fetch ----
   const origFetch = window.fetch
