@@ -320,7 +320,16 @@ Detection is unchanged; only the interaction is new.
 
 1. Content script attaches a **capture-phase** `paste` event listener on
    `document`.
-2. When fired, read `clipboardData.getData('text/plain')`.
+2. When fired, extract plaintext via `readPastedText` (see
+   `src/content/clipboard-text.ts`): try `clipboardData.getData('text/plain')`
+   first, and if that slot is empty/whitespace, fall back to
+   `text/html` stripped through an inert `DOMParser` (no script
+   execution, no resource fetches) so pastes from rich-text web
+   apps — web EMRs, Google Docs, Notion, Microsoft 365 web —
+   still get inspected. If the clipboard carried non-`Files` bytes
+   we could not decode into plaintext, log a metadata-only
+   `unable-to-inspect` event so the miss appears in the activity
+   log rather than failing silently.
 3. If a preview modal is already on screen (from an earlier paste), call
    `preventDefault` + `stopPropagation` and drop this event — the spec is
    "additional paste events are ignored until the current modal resolves."

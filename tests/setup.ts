@@ -270,6 +270,15 @@ class FakeDataTransfer {
   get types(): readonly string[] {
     return this._files.length > 0 ? ['Files'] : []
   }
+  // Real browsers implement `getData` and return '' for any MIME
+  // slot that isn't set — including a file-only clipboard where
+  // string MIMEs are absent. Without this the shim throws
+  // "getData is not a function" and callers that distinguish
+  // "read failed" from "slot empty" (e.g. `readPastedText`) see
+  // a false read-error signal.
+  getData(_type: string): string {
+    return ''
+  }
 }
 
 if (typeof (globalThis as { DataTransfer?: unknown }).DataTransfer === 'undefined') {

@@ -21,6 +21,7 @@ import { showReattachNudge } from './document-nudge'
 import { installFsaMessageHandler } from './fsa-isolated'
 import { appendEvent, type AlgAction, type AlgEvent } from '../shared/event-log'
 import type { DetectorCategory, Finding } from '../detector/types'
+import { readPastedText } from './clipboard-text'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -228,11 +229,45 @@ window.addEventListener(
         }
       }
 
-      const text = event.clipboardData?.getData('text/plain') ?? ''
-      if (text.length < MIN_TEXT_LENGTH) return
+      // Rich-text paste fallback (M6.1). A paste from a rich-text
+      // source (a web EMR, Google Docs, Notion, Microsoft 365 web,
+      // …) frequently ships content in `text/html` with an absent
+      // or empty `text/plain` slot. The old
+      // `getData('text/plain')`-only path returned empty text and
+      // silently bailed — no warning, no modal, no activity-log
+      // entry. `readPastedText` tries plain first, falls back to
+      // an inert `DOMParser` strip of the `text/html` payload, and
+      // reports whether the clipboard had ANY non-`Files` bytes
+      // we couldn't decode.
+      const pasted = readPastedText(event.clipboardData)
+      const text = pasted.text
 
       const target = event.target as Element | null
       if (target === null || !adapter.isPromptInput(target)) return
+
+      // Never fail silently. If the handler ran on a real paste into
+      // a prompt input, the file branch above didn't consume it,
+      // and `readPastedText` reports it couldn't extract plaintext
+      // from clipboard bytes it saw, log an `unable-to-inspect`
+      // event so the user's activity log records the miss. This is
+      // metadata only — the untranslated clipboard content itself
+      // never lands in storage. We only log when there WAS content;
+      // a genuinely empty paste stays a silent no-op so a stray
+      // Cmd-V on a focused input doesn't spam the log.
+      if (pasted.source === 'none' && pasted.hadContent) {
+        void appendEvent({
+          ts: Date.now(),
+          site: adapter.id,
+          eventType: 'paste',
+          action: 'unable-to-inspect',
+          categories: [],
+          count: 0,
+          hadCriticalOrHigh: false,
+        })
+        return
+      }
+
+      if (text.length < MIN_TEXT_LENGTH) return
 
       // V1.1 PR 4: preview-before-send. If a preview modal is already open
       // from an earlier paste, drop this event on the floor — the spec is
