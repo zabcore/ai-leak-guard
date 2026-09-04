@@ -619,6 +619,28 @@ describe('M6.2 — glued inline siblings (EMR-shape) get boundary-preserving joi
     expect(detection.findings.map((f) => f.ruleId)).toContain('ssn')
   })
 
+  it('numeric identifier split across inline spans stays contiguous (digit|digit does NOT get a space)', () => {
+    // CodeRabbit follow-up finding on M6.2: the initial `joinBoundary`
+    // rule was "word|word → space", but that would split a numeric
+    // identifier like an NPI across two inline spans into
+    // `12345 67893` — the NPI pattern `\b\d{10}\b` then sees two
+    // 5-digit tokens and misses the identifier entirely. Same shape
+    // would break credit cards, patient MRNs that are all-digit,
+    // etc. The refined rule inserts a space only when at least
+    // one side has a LETTER — digit|digit stays glued.
+    const cd = makeClipboard({
+      html: '<div>NPI on file: <span>12345</span><span>67893</span></div>',
+    })
+    const out = readPastedText(cd)
+    expect(out.source).toBe('html')
+    // Digits stay contiguous — no space between the two spans.
+    expect(out.text).toContain('1234567893')
+    expect(out.text).not.toContain('12345 67893')
+    // And detection still fires on the contiguous NPI (checksum-valid).
+    const detection = detectDetailed(out.text)
+    expect(detection.findings.map((f) => f.ruleId)).toContain('npi')
+  })
+
   it('inline-only join is orthogonal to block-boundary + <br> separators (existing behaviour preserved)', () => {
     // Layered assertion: block boundaries still produce their own
     // `\n` (from the wrapper), and adjacent inline spans inside a

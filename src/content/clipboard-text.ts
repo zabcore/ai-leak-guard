@@ -322,16 +322,19 @@ function extractVisibleText(node: Node): string {
   return text
 }
 
-// Word-character anchors used by `joinBoundary`. Unicode-aware
-// (`\p{L}` = any letter, `\p{N}` = any number) so identifiers in
-// non-ASCII names still get un-glued correctly. Regex literals
+// Unicode word-character anchors used by `joinBoundary`. `\p{L}` =
+// any letter, `\p{N}` = any digit — Unicode-aware so identifiers
+// in non-ASCII names still get un-glued correctly. Regex literals
 // with `/u` are re-usable — no state, no lastIndex concerns.
 const WORD_END = /[\p{L}\p{N}]$/u
 const WORD_START = /^[\p{L}\p{N}]/u
+const LETTER_END = /\p{L}$/u
+const LETTER_START = /^\p{L}/u
 
 /**
  * Insert a single space between `acc` and `next` when both sides
- * end/start with a Unicode word char — otherwise concat verbatim.
+ * end/start with a Unicode word char AND at least one side is a
+ * LETTER — otherwise concat verbatim.
  *
  * Why this specific rule:
  *
@@ -339,20 +342,36 @@ const WORD_START = /^[\p{L}\p{N}]/u
  *     digit) — the exact shape rich-text pastes from EMRs produce
  *     with `<span>Label</span><span>Value</span>` and no
  *     whitespace between the tags.
+ *   • Does NOT insert a space at digit|digit boundaries: a numeric
+ *     identifier split across inline spans — `<span>12345</span>
+ *     <span>67893</span>` for an NPI, `<span>4111 1111</span>
+ *     <span>1111 1111</span>` for a credit card — must remain
+ *     contiguous so its length-based pattern (`\b\d{10}\b`, Luhn
+ *     over 13-19 digits) still matches. The "digit|digit is safe
+ *     to glue" bet holds because a rich-text source that separates
+ *     two SEPARATE numeric identifiers almost always puts them in
+ *     different rows (block-tag boundary → `\n`), not in bare
+ *     adjacent inline spans.
  *   • Does NOT over-separate identifier-internal boundaries:
  *     `$` + `5` stays `$5` (`$` is not a word char); a dash-split
  *     identifier `123-45` + `-6789` stays `123-45-6789` (the second
  *     chunk starts with `-`, not a word char).
  *   • Even the false-positive direction (a stray space where the
- *     source had none) is the safe side for a detector — most
- *     rules tolerate variable whitespace between tokens, none rely
- *     on tokens being glued.
+ *     source had none) is the safe side for label/value un-glueing
+ *     — the detector regexes tolerate variable whitespace between
+ *     label and value.
  *
  * Kept an internal helper — no public callers outside this module,
  * and exporting would invite misuse.
  */
 function joinBoundary(acc: string, next: string): string {
-  if (acc.length > 0 && next.length > 0 && WORD_END.test(acc) && WORD_START.test(next)) {
+  if (
+    acc.length > 0 &&
+    next.length > 0 &&
+    WORD_END.test(acc) &&
+    WORD_START.test(next) &&
+    (LETTER_END.test(acc) || LETTER_START.test(next))
+  ) {
     return acc + ' ' + next
   }
   return acc + next
