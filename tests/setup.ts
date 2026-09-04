@@ -147,9 +147,24 @@ const onInstalled = {
   },
 }
 
+// V1.3 M2 onStartup shim — the service worker wires
+// `chrome.runtime.onStartup.addListener` at import time to clear the
+// submit kill switch; without a stub the SW module import throws.
+interface StartupListener {
+  (): void
+}
+const startupListeners: StartupListener[] = []
+const onStartup = {
+  __listeners: startupListeners,
+  addListener: (fn: StartupListener) => {
+    startupListeners.push(fn)
+  },
+}
+
 const runtime = {
   onMessage,
   onInstalled,
+  onStartup,
   getURL: (path: string): string => {
     const rel = path.startsWith('/') ? path.slice(1) : path
     return `chrome-extension://${FAKE_EXTENSION_ID}/${rel}`
