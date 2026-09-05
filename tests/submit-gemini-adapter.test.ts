@@ -345,3 +345,68 @@ describe('Gemini — end-to-end through the core', () => {
     expect(harness.composer.textContent).toContain('123-45-6789')
   })
 })
+
+describe('Gemini — locale-independent send button (no aria-label)', () => {
+  // Simulate a NON-ENGLISH Gemini UI: the send <button> is wrapped in a
+  // `<gem-icon-button class="send-button submit">` custom element and
+  // carries NO English aria-label. The locale-independent handle
+  // `gem-icon-button.send-button button` must still resolve for both
+  // click interception and button resume.
+  function buildLocalizedGemini(): GeminiHarness {
+    document.body.innerHTML = ''
+    const host = document.createElement('rich-textarea')
+    const composer = document.createElement('div')
+    composer.setAttribute('contenteditable', 'true')
+    composer.setAttribute('role', 'textbox')
+    composer.innerHTML = '<p></p>'
+    host.appendChild(composer)
+    // Wrapper carries the classes; the inner <button> has NO aria-label.
+    const wrapper = document.createElement('gem-icon-button')
+    wrapper.className = 'send-button submit'
+    const button = document.createElement('button')
+    button.className = 'mdc-icon-button mat-mdc-icon-button'
+    wrapper.appendChild(button)
+    document.body.append(host, wrapper)
+    return {
+      host,
+      composer,
+      button,
+      setComposerHtml: (html) => {
+        composer.innerHTML = html
+      },
+      cleanup: () => {
+        document.body.innerHTML = ''
+      },
+    }
+  }
+
+  it('localized send-button click (no aria-label) → intent → preventDefault + scan', async () => {
+    harness = buildLocalizedGemini()
+    harness.setComposerHtml('<p>hello world this is plenty long</p>')
+    // Guard: the English fallback genuinely does not apply here.
+    expect(harness.button.getAttribute('aria-label')).toBeNull()
+    const scan = vi.fn((t: string): ScanOutcome => detectDetailed(t))
+    adapter = new GeminiSubmitAdapter()
+    adapter.attach(makeCore({ scan }))
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, composed: true })
+    harness.button.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    await flush()
+    expect(scan).toHaveBeenCalledTimes(1)
+  })
+
+  it('resume resolves the class-wrapped button (no aria-label) and clicks it', () => {
+    harness = buildLocalizedGemini()
+    harness.setComposerHtml('<p>Patient SSN is 123-45-6789</p>')
+    adapter = new GeminiSubmitAdapter()
+    let clicked = false
+    harness.button.addEventListener('click', () => {
+      clicked = true
+      harness!.setComposerHtml('<p></p>')
+    })
+    ;(adapter as unknown as { pendingComposer: HTMLElement }).pendingComposer = harness.composer
+    const result = adapter.resume()
+    expect(clicked).toBe(true)
+    expect(result).toBe('submitted')
+  })
+})

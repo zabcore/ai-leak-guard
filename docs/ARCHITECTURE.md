@@ -1391,10 +1391,10 @@ behind the flag.
 
 **Confirmed live selectors** (logged-in, 5 Sep 2026):
 
-| Site   | Composer                                   | Send button                                                                                                             |
-| ------ | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| Claude | `[contenteditable="true"][role="textbox"]` | `button[data-testid="chat-input-send"]` (+ `aria-label="Send message"` fallback)                                        |
-| Gemini | `rich-textarea [contenteditable="true"]`   | `button[aria-label="Send message"]` (Material icon button; the ONLY match once the composer has text; no `data-testid`) |
+| Site   | Composer                                   | Send button                                                                                                                                                                |
+| ------ | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude | `[contenteditable="true"][role="textbox"]` | `button[data-testid="chat-input-send"]` (+ `aria-label="Send message"` fallback)                                                                                           |
+| Gemini | `rich-textarea [contenteditable="true"]`   | `gem-icon-button.send-button button` (locale-independent; + `aria-label="Send message"` English fallback; Material icon button; the ONLY match once the composer has text) |
 
 Gemini's composer lives inside the `<rich-textarea>` custom element,
 so its config supplies a `matchesComposer` that also resolves the
@@ -1425,4 +1425,4 @@ future store-copy coverage claim must exclude them:
 
 Each list is also recorded at the top of the site's adapter file.
 
-**Known limitation (Gemini, non-English UI).** Gemini's send button has no `data-testid` or stable locale-independent handle, so the button-click intercept keys on the English `aria-label="Send message"`. On a non-English Gemini UI a _button-click_ send is not intercepted; **Enter-to-send stays protected in every locale** (it keys off the composer, not the button, and resume falls back to a re-dispatched Enter). A confirmed locale-independent send handle is a pre-ship requirement — a broader Material-icon-button selector is deliberately avoided because it would mis-target unrelated icon buttons.
+**Gemini locale independence (gap closed, confirmed live 5 Sep 2026).** The send `<button>`'s parent is a `<gem-icon-button class="send-button … submit">` custom element — the `send-button`/`submit` classes live on that wrapper, not on the `<button>` (which is why an earlier `button.send-button` guess matched 0). The primary selector `gem-icon-button.send-button button` keys on that wrapper class, a **locale-independent** handle, so a _button-click_ send is intercepted in **every** locale; `button[aria-label="Send message"]` is retained only as an English fallback (resolves the same node). `button:has(mat-icon[data-mat-icon-name="arrow_upward"])` is a documented alternative but is broader (could drift onto other arrow-icon buttons), so it is not used as primary. Enter-to-send was already locale-safe in every build (it keys off the composer, not the button, and resume falls back to a re-dispatched Enter).
