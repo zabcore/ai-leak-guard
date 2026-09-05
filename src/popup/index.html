@@ -49,6 +49,14 @@
         page (metadata only).
       -->
       <section class="selftest" id="selftest-section">
+        <div class="selftest__chooser">
+          <label class="selftest__chooser-label" for="selftest-site">Test on:</label>
+          <select class="selftest__select" id="selftest-site">
+            <option value="chatgpt">ChatGPT</option>
+            <option value="claude">Claude</option>
+            <option value="gemini">Gemini</option>
+          </select>
+        </div>
         <button type="button" class="selftest__btn" id="selftest-btn">Test protection</button>
         <p class="selftest__result" role="status" aria-live="polite" hidden id="selftest-result"></p>
         <button type="button" class="selftest__report" hidden id="selftest-report">Report this</button>
