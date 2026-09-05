@@ -1426,3 +1426,75 @@ future store-copy coverage claim must exclude them:
 Each list is also recorded at the top of the site's adapter file.
 
 **Gemini locale independence (gap closed, confirmed live 5 Sep 2026).** The send `<button>`'s parent is a `<gem-icon-button class="send-button … submit">` custom element — the `send-button`/`submit` classes live on that wrapper, not on the `<button>` (which is why an earlier `button.send-button` guess matched 0). The primary selector `gem-icon-button.send-button button` keys on that wrapper class, a **locale-independent** handle, so a _button-click_ send is intercepted in **every** locale; `button[aria-label="Send message"]` is retained only as an English fallback (resolves the same node). `button:has(mat-icon[data-mat-icon-name="arrow_upward"])` is a documented alternative but is broader (could drift onto other arrow-icon buttons), so it is not used as primary. Enter-to-send was already locale-safe in every build (it keys off the composer, not the button, and resume falls back to a re-dispatched Enter).
+
+## V1.3 M4 — text/file coordination at send (one combined modal)
+
+The SEND is the final orchestration point. It reconciles the TWO
+protections that previously never talked to each other:
+
+- **V1.2 document/upload flow** — warns at ATTACH time (`holdFiles` →
+  `resolveDocumentDecision`), then forgot its result.
+- **V1.3 submit-scan** — reads composer TEXT at send, knew nothing
+  about any attachment.
+
+**The gate (`src/content/submit/document-gate.ts`).** A thin, in-memory,
+per-`composerKey` registry. Status is one of `none | pending | clean |
+detected | unable-to-inspect`, plus an `acknowledged` flag and a
+metadata-only `summary` (categories + count + severity) and `fileCount`.
+It holds **no file content and no filenames**, never touches
+`chrome.storage` (blocker §10.11), and is session-lived per content
+script. Surface: `markDocPending` / `settleDoc` / `markDocAcknowledged`
+/ `clearDoc` / `getDoc` / `whenDocSettled`.
+
+**Publish (attach side).** `resolveDocumentDecision` — the single choke
+point for both the change/drop/paste path (`holdFiles`) and the FSA
+picker path — publishes the inspection lifecycle when handed a
+`composerKey`: `markDocPending` at inspection start, `settleDoc` with the
+terminal aggregate (clean / detected+summary / unable-to-inspect),
+`markDocAcknowledged` on `upload-anyway`, `clearDoc` on `cancel`. The
+attach-time modal is unchanged (A-7 / additive). `index.ts` derives the
+key as `${adapter.id}-composer` (matching each submit adapter's config)
+for submit-capable sites only; others write no gate state (byte-identical
+to V1.2).
+
+**Consult (send side, `submit-core.ts`).** After the TEXT scan resolves,
+the core folds in `getDoc(composerKey)`. A `pending` inspection is
+awaited via `whenDocSettled`, bounded by `DOC_WAIT_WATCHDOG_MS` (3 s):
+
+| dimensions needing a decision                          | route                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------- |
+| neither                                                | resume (send) — clean / dedup                                 |
+| text only                                              | one modal (text summary)                                      |
+| file only (`detected`-unacked, or `unable-to-inspect`) | one modal (file summary)                                      |
+| **both**                                               | **ONE combined modal** (blocker §10.6), never two in sequence |
+
+`fileNeedsDecision` = a settled `detected` (unacknowledged) **or** any
+`unable-to-inspect` (a completed "can't read it" is a decision, not a
+pass — never auto-safe). `clean`, `none`, and already-acknowledged
+`detected` need no decision (dedup, §9).
+
+**Fail-open + A-1.** If the doc-wait watchdog expires while the file is
+still `pending`, the FILE dimension fails open — the send proceeds and an
+`unable-to-inspect` gap is logged (automated-phase default). This never
+auto-sends flagged TEXT: flagged text always routes to a user decision
+regardless of a hung file. The combined decision phase has no auto-send
+timer; a timeout/throw lands on `return-to-edit`, never a submit.
+
+**One decision governs the whole send.** `proceed` resumes the send (the
+file is already attached in the composer — resuming submits message +
+file together; we never separately re-release the file). `return-to-edit`
+holds, submits nothing, and preserves both the draft and the attachment
+(the gate is not cleared). On a CONFIRMED send the gate is cleared
+(`clearDoc`) alongside the text-fingerprint reset, so the next message
+re-evaluates a fresh attachment.
+
+**Event log (§8).** Exactly ONE `submit` row per send, carrying the TEXT
+scan's metadata. The file's categories/count are recorded once, at
+ATTACH time, as its own `document` event — they are **not** re-logged in
+the submit row, so the same attachment is never counted twice. The
+combined MODAL, by contrast, merges both dimensions for display (union
+categories, summed count, `fileCount ≥ 1`, plus a "one attachment
+couldn't be inspected" line for an unable file).
+
+Scope held: no `src/detector/**` changes, no new permissions, no network,
+metadata-only, and the committed `SUBMIT` flag stays OFF.

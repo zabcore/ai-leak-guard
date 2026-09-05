@@ -39,6 +39,12 @@ import {
   type DocumentModalController,
   type DocumentModalOutcome,
 } from './document-modal'
+import {
+  markDocPending,
+  settleDoc,
+  markDocAcknowledged,
+  clearDoc,
+} from './submit/document-gate'
 
 /**
  * How long to wait before painting the scanning view. Chosen so
@@ -116,6 +122,15 @@ export async function resolveDocumentDecision(
      * explicitly exercised.
      */
     readonly siteId?: string
+    /**
+     * V1.3 M4 — the submit-adapter composer key for this site
+     * ('chatgpt-composer' etc.). When present, this helper publishes
+     * the attach-time inspection lifecycle to the document coordination
+     * gate so the send-time scan can reconcile a flagged attachment
+     * with typed text. Omitted (tests / non-submit callers) → no gate
+     * writes, behaviour byte-identical to V1.2.
+     */
+    readonly composerKey?: string
     readonly deps?: Partial<DocumentDecisionDeps>
   },
 ): Promise<DocumentModalOutcome> {
@@ -127,6 +142,14 @@ export async function resolveDocumentDecision(
     // through without also touching `deps`.
     logSiteId: opts.siteId ?? opts.deps?.logSiteId ?? defaultDeps.logSiteId,
   }
+
+  // V1.3 M4 — publish the inspection lifecycle to the document
+  // coordination gate so the send-time scan can reconcile this
+  // attachment with typed text. Guarded on `composerKey` so non-submit
+  // callers and tests are unaffected. All gate ops are in-memory,
+  // metadata-only, and never throw into the flow.
+  const composerKey = opts.composerKey
+  if (composerKey !== undefined) markDocPending(composerKey)
 
   // Metadata-only event log helper. Reuses the already-computed
   // aggregate (never re-scans, never touches file content) and
@@ -179,7 +202,10 @@ export async function resolveDocumentDecision(
       // User hit Cancel / Escape / × / backdrop while the scan was
       // running. The modal has already resolved; we forward the
       // outcome (always `'cancel'` in this branch since the primary
-      // button is hidden during scanning).
+      // button is hidden during scanning). The attachment never
+      // landed, so drop any pending gate state — a send must not wait
+      // on (or warn about) a file the user just cancelled.
+      if (composerKey !== undefined) clearDoc(composerKey)
       log('cancelled', null)
       return raceResult
     }
@@ -203,11 +229,26 @@ export async function resolveDocumentDecision(
     if (scanningModal !== null && !cancelledDuringScanning) {
       scanningModal.close('upload-anyway')
     }
+    // Gate: a clean attachment needs no send-time decision.
+    if (composerKey !== undefined) settleDoc(composerKey, { status: 'clean' })
     log('auto-cleared', aggregate)
     return 'upload-anyway'
   }
 
   if (aggregate.state === 'sensitive') {
+    // Gate: settle to 'detected' with the metadata-only summary BEFORE
+    // the user decides, so a concurrent send sees the terminal state.
+    if (composerKey !== undefined) {
+      settleDoc(composerKey, {
+        status: 'detected',
+        summary: {
+          categories: aggregate.categories,
+          count: aggregate.totalMaskable,
+          hasCriticalOrHigh: aggregate.anyCriticalOrHigh,
+        },
+        fileCount: inspection.perFile.length,
+      })
+    }
     const modal = pickOrOpenModal(deps, opts.opener, scanningModal, cancelledDuringScanning)
     modal.showSensitive({
       fileCount: inspection.perFile.length,
@@ -216,18 +257,36 @@ export async function resolveDocumentDecision(
       hasCriticalOrHigh: aggregate.anyCriticalOrHigh,
     })
     const outcome = await modal.outcome
+    // Gate: 'upload-anyway' at attach acknowledges this inspection so a
+    // later send doesn't re-warn the SAME unchanged file; 'cancel'
+    // means the file never attached → drop it.
+    if (composerKey !== undefined) {
+      if (outcome === 'upload-anyway') markDocAcknowledged(composerKey)
+      else clearDoc(composerKey)
+    }
     log(outcome === 'upload-anyway' ? 'uploaded-anyway' : 'cancelled', aggregate)
     return outcome
   }
 
   // aggregate.state === 'unable_to_inspect'
   const reason = firstUnableReason(inspection)
+  // Gate: an uninspectable attachment is NEVER auto-safe at send.
+  if (composerKey !== undefined) {
+    settleDoc(composerKey, {
+      status: 'unable-to-inspect',
+      fileCount: inspection.perFile.length,
+    })
+  }
   const modal = pickOrOpenModal(deps, opts.opener, scanningModal, cancelledDuringScanning)
   modal.showUnable({
     fileCount: inspection.perFile.length,
     reason,
   })
   const outcome = await modal.outcome
+  if (composerKey !== undefined) {
+    if (outcome === 'upload-anyway') markDocAcknowledged(composerKey)
+    else clearDoc(composerKey)
+  }
   // On unable, category/count intentionally stay empty/zero — there
   // was no successful detection to attribute the release to. The
   // separate `unable-to-inspect` action + reason (captured by the

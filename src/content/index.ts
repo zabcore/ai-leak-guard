@@ -45,6 +45,19 @@ const DOCUMENT_PROTECTION_SITES: ReadonlySet<string> = new Set([
 ])
 const isDocumentProtectionInScope = DOCUMENT_PROTECTION_SITES.has(adapter.id)
 
+// V1.3 M4: the submit-adapter composer key for this site. Each submit
+// adapter config uses `${id}-composer` as its `composerKey`, so the
+// attach-time document flow and the send-time submit-scan address the
+// SAME coordination-gate slot by deriving the key the same way. Only
+// sites that HAVE a submit adapter get a key; others (e.g. perplexity)
+// pass `undefined` and the document flow writes no gate state, exactly
+// as in V1.2. A drift test pins each adapter's config `composerKey`
+// against this `${id}-composer` convention.
+const SUBMIT_ADAPTER_SITES: ReadonlySet<string> = new Set(['chatgpt', 'claude', 'gemini'])
+const docGateComposerKey: string | undefined = SUBMIT_ADAPTER_SITES.has(adapter.id)
+  ? `${adapter.id}-composer`
+  : undefined
+
 // Default to disabled until the stored preference is confirmed. This avoids
 // masking during the brief startup window if the user had turned the extension
 // off, and fails closed (stays inactive) if the preference can't be read. A
@@ -183,7 +196,10 @@ installFsaMessageHandler(window, {
   // `deps.siteId` into `resolveDocumentDecision`'s opts on every
   // call — belt-and-braces vs. the inline wrapper.
   siteId: adapter.id,
-  resolveDecision: (inspectionPromise, opts) => resolveDocumentDecision(inspectionPromise, opts),
+  resolveDecision: (inspectionPromise, opts) =>
+    // V1.3 M4: forward the composer key so a file chosen via the FSA
+    // picker also publishes to the send-time coordination gate.
+    resolveDocumentDecision(inspectionPromise, { ...opts, composerKey: docGateComposerKey }),
 })
 
 // One listener on `window` in the capture phase. Two reasons this beats
@@ -226,9 +242,11 @@ window.addEventListener(
             event.stopImmediatePropagation()
             event.stopPropagation()
             const target = event.target as Element | null
-            void holdFiles(extracted, target, undefined, adapter.id).then((result) => {
-              handleHoldResult(result, 'paste')
-            })
+            void holdFiles(extracted, target, undefined, adapter.id, docGateComposerKey).then(
+              (result) => {
+                handleHoldResult(result, 'paste')
+              },
+            )
             return
           }
         }
@@ -371,7 +389,7 @@ window.addEventListener(
       event.stopImmediatePropagation()
       event.stopPropagation()
       const opener = (event.target as Element | null) ?? null
-      void holdFiles(extracted, opener, undefined, adapter.id).then((result) => {
+      void holdFiles(extracted, opener, undefined, adapter.id, docGateComposerKey).then((result) => {
         handleHoldResult(result, 'change')
       })
     } catch (err) {
@@ -404,7 +422,7 @@ window.addEventListener(
       event.stopImmediatePropagation()
       event.stopPropagation()
       const opener = (event.target as Element | null) ?? null
-      void holdFiles(extracted, opener, undefined, adapter.id).then((result) => {
+      void holdFiles(extracted, opener, undefined, adapter.id, docGateComposerKey).then((result) => {
         handleHoldResult(result, 'drop')
       })
     } catch (err) {

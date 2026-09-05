@@ -22,6 +22,7 @@
 // view in the same task, so the scanning frame never shows.
 
 import { openDocumentModal } from '../document-modal'
+import type { DetectorCategory } from '../../detector/types'
 import type { DecisionSummary, UserDecision } from './submit-core'
 
 /**
@@ -43,15 +44,39 @@ export function openSubmitDecision(
       cancelLabel: 'Return to editing',
     },
   })
-  // Paint the sensitive view synchronously (same task) so the
-  // scanning frame is never seen. Metadata only — counts +
-  // categories the core already projected; no text crosses here.
-  controller.showSensitive({
-    fileCount: 1,
-    totalMaskable: summary.count,
-    categories: summary.categories,
-    hasCriticalOrHigh: summary.hadCriticalOrHigh,
-  })
+  // Paint the terminal view synchronously (same task) so the scanning
+  // frame is never seen. Metadata only — counts + categories the core
+  // already projected; no text or filenames cross here.
+  //
+  // V1.3 M4: the summary may carry a FILE dimension so ONE modal covers
+  // both the typed message and its attachment (blocker §10.6).
+  const file = summary.file
+  if (
+    file !== undefined &&
+    file.status === 'unable-to-inspect' &&
+    !summary.messageHasSensitiveText
+  ) {
+    // File-only send where we couldn't read the attachment and the
+    // message text was clean — the honest "couldn't inspect" view, not
+    // a "0 sensitive items" sensitive view.
+    controller.showUnable({ fileCount: file.fileCount })
+  } else {
+    // Merge the two dimensions for display: union categories, summed
+    // count, either-critical. (The event log does NOT merge — the file
+    // is counted once, at attach time; see submit-core §8.)
+    const mergedCategories: readonly DetectorCategory[] = file
+      ? [...new Set<DetectorCategory>([...summary.categories, ...file.categories])]
+      : summary.categories
+    controller.showSensitive({
+      fileCount: file?.fileCount ?? 1,
+      totalMaskable: summary.count + (file?.count ?? 0),
+      categories: mergedCategories,
+      hasCriticalOrHigh: summary.hadCriticalOrHigh || (file?.hasCriticalOrHigh ?? false),
+      attachmentCount: file?.fileCount ?? 0,
+      messageHasSensitiveText: summary.messageHasSensitiveText,
+      attachmentUnableToInspect: file?.status === 'unable-to-inspect',
+    })
+  }
   return controller.outcome.then((outcome) =>
     outcome === 'upload-anyway' ? 'proceed' : 'return-to-edit',
   )
