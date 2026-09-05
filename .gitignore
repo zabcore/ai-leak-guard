@@ -146,3 +146,9 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Local build/handoff artifacts (smoke/store zips, handoff notes, and the
+# "Claude outputs" scratch dir) — throwaway, never commit.
+*.zip
+*_HANDOFF.md
+/Claude outputs/
