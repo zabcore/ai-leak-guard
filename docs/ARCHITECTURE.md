@@ -1365,3 +1365,62 @@ events and never increments the paste-path masked-items counter, so
 a send-time warning can't inflate the headline count for content the
 paste path already handled. Cross-flow paste↔send coordination is
 M4.
+
+## V1.3 M3 — Protection at Send: Claude + Gemini adapters (flag still OFF in main)
+
+M3 adds the two remaining sites. M0 proved the resume gate LIVE on
+all three: an untrusted `sendButton.click()` submits on ChatGPT,
+Claude, AND Gemini (none check `isTrusted`). The committed `SUBMIT`
+flag stays **OFF**, so `main` still installs nothing on any site.
+
+**Refactor first.** The ~entirely site-agnostic adapter behaviour
+(capture-phase keydown/click interception, the IME double-guard,
+Shift+Enter suppression, the `resuming` re-entrancy guard,
+`readComposerText` via `stripHtmlToText`, `resume()` button-first /
+KeyboardEvent-fallback / synchronous-in-activation-window, and the
+race-safe `postCheck`) moved into
+`src/content/submit/adapters/base-submit-adapter.ts`, parameterised
+by a `SiteSubmitConfig` (id, composer selector, send-button selector,
+composer key, optional `matchesComposer` hook). Each site adapter is
+now a thin config: `chatgpt.ts`, `claude.ts`, `gemini.ts`. The
+untouched `tests/submit-chatgpt-adapter.test.ts` (21) is the
+regression proof the extraction preserved behaviour. The three
+`install-*.ts` files are thin wrappers over one shared
+`install-submit.ts`; `index.ts` installs per host from a map, all
+behind the flag.
+
+**Confirmed live selectors** (logged-in, 5 Sep 2026):
+
+| Site   | Composer                                   | Send button                                                                                                             |
+| ------ | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| Claude | `[contenteditable="true"][role="textbox"]` | `button[data-testid="chat-input-send"]` (+ `aria-label="Send message"` fallback)                                        |
+| Gemini | `rich-textarea [contenteditable="true"]`   | `button[aria-label="Send message"]` (Material icon button; the ONLY match once the composer has text; no `data-testid`) |
+
+Gemini's composer lives inside the `<rich-textarea>` custom element,
+so its config supplies a `matchesComposer` that also resolves the
+host / anything inside it — the composed-path walk finds the composer
+even when the custom-element boundary hides the inner contenteditable
+from a naive `.matches`. Both sites resolve the send button FRESH at
+resume time (it appears/enables only once the composer has text and
+swaps to a Stop control while streaming, which the selector does not
+match). Angular (Gemini) still emits `isComposing`/`keyCode 229`, so
+the base IME double-guard covers CJK entry there too.
+
+### Q7 — programmatic send paths NOT intercepted (documented coverage gaps)
+
+Send protection covers a typed message sent via **Enter or the send
+button**. These paths bypass both and are **out of scope** — any
+future store-copy coverage claim must exclude them:
+
+- **ChatGPT** — suggested-prompt chips (new chat / under a response),
+  "Regenerate"/"Try again", editing a prior message and re-sending,
+  Voice / advanced-voice auto-submit, "Continue generating".
+- **Claude** — suggested/example chips, "Retry" (incl. model switch),
+  editing a prior message and re-sending, Projects / prompt-template
+  quick actions that submit directly.
+- **Gemini** — suggestion chips, "regenerate"/"modify response"/show-
+  more-drafts, Gemini Live / voice auto-submit, Deep Research "Start
+  research" and canvas quick actions, editing a prior prompt and
+  re-sending.
+
+Each list is also recorded at the top of the site's adapter file.
