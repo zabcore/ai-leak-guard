@@ -57,6 +57,16 @@ export interface SensitiveViewOpts {
   readonly totalMaskable: number
   readonly categories: readonly DetectorCategory[]
   readonly hasCriticalOrHigh: boolean
+  // ── V1.3 M4 (additive; all optional). Present only on the combined
+  //    send surface so a message carrying both typed PHI and a flagged
+  //    attachment reads as ONE warning. Existing 'file' and 'message'
+  //    callers pass none of these and get byte-identical copy. ──
+  /** Number of attached files considered at send (>0 → attachment copy). */
+  readonly attachmentCount?: number
+  /** True when the typed message itself carried flagged text. */
+  readonly messageHasSensitiveText?: boolean
+  /** True when one of the attachments couldn't be inspected. */
+  readonly attachmentUnableToInspect?: boolean
 }
 
 export interface UnableViewOpts {
@@ -488,17 +498,33 @@ export function openDocumentModal(opts: {
     mode = 'sensitive'
     headingIcon.textContent = '⚠️'
     const itemNoun = opts.totalMaskable === 1 ? 'item' : 'items'
-    if (surface === 'message') {
+    // V1.3 M4 combined send: the message surface may also carry an
+    // attachment. `attachmentCount > 0` switches the heading to name
+    // both dimensions (message + its attachment) or just the attachment
+    // for a file-only send decision.
+    const attachmentCount = opts.attachmentCount ?? 0
+    if (surface === 'message' && attachmentCount > 0) {
+      const attachNoun = attachmentCount === 1 ? 'attachment' : 'attachments'
+      headingText.textContent = opts.messageHasSensitiveText
+        ? `${opts.totalMaskable} sensitive ${itemNoun} found in this message and its ${attachNoun}`
+        : `${opts.totalMaskable} sensitive ${itemNoun} found in this ${attachNoun}`
+    } else if (surface === 'message') {
       headingText.textContent = `${opts.totalMaskable} sensitive ${itemNoun} found in this message`
     } else if (opts.fileCount <= 1) {
       headingText.textContent = `${opts.totalMaskable} sensitive ${itemNoun} found in this file`
     } else {
       headingText.textContent = `${opts.totalMaskable} sensitive ${itemNoun} found across ${opts.fileCount} files`
     }
-    body.textContent =
+    let bodyText =
       surface === 'message'
         ? 'Review before sending. AI Leak Guard warns you about likely-sensitive content — you decide whether to send it.'
         : 'Review before releasing. AI Leak Guard warns you about likely-sensitive content in uploads — you decide whether to send it.'
+    if (opts.attachmentUnableToInspect) {
+      // Honest note when an attachment couldn't be read — even if the
+      // message text was clean, the send carries an uninspected file.
+      bodyText += ' One attachment couldn’t be inspected.'
+    }
+    body.textContent = bodyText
     body.hidden = false
     severity.textContent = opts.hasCriticalOrHigh ? 'Includes high-severity items.' : ''
     severity.hidden = !opts.hasCriticalOrHigh

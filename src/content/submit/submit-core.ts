@@ -71,7 +71,14 @@ import type { DetectorCategory, Finding } from '../../detector/types'
 import { appendEvent, type AlgAction, type AlgEvent } from '../../shared/event-log'
 import { setSubmitKillSwitch } from '../../shared/storage'
 import { isSubmitProtectionEnabled } from './submit-flag'
-import { fingerprintFindings, type RiskFingerprint } from './fingerprint'
+import { fingerprintFindings, EMPTY_FINGERPRINT, type RiskFingerprint } from './fingerprint'
+import {
+  getDoc as getDocDefault,
+  whenDocSettled as whenDocSettledDefault,
+  markDocAcknowledged as markDocAcknowledgedDefault,
+  clearDoc as clearDocDefault,
+  type DocGateSnapshot,
+} from './document-gate'
 
 // ─── tunables ───────────────────────────────────────────────────────
 
@@ -89,6 +96,19 @@ export const SCAN_WATCHDOG_MS = 250
  * RETURNED_TO_EDIT — never a submit.
  */
 export const DECISION_LIVENESS_MS: number | null = null
+
+/**
+ * V1.3 M4 — how long the send waits on a still-running attach-time file
+ * inspection (the document gate reports `pending`). Chosen with A-4
+ * (cap+watchdog together): the attach-time inspection has its own
+ * per-file extraction timeout, so this bound only bites when the user
+ * sends WHILE a file is mid-inspection. On expiry the FILE dimension
+ * fails open — the send proceeds and an `unable-to-inspect` gap is
+ * logged (automated-phase default, A-1). It NEVER auto-sends content a
+ * TEXT scan flagged: flagged text always reaches a user decision
+ * regardless of a hung file.
+ */
+export const DOC_WAIT_WATCHDOG_MS = 3000
 
 /** Consecutive `'failed'` resumes per adapter before the session kill switch engages. */
 export const RESUME_FAILURE_KILL_THRESHOLD = 3
@@ -135,6 +155,22 @@ export interface ScanOutcome {
   readonly hasCriticalOrHigh: boolean
 }
 
+/**
+ * V1.3 M4 — the attached-file dimension of a combined send decision.
+ * Metadata only (category enums + a count + flags), NEVER file content
+ * or filenames. Present on a `DecisionSummary` only when an attached
+ * file needs a decision at send (detected-unacked or unable-to-inspect).
+ */
+export interface DecisionFileSummary {
+  /** 'detected' → sensitive content found; 'unable-to-inspect' → we couldn't read it. */
+  readonly status: 'detected' | 'unable-to-inspect'
+  /** Attached files in this inspection (≥1). Drives "…and its attachment(s)". */
+  readonly fileCount: number
+  readonly categories: readonly DetectorCategory[]
+  readonly count: number
+  readonly hasCriticalOrHigh: boolean
+}
+
 /** What the decision UI (M2) receives. Metadata only — no text, no matched values. */
 export interface DecisionSummary {
   readonly composerKey: string
@@ -144,6 +180,14 @@ export interface DecisionSummary {
   readonly hadCriticalOrHigh: boolean
   /** True when this composer had a *different* acknowledged fingerprint before — the risk picture changed. */
   readonly changedSinceAcknowledged: boolean
+  /** True when the typed message itself carried flagged text (vs a file-only send decision). */
+  readonly messageHasSensitiveText: boolean
+  /**
+   * V1.3 M4 — present when an attached file also needs a decision at
+   * send. The SAME modal governs both dimensions (blocker §10.6: one
+   * combined modal, never two in sequence for one send).
+   */
+  readonly file?: DecisionFileSummary
 }
 
 export type SubmitRoute =
@@ -186,6 +230,21 @@ export interface SubmitCoreDeps {
   readonly scanWatchdogMs: number
   readonly decisionLivenessMs: number | null
   readonly killThreshold: number
+  // ── V1.3 M4: document coordination gate seams (default to the real
+  //    in-memory `document-gate` module; tests inject fakes). ──
+  /** Snapshot the attached-file state for a composer at send. */
+  readonly getDoc: (composerKey: string) => DocGateSnapshot
+  /** Resolve when the file state leaves 'pending' (bounded by the watchdog). */
+  readonly whenDocSettled: (
+    composerKey: string,
+    signal?: { aborted: boolean },
+  ) => Promise<DocGateSnapshot>
+  /** Mark the composer's attachment acknowledged (dedup within one unsent message). */
+  readonly markDocAcknowledged: (composerKey: string) => void
+  /** Drop the composer's attachment state on a confirmed send. */
+  readonly clearDoc: (composerKey: string) => void
+  /** Budget for waiting on a pending attach-time inspection at send. */
+  readonly docWaitWatchdogMs: number
   /** Site label for the metadata event log; `''` skips logging. */
   readonly logSiteId: string
   readonly logEvent: (event: AlgEvent) => void
@@ -212,6 +271,11 @@ const defaultDeps: SubmitCoreDeps = {
   scanWatchdogMs: SCAN_WATCHDOG_MS,
   decisionLivenessMs: DECISION_LIVENESS_MS,
   killThreshold: RESUME_FAILURE_KILL_THRESHOLD,
+  getDoc: getDocDefault,
+  whenDocSettled: whenDocSettledDefault,
+  markDocAcknowledged: markDocAcknowledgedDefault,
+  clearDoc: clearDocDefault,
+  docWaitWatchdogMs: DOC_WAIT_WATCHDOG_MS,
   logSiteId: '',
   logEvent: (event) => {
     try {
@@ -376,33 +440,92 @@ export class SubmitCore {
     }
 
     if (scan === null) {
-      // ── FAILED_OPEN: automated phase failed → proceed, log the gap ──
+      // ── FAILED_OPEN: automated TEXT phase failed → proceed, log gap ──
       this.transition(key, 'FAILED_OPEN')
       this.log('unable-to-inspect', null)
-      return this.resumePhase(adapter, key, submitOnce, 'failed-open', true, finish)
+      return this.resumePhase(adapter, intent.composerKey, key, submitOnce, 'failed-open', true, finish)
     }
 
-    if (!scan.hasCriticalOrHigh) {
-      this.log('auto-cleared', scan)
-      return this.resumePhase(adapter, key, submitOnce, 'clean', false, finish)
+    // ── V1.3 M4: fold in the document coordination gate ──
+    // The SEND is the final orchestration point: reconcile the typed
+    // TEXT (just scanned) with any attached FILE the V1.2 flow inspected
+    // at attach time. A still-running inspection (`pending`) is awaited,
+    // bounded by the doc-wait watchdog; on expiry the FILE dimension
+    // fails open (never block the user on a hung scan — automated-phase
+    // default, A-1) and the gap is recorded. This wait NEVER gates
+    // flagged TEXT: flagged text always reaches a user decision below,
+    // regardless of the file.
+    let doc = this.deps.getDoc(intent.composerKey)
+    let fileFailedOpen = false
+    if (doc.status === 'pending') {
+      const signal = { aborted: false }
+      try {
+        doc = await this.withWatchdog(
+          () => this.deps.whenDocSettled(intent.composerKey, signal),
+          this.deps.docWaitWatchdogMs,
+        )
+      } catch {
+        signal.aborted = true
+        fileFailedOpen = true
+      }
     }
 
-    // ── flagged: dedup, then DECISION ──
-    // The acknowledged set only holds fingerprints for the composer's
-    // current unsent message — it is cleared on a confirmed send — so
-    // a dedup-skip here means "the user already OK'd this exact risk
-    // shape for the message still sitting in the composer" (a repeat
-    // Enter / no-op edit / swallowed-resume retry), never "they OK'd
-    // it for a message they already sent."
-    const fingerprint = fingerprintFindings(scan.findings)
+    // TEXT dimension. The acknowledged set only holds fingerprints for
+    // the composer's current unsent message (cleared on a confirmed
+    // send) — a dedup here means "already OK'd this exact risk shape for
+    // the message still sitting in the composer" (repeat Enter / no-op
+    // edit / swallowed-resume retry), never across sends.
+    const textFingerprint = scan.hasCriticalOrHigh ? fingerprintFindings(scan.findings) : null
     const acked = this.acknowledged.get(key)
-    if (acked?.has(fingerprint)) {
-      this.log('as-is', scan)
-      return this.resumePhase(adapter, key, submitOnce, 'dedup-skip', false, finish)
+    const textDedupAcked = textFingerprint !== null && (acked?.has(textFingerprint) ?? false)
+    const textNeedsDecision = textFingerprint !== null && !textDedupAcked
+
+    // FILE dimension. A settled 'detected' (unacknowledged) OR any
+    // 'unable-to-inspect' needs a decision — a completed "can't read it"
+    // is a decision, not a pass, and is NEVER auto-safe. A 'clean' /
+    // 'none' file, or an already-acknowledged 'detected' file, needs no
+    // decision (dedup, §9). A watchdog fail-open is not a decision.
+    const fileNeedsDecision =
+      !fileFailedOpen &&
+      ((doc.status === 'detected' && !doc.acknowledged) || doc.status === 'unable-to-inspect')
+
+    // ── route: neither / one / both ──
+    if (!textNeedsDecision && !fileNeedsDecision) {
+      if (fileFailedOpen) {
+        // The FILE automated phase timed out → fail open + record the
+        // gap. (A hung file with FLAGGED text never lands here — that
+        // path has `textNeedsDecision` and routes to the decision.)
+        this.transition(key, 'FAILED_OPEN')
+        this.log('unable-to-inspect', null)
+        return this.resumePhase(adapter, intent.composerKey, key, submitOnce, 'failed-open', true, finish)
+      }
+      const rodeAlongAcked = textDedupAcked || (doc.status === 'detected' && doc.acknowledged)
+      // Metadata-only submit row: the TEXT scan's shape. The FILE's own
+      // categories/count are recorded once, at ATTACH time, as its
+      // `document` event — we deliberately do NOT re-log them here, so
+      // the same attachment is never counted twice (§8).
+      this.log(rodeAlongAcked ? 'as-is' : 'auto-cleared', scan)
+      return this.resumePhase(
+        adapter,
+        intent.composerKey,
+        key,
+        submitOnce,
+        rodeAlongAcked ? 'dedup-skip' : 'clean',
+        false,
+        finish,
+      )
     }
 
+    // ── DECISION: at least one dimension needs the user. ONE modal,
+    //    never two in sequence for one send (blocker §10.6). ──
     this.transition(key, 'DECISION')
-    const summary = summarise(intent.composerKey, fingerprint, scan, (acked?.size ?? 0) > 0)
+    const summary = summariseCombined(
+      intent.composerKey,
+      textFingerprint,
+      scan,
+      (acked?.size ?? 0) > 0,
+      fileNeedsDecision ? doc : null,
+    )
     let decision: UserDecision
     let route: SubmitRoute
     try {
@@ -420,15 +543,24 @@ export class SubmitCore {
     }
 
     if (decision !== 'proceed') {
+      // Hold: submit nothing. Draft AND attachment preserved (the file
+      // is still attached in the composer; we never released or cleared
+      // it here). A-1 intact — the decision phase has no auto-send.
       this.transition(key, 'RETURNED_TO_EDIT')
       this.log('cancelled', scan)
       return finish('RETURNED_TO_EDIT', route, false, null)
     }
 
-    if (!acked) this.acknowledged.set(key, new Set([fingerprint]))
-    else acked.add(fingerprint)
+    // Acknowledge BOTH dimensions for the current unsent message so a
+    // repeat Enter / swallowed-resume retry doesn't re-nag; both are
+    // reset on a confirmed send so the next message re-warns.
+    if (textFingerprint !== null) {
+      if (!acked) this.acknowledged.set(key, new Set([textFingerprint]))
+      else acked.add(textFingerprint)
+    }
+    if (doc.status === 'detected') this.deps.markDocAcknowledged(intent.composerKey)
     this.log('as-is', scan)
-    return this.resumePhase(adapter, key, submitOnce, 'proceed', false, finish)
+    return this.resumePhase(adapter, intent.composerKey, key, submitOnce, 'proceed', false, finish)
   }
 
   private async scanPhase(adapter: SubmitAdapter): Promise<ScanOutcome> {
@@ -498,6 +630,7 @@ export class SubmitCore {
 
   private resumePhase(
     adapter: SubmitAdapter,
+    composerKey: string,
     key: string,
     submitOnce: () => ResumeResult,
     route: SubmitRoute,
@@ -527,6 +660,10 @@ export class SubmitCore {
       // kill-switch / RETURNED_TO_EDIT path below), so the ack it set
       // survives and the retry on the same content is still skipped.
       this.acknowledged.delete(key)
+      // V1.3 M4: the message (and its attachment) actually went out —
+      // drop the composer's document-gate state so the NEXT message
+      // re-evaluates a fresh attachment, mirroring the text-ack reset.
+      this.deps.clearDoc(composerKey)
       this.transition(key, 'SUBMITTED')
       return finish('SUBMITTED', route, failedOpen, result)
     }
@@ -601,21 +738,41 @@ function notHandled(state: 'IDLE' | 'ADAPTER_DISABLED', route: SubmitRoute): Sub
   }
 }
 
-function summarise(
+/**
+ * Build the combined decision summary (metadata only). The TEXT
+ * dimension contributes only when the message itself is flagged
+ * (`textFingerprint !== null`); a file-only send decision carries empty
+ * text metadata and `messageHasSensitiveText: false`. The FILE
+ * dimension is attached when `file` is non-null (the gate said a
+ * detected/unable attachment needs a decision). The modal (`submit-ui`)
+ * merges the two for display; the event log does not (§8).
+ */
+function summariseCombined(
   composerKey: string,
-  fingerprint: RiskFingerprint,
+  textFingerprint: RiskFingerprint | null,
   scan: ScanOutcome,
   hadPriorAck: boolean,
+  file: DocGateSnapshot | null,
 ): DecisionSummary {
-  const maskable = scan.findings.filter(isMaskable)
+  const maskable = textFingerprint !== null ? scan.findings.filter(isMaskable) : []
   const categories = new Set<DetectorCategory>()
   for (const f of maskable) if (f.category) categories.add(f.category)
-  return {
+  const base: DecisionSummary = {
     composerKey,
-    fingerprint,
+    fingerprint: textFingerprint ?? EMPTY_FINGERPRINT,
     count: maskable.length,
     categories: [...categories],
-    hadCriticalOrHigh: scan.hasCriticalOrHigh,
+    hadCriticalOrHigh: textFingerprint !== null ? scan.hasCriticalOrHigh : false,
     changedSinceAcknowledged: hadPriorAck,
+    messageHasSensitiveText: textFingerprint !== null,
   }
+  if (file === null) return base
+  const fileSummary: DecisionFileSummary = {
+    status: file.status === 'unable-to-inspect' ? 'unable-to-inspect' : 'detected',
+    fileCount: file.fileCount ?? 1,
+    categories: file.summary?.categories ?? [],
+    count: file.summary?.count ?? 0,
+    hasCriticalOrHigh: file.summary?.hasCriticalOrHigh ?? false,
+  }
+  return { ...base, file: fileSummary }
 }
