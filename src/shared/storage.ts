@@ -1,5 +1,12 @@
 // Typed wrappers over chrome.storage.local for the schema in ARCHITECTURE.md.
 
+import {
+  SELF_TEST_SIGNAL_KEY,
+  SELF_TEST_RESULT_KEY,
+  type SelfTestSignal,
+  type SelfTestResultRecord,
+} from './self-test'
+
 export interface Counters {
   total: number
   byType: Record<string, number>
@@ -71,4 +78,49 @@ export async function setSubmitKillSwitch(value: SubmitKillSwitch | null): Promi
   await chrome.storage.local.set({
     submitKillSwitch: { adapterId: value.adapterId, ts: value.ts },
   })
+}
+
+// ── V1.3 M5 self-test coordination (metadata-only, one-shot keys) ──
+
+export async function getSelfTestSignal(): Promise<SelfTestSignal | null> {
+  const stored = await chrome.storage.local.get(SELF_TEST_SIGNAL_KEY)
+  const raw = stored[SELF_TEST_SIGNAL_KEY] as Partial<SelfTestSignal> | undefined
+  if (!raw || typeof raw.nonce !== 'string' || typeof raw.ts !== 'number') return null
+  return { nonce: raw.nonce, ts: raw.ts, site: typeof raw.site === 'string' ? raw.site : '' }
+}
+
+export async function setSelfTestSignal(value: SelfTestSignal): Promise<void> {
+  await chrome.storage.local.set({
+    [SELF_TEST_SIGNAL_KEY]: { nonce: value.nonce, ts: value.ts, site: value.site },
+  })
+}
+
+export async function clearSelfTestSignal(): Promise<void> {
+  await chrome.storage.local.remove(SELF_TEST_SIGNAL_KEY)
+}
+
+export async function setSelfTestResult(value: SelfTestResultRecord): Promise<void> {
+  await chrome.storage.local.set({ [SELF_TEST_RESULT_KEY]: value })
+}
+
+export async function getSelfTestResult(): Promise<SelfTestResultRecord | null> {
+  const stored = await chrome.storage.local.get(SELF_TEST_RESULT_KEY)
+  const raw = stored[SELF_TEST_RESULT_KEY] as Partial<SelfTestResultRecord> | undefined
+  if (!raw || typeof raw.result !== 'string' || typeof raw.code !== 'string') return null
+  if (typeof raw.nonce !== 'string' || typeof raw.ts !== 'string') return null
+  return {
+    nonce: raw.nonce,
+    result: raw.result,
+    code: raw.code,
+    site: typeof raw.site === 'string' ? raw.site : '',
+    adapter: typeof raw.adapter === 'string' ? raw.adapter : '',
+    composer: raw.composer === 1 ? 1 : 0,
+    intercept: raw.intercept === 1 ? 1 : 0,
+    modal: raw.modal === 1 ? 1 : 0,
+    ts: raw.ts,
+  }
+}
+
+export async function clearSelfTestResult(): Promise<void> {
+  await chrome.storage.local.remove(SELF_TEST_RESULT_KEY)
 }

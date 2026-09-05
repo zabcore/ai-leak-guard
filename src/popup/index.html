@@ -40,6 +40,21 @@
       <p class="popup__notice" role="status" hidden id="submit-killswitch"></p>
 
       <!--
+        V1.3 M5 — one-click self-test. Opens a FRESH tab on a supported
+        site, runs the REAL interception on SYNTHETIC data only, confirms
+        the warning appears, then auto-cancels (never submits). The
+        result line is honest (A-5): it validates detection + warning on
+        the site, NOT that a real message was sent. "Report this" appears
+        only on failure / unsupported and opens the prefilled support
+        page (metadata only).
+      -->
+      <section class="selftest" id="selftest-section">
+        <button type="button" class="selftest__btn" id="selftest-btn">Test protection</button>
+        <p class="selftest__result" role="status" aria-live="polite" hidden id="selftest-result"></p>
+        <button type="button" class="selftest__report" hidden id="selftest-report">Report this</button>
+      </section>
+
+      <!--
         V1.2 A5 (#40) — activity breakdown. Populated by popup.ts
         from the local metadata event log (chrome.storage.local
         `events`). Everything shown here is METADATA ONLY — counts,

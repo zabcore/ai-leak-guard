@@ -265,3 +265,57 @@ body {
   border-radius: 6px;
   padding: 6px 8px;
 }
+
+/* V1.3 M5 — one-click self-test. A single unobtrusive button + one
+   result line; the "Report this" link appears only on failure. */
+.selftest {
+  margin: 12px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+}
+.selftest__btn {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #c7d2e0;
+  background: #f4f7fb;
+  color: #1f2a37;
+  cursor: pointer;
+}
+.selftest__btn:hover {
+  background: #e9eff7;
+}
+.selftest__btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.selftest__btn:focus-visible,
+.selftest__report:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}
+.selftest__result {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #334155;
+}
+.selftest__report {
+  align-self: flex-start;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid #e0b3b3;
+  background: #fdecec;
+  color: #8a1c1c;
+  cursor: pointer;
+}
+.selftest__report:hover {
+  background: #f8dcdc;
+}

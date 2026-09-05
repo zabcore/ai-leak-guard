@@ -1498,3 +1498,70 @@ couldn't be inspected" line for an unable file).
 
 Scope held: no `src/detector/**` changes, no new permissions, no network,
 metadata-only, and the committed `SUBMIT` flag stays OFF.
+
+## V1.3 M5 — one-click safe self-test + "Report this"
+
+A single **Test protection** button in the existing popup (no new panel,
+§7) that proves the send-time protection actually works on a supported
+site — on SYNTHETIC data only, in a FRESH tab, and NEVER submitting.
+
+**Flow.** The popup writes a one-shot `chrome.storage.local` signal
+(`algSelfTest = { nonce, ts, site }`), opens a fresh tab on a supported
+site (prefers an already-open supported origin, else ChatGPT), and
+listens for a result key (`algSelfTestResult`) with a matching nonce (or
+times out → "couldn't start"). The content script, on load, when submit
+protection is installed (flag on) and the signal is present, runs the
+self-test once (top frame only), deletes the signal, and writes back a
+metadata-only result.
+
+**The runner (`src/content/submit/self-test.ts`).** Pure orchestration
+over injected DOM seams so it can be unit-tested and wired to the REAL
+adapter/core/modal in production:
+
+1. resolve the composer (fresh tab → empty; poll until it exists);
+2. **refuse to run over an existing draft** (`DRAFT_PRESENT`) — never
+   overwrite anything the user typed;
+3. insert synthetic PHI (`Jane Doe, MRN 12345678, DOB 01/02/1980`) into
+   the empty composer;
+4. fire the REAL send intent (dispatch the Enter the adapter intercepts)
+   — no `preventDefault` ⇒ `NO_INTERCEPT` (unsupported);
+5. wait for the real warning modal (`isDocumentModalOpen`) ⇒ `NO_MODAL`
+   on timeout;
+6. **AUTO-CANCEL** (Escape → return-to-edit) and clear the synthetic
+   text. There is NO resume seam — the runner cannot submit.
+
+**Safety (audit-enforced).** Always a fresh tab (never the user's current
+tab); synthetic-only into an empty composer; never submits (drives the
+decision to CANCEL, and even a worst-case slip only lands "Jane Doe" in a
+blank chat); synthetic text cleared on every exit. Honesty (A-5): the
+result copy says the test validates **detection + the warning** on the
+site, NOT trusted-event resumption or that a real message was sent.
+
+**Report affordance (extension side only; the page is Track A).** On
+`fail`/`unsupported` the popup reveals **Report this**, which opens
+`https://zabcore.com/self-test-report?…` prefilled with a STRICT
+ALLOWLIST of content-free params (`src`, `site`, `ext`, `adapter`,
+`result`, `code`, `composer`/`intercept`/`modal` as 0/1, coarse
+`browser` = `Name/Major` only, ISO `ts`) via
+`src/shared/self-test-report.ts` — the single centralized endpoint +
+builder (mirroring the welcome URL). The extension SENDS nothing; the
+builder reads only named fields, so composer text, filenames, PHI,
+findings, identifiers, or the full user-agent can never reach the URL.
+
+Scope held: no `src/detector/**` changes, **no new permissions**
+(`chrome.tabs.create` needs none; coordination is a one-shot
+`chrome.storage` signal), no network from the extension, metadata-only,
+and the committed `SUBMIT` flag stays OFF (so the shipped build's button
+reports "not supported here" until a flag-ON V1.3 build).
+
+**Follow-up (result visibility).** Chrome dismisses the action popup when
+the test tab takes focus, so the popup can't await the result. The
+outcome is therefore shown **in the test tab** via a small, dismissible,
+theme-aware, closed-shadow banner (`src/content/submit/self-test-banner.ts`;
+DOM only, no network — its one outbound action is the optional "Report
+this", which opens the prefilled URL via `chrome.tabs.create`). The popup
+also surfaces a **recent** result (`ts` within 2 min) on reopen via
+`renderLastSelfTestResult`, consuming the one-shot record. `DRAFT_PRESENT`
+(a supported site restoring the user's unsent draft into the "fresh" tab)
+gets an actionable banner — clear the box or open an empty chat and retry
+— and the runner still never inserts, clears, or touches that draft.
