@@ -26,7 +26,10 @@ import { isSubmitProtectionEnabled } from './submit/submit-flag'
 import { installChatGptSubmitProtection } from './submit/install-chatgpt'
 import { installClaudeSubmitProtection } from './submit/install-claude'
 import { installGeminiSubmitProtection } from './submit/install-gemini'
-import type { InstallSubmitOptions } from './submit/install-submit'
+import type { InstallSubmitOptions, InstalledSubmit } from './submit/install-submit'
+import { runSelfTest } from './submit/self-test'
+import { getSelfTestSignal, clearSelfTestSignal, setSelfTestResult } from '../shared/storage'
+import type { SelfTestResultRecord } from '../shared/self-test'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -389,9 +392,11 @@ window.addEventListener(
       event.stopImmediatePropagation()
       event.stopPropagation()
       const opener = (event.target as Element | null) ?? null
-      void holdFiles(extracted, opener, undefined, adapter.id, docGateComposerKey).then((result) => {
-        handleHoldResult(result, 'change')
-      })
+      void holdFiles(extracted, opener, undefined, adapter.id, docGateComposerKey).then(
+        (result) => {
+          handleHoldResult(result, 'change')
+        },
+      )
     } catch (err) {
       console.error('[AI Leak Guard] change (file) handler error:', err)
     }
@@ -422,9 +427,11 @@ window.addEventListener(
       event.stopImmediatePropagation()
       event.stopPropagation()
       const opener = (event.target as Element | null) ?? null
-      void holdFiles(extracted, opener, undefined, adapter.id, docGateComposerKey).then((result) => {
-        handleHoldResult(result, 'drop')
-      })
+      void holdFiles(extracted, opener, undefined, adapter.id, docGateComposerKey).then(
+        (result) => {
+          handleHoldResult(result, 'drop')
+        },
+      )
     } catch (err) {
       console.error('[AI Leak Guard] drop handler error:', err)
     }
@@ -441,7 +448,7 @@ window.addEventListener(
 // re-checks the flag and the master toggle per event, so it never
 // blocks a send when either is off, and it stands down for the session
 // if the core's kill switch engages.
-const SUBMIT_INSTALLERS: Record<string, (opts: InstallSubmitOptions) => unknown> = {
+const SUBMIT_INSTALLERS: Record<string, (opts: InstallSubmitOptions) => InstalledSubmit> = {
   chatgpt: installChatGptSubmitProtection,
   claude: installClaudeSubmitProtection,
   gemini: installGeminiSubmitProtection,
@@ -450,12 +457,112 @@ if (isSubmitProtectionEnabled()) {
   const install = SUBMIT_INSTALLERS[adapter.id]
   if (install !== undefined) {
     try {
-      install({
+      const installed = install({
         isMasterEnabled: () => enabledState.isEnabled(),
         isFlagEnabled: isSubmitProtectionEnabled,
       })
+      // V1.3 M5: if the popup queued a one-click self-test, run it once
+      // in this (fresh) tab. Only when submit protection is actually
+      // installed (flag on) — so in the shipped flag-OFF build the popup
+      // button reports "not supported here" and this never runs.
+      void maybeRunSelfTest(installed)
     } catch (err) {
       console.error('[AI Leak Guard] submit protection install failed:', err)
     }
   }
+}
+
+// V1.3 M5 — one-click "Test protection" self-test runner (content side).
+// Consumes the one-shot signal the popup wrote, drives the REAL
+// interception + scan + modal path on SYNTHETIC data in this fresh tab,
+// AUTO-CANCELS (never submits), and writes a metadata-only result back
+// for the popup. The signal is deleted immediately so it never re-runs.
+const SELF_TEST_STALE_MS = 60_000
+async function maybeRunSelfTest(installed: InstalledSubmit): Promise<void> {
+  // Top frame only: a sub-frame without a composer must not consume the
+  // one-shot signal out from under the real composer's frame.
+  if (globalThis.top !== globalThis.self) return
+  let signal: Awaited<ReturnType<typeof getSelfTestSignal>> = null
+  try {
+    signal = await getSelfTestSignal()
+  } catch {
+    signal = null
+  }
+  if (signal === null) return
+  // Consume the one-shot signal up front so it can never re-run, even
+  // if the run below throws or the tab reloads.
+  try {
+    await clearSelfTestSignal()
+  } catch {
+    // best-effort
+  }
+  // Ignore a stale signal from an unrelated earlier session.
+  if (Date.now() - signal.ts > SELF_TEST_STALE_MS) return
+
+  const submitAdapter = installed.adapter
+  const report = await runSelfTest({
+    getComposer: () => submitAdapter.resolveComposer(),
+    readText: (el) => el.textContent ?? '',
+    insert: (el, text) => {
+      adapter.insertText(el, text)
+    },
+    clear: (el) => {
+      adapter.replaceContents(el, '')
+    },
+    dispatchSend: (el) => dispatchSelfTestEnter(el),
+    isModalOpen: () => isDocumentModalOpen(),
+    cancelModal: () => cancelSelfTestModal(),
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    composerTimeoutMs: 8000,
+    modalTimeoutMs: 3000,
+    pollMs: 50,
+  })
+
+  const record: SelfTestResultRecord = {
+    nonce: signal.nonce,
+    result: report.result,
+    code: report.code,
+    site: adapter.id,
+    adapter: adapter.id,
+    composer: report.composer,
+    intercept: report.intercept,
+    modal: report.modal,
+    ts: new Date().toISOString(),
+  }
+  try {
+    await setSelfTestResult(record)
+  } catch {
+    // best-effort; the popup times out to "couldn't start" if unwritten.
+  }
+}
+
+/** Dispatch the same Enter keydown the submit adapter intercepts; return whether it was taken. */
+function dispatchSelfTestEnter(el: HTMLElement): boolean {
+  try {
+    el.focus?.()
+  } catch {
+    // best-effort
+  }
+  const event = new KeyboardEvent('keydown', {
+    key: 'Enter',
+    code: 'Enter',
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  })
+  el.dispatchEvent(event)
+  return event.defaultPrevented
+}
+
+/** Cancel the open warning modal (return-to-edit) via a real Escape keydown. */
+function cancelSelfTestModal(): void {
+  const event = new KeyboardEvent('keydown', {
+    key: 'Escape',
+    code: 'Escape',
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  })
+  document.dispatchEvent(event)
 }

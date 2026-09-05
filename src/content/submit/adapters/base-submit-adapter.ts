@@ -135,6 +135,17 @@ export class BaseSubmitAdapter implements SubmitAdapter {
     return this.pendingOpener
   }
 
+  /**
+   * V1.3 M5 self-test seam: resolve the site composer element the
+   * adapter would act on (a fresh query — prefers the focused editor).
+   * Used only by the one-click "Test protection" runner to insert
+   * synthetic text into a fresh tab's empty composer. Returns null when
+   * no composer is present (page still loading / unsupported view).
+   */
+  resolveComposer(): HTMLElement | null {
+    return this.queryComposer()
+  }
+
   // ── SubmitAdapter surface the core calls ──
 
   readComposerText(): string {
