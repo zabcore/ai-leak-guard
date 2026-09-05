@@ -146,7 +146,7 @@ describe('clean scan → resume → exactly one submit', () => {
 })
 
 describe('sensitive → DECISION', () => {
-  it('proceed → exactly one submit, fingerprint acknowledged, as-is logged', async () => {
+  it('proceed → exactly one submit, ack cleared on send, as-is logged', async () => {
     const h = controllableDecide()
     const { core, transitions, logged } = makeCore({ decide: h.decide })
     const adapter = new FakeSubmitAdapter({ text: SSN_TEXT })
@@ -165,7 +165,11 @@ describe('sensitive → DECISION', () => {
     const out = await p
     expect(out).toMatchObject({ state: 'SUBMITTED', route: 'proceed', submitted: true })
     expect(adapter.resumeCalls).toBe(1)
-    expect(core.hasAcknowledged(intent, h.summaries[0].fingerprint)).toBe(true)
+    // V1.3 M2 (live-smoke fix): the message SENT (FakeSubmitAdapter's
+    // default resume is 'submitted'), so the ack is CLEARED — the next
+    // message, even at the same risk shape, must re-warn. (The ack was
+    // set during the proceed; it just doesn't outlive the send.)
+    expect(core.hasAcknowledged(intent, h.summaries[0].fingerprint)).toBe(false)
     expect(transitions.map((t) => t.to)).toEqual([
       'HELD_SCANNING',
       'DECISION',
@@ -535,28 +539,35 @@ describe('dedup (risk-shape fingerprint, in-memory only)', () => {
     expect(fingerprintFindings([])).toBe('none')
   })
 
-  it('an acknowledged fingerprint suppresses the second identical warn (modal skipped)', async () => {
+  it('within one unsent message, an acknowledged fingerprint suppresses the second identical warn (modal skipped)', async () => {
+    // Within-message anti-nag: the first resume FAILS (the site
+    // swallowed the send), so the message is still in the composer and
+    // the ack survives. A retry on the same risk shape must NOT
+    // re-nag. (This is the case dedup exists for; a SUCCESSFUL send
+    // clears the ack — see the "cleared on send" block below.)
     const h = controllableDecide()
     const { core, logged } = makeCore({ decide: h.decide })
-    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT })
+    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT, resume: ['failed'] })
     const p1 = core.handleSendIntent(adapter, intent)
     await flush()
     h.resolve('proceed')
     await p1
     expect(h.calls).toBe(1)
-    // Same risk shape (different SSN — intentional trade-off: shape, not identity).
+    // Same risk shape (different SSN — intentional trade-off: shape,
+    // not identity), same still-unsent message.
     adapter.text = 'Their SSN is 321-54-9876 today'
     const out2 = await core.handleSendIntent(adapter, intent)
-    expect(out2).toMatchObject({ state: 'SUBMITTED', route: 'dedup-skip' })
+    expect(out2).toMatchObject({ route: 'dedup-skip' })
     expect(h.calls).toBe(1)
-    expect(adapter.resumeCalls).toBe(2)
     expect(logged.map((e) => e.action)).toEqual(['as-is', 'as-is'])
   })
 
-  it('a changed count re-warns, and reports the change', async () => {
+  it('a changed count re-warns within an unsent message, and reports the change', async () => {
     const h = controllableDecide()
     const { core } = makeCore({ decide: h.decide })
-    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT })
+    // Failed resume keeps the message unsent so the SSN:1 ack survives
+    // to be "changed from".
+    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT, resume: ['failed'] })
     const p1 = core.handleSendIntent(adapter, intent)
     await flush()
     h.resolve('proceed')
@@ -569,13 +580,12 @@ describe('dedup (risk-shape fingerprint, in-memory only)', () => {
     h.resolve('return-to-edit')
     const out2 = await p2
     expect(out2.state).toBe('RETURNED_TO_EDIT')
-    expect(adapter.resumeCalls).toBe(1)
   })
 
-  it('a changed category re-warns', async () => {
+  it('a changed category re-warns within an unsent message', async () => {
     const h = controllableDecide()
     const { core } = makeCore({ decide: h.decide })
-    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT })
+    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT, resume: ['failed'] })
     const p1 = core.handleSendIntent(adapter, intent)
     await flush()
     h.resolve('proceed')
@@ -592,7 +602,10 @@ describe('dedup (risk-shape fingerprint, in-memory only)', () => {
   it('acknowledgement is scoped to (tab, composer)', async () => {
     const h = controllableDecide()
     const { core } = makeCore({ decide: h.decide })
-    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT })
+    // Failed resume keeps the ack alive; a same-shape intent in a
+    // DIFFERENT scope must still re-warn (proves scope isolation, not
+    // just clear-on-send).
+    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT, resume: ['failed'] })
     const p1 = core.handleSendIntent(adapter, { composerKey: 'c1', tabKey: 't1' })
     await flush()
     h.resolve('proceed')
@@ -613,7 +626,9 @@ describe('dedup (risk-shape fingerprint, in-memory only)', () => {
       logEvent: undefined as never,
       logSiteId: 'chatgpt',
     })
-    const adapter = new FakeSubmitAdapter({ text: TWO_SSN_TEXT })
+    // Failed resume keeps the message unsent so the second intent
+    // takes the dedup-skip path (which logs 'as-is' → storage).
+    const adapter = new FakeSubmitAdapter({ text: TWO_SSN_TEXT, resume: ['failed'] })
     const p1 = core.handleSendIntent(adapter, intent)
     await flush()
     h.resolve('proceed')
@@ -632,6 +647,99 @@ describe('dedup (risk-shape fingerprint, in-memory only)', () => {
     }
     const stored = await chrome.storage.local.get(null)
     expect(JSON.stringify(stored)).not.toContain(fp)
+  })
+})
+
+// V1.3 M2 live-smoke fix: acknowledgements are per-UNSENT-MESSAGE, not
+// per-conversation. They MUST be cleared once a message actually sends,
+// or a second patient's PHI with the same risk shape would dedup-skip
+// and leave silently. These pin the new contract; the tests above pin
+// the within-message anti-nag it must NOT break.
+describe('dedup — acknowledgements cleared on a confirmed send', () => {
+  it('#1 proceed → SUBMITTED → the acknowledgement is cleared', async () => {
+    const h = controllableDecide()
+    const { core } = makeCore({ decide: h.decide })
+    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT }) // resume 'submitted'
+    const p = core.handleSendIntent(adapter, intent)
+    await flush()
+    const fingerprint = h.summaries[0].fingerprint
+    h.resolve('proceed')
+    const out = await p
+    expect(out.state).toBe('SUBMITTED')
+    expect(core.hasAcknowledged(intent, fingerprint)).toBe(false)
+  })
+
+  it('#2 a new same-shape message after a send RE-WARNS (not dedup-skip)', async () => {
+    const scanText: string[] = []
+    const h = controllableDecide()
+    const { core } = makeCore({
+      decide: h.decide,
+      scan: (t) => {
+        scanText.push(t)
+        return detectDetailed(t)
+      },
+    })
+    // First message: SSN for patient A. Default resume 'submitted' → SENDS.
+    const adapter = new FakeSubmitAdapter({ text: 'Patient A SSN 123-45-6789' })
+    const p1 = core.handleSendIntent(adapter, intent)
+    await flush()
+    expect(h.calls).toBe(1)
+    h.resolve('proceed')
+    const out1 = await p1
+    expect(out1).toMatchObject({ state: 'SUBMITTED', route: 'proceed' })
+
+    // Composer cleared, user types a DIFFERENT patient, SAME risk shape
+    // (government_financial:1). This must go through DECISION again —
+    // NOT dedup-skip — or the second disclosure leaves silently.
+    adapter.text = 'Patient B SSN 321-54-9876'
+    const p2 = core.handleSendIntent(adapter, intent)
+    await flush()
+    expect(h.calls).toBe(2) // decide() called a SECOND time → re-warned
+    // Same fingerprint proves it's genuinely a repeat shape, yet still warned.
+    expect(h.summaries[1].fingerprint).toBe(h.summaries[0].fingerprint)
+    h.resolve('proceed')
+    const out2 = await p2
+    expect(out2).toMatchObject({ state: 'SUBMITTED', route: 'proceed' })
+    expect(out2.route).not.toBe('dedup-skip')
+  })
+
+  it('#3 a FAILED resume does NOT clear the ack — a retry on the same unsent content dedup-skips', async () => {
+    const h = controllableDecide()
+    const { core } = makeCore({ decide: h.decide })
+    // First resume fails (swallowed send) → RETURNED_TO_EDIT, ack kept.
+    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT, resume: ['failed'] })
+    const p1 = core.handleSendIntent(adapter, intent)
+    await flush()
+    const fingerprint = h.summaries[0].fingerprint
+    h.resolve('proceed')
+    const out1 = await p1
+    expect(out1).toMatchObject({ state: 'RETURNED_TO_EDIT', resumeResult: 'failed' })
+    expect(core.hasAcknowledged(intent, fingerprint)).toBe(true) // ack survives
+    // Retry the SAME still-unsent content → suppressed, no re-nag.
+    const out2 = await core.handleSendIntent(adapter, intent)
+    expect(out2.route).toBe('dedup-skip')
+    expect(h.calls).toBe(1) // decide() NOT called again
+  })
+
+  it("#4 an 'unknown' resume also clears the ack (fail-open: at worst one extra warning)", async () => {
+    const h = controllableDecide()
+    const { core } = makeCore({ decide: h.decide })
+    // 'unknown' = adapter can't confirm but didn't fail → treated as
+    // sent by the core, so the ack must clear too.
+    const adapter = new FakeSubmitAdapter({ text: SSN_TEXT, resume: ['unknown'] })
+    const p = core.handleSendIntent(adapter, intent)
+    await flush()
+    const fingerprint = h.summaries[0].fingerprint
+    h.resolve('proceed')
+    const out = await p
+    expect(out).toMatchObject({ state: 'SUBMITTED', resumeResult: 'unknown' })
+    expect(core.hasAcknowledged(intent, fingerprint)).toBe(false)
+    // A subsequent same-shape intent re-warns.
+    const p2 = core.handleSendIntent(adapter, intent)
+    await flush()
+    expect(h.calls).toBe(2)
+    h.resolve('return-to-edit')
+    await p2
   })
 })
 

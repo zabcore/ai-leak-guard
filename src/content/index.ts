@@ -22,6 +22,8 @@ import { installFsaMessageHandler } from './fsa-isolated'
 import { appendEvent, type AlgAction, type AlgEvent } from '../shared/event-log'
 import type { DetectorCategory, Finding } from '../detector/types'
 import { readPastedText } from './clipboard-text'
+import { isSubmitProtectionEnabled } from './submit/submit-flag'
+import { installChatGptSubmitProtection } from './submit/install-chatgpt'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -408,3 +410,24 @@ window.addEventListener(
   },
   true,
 )
+
+// V1.3 M2: submit-scan protection ("Protection at Send"), ChatGPT
+// only. Gated at import on the SUBMIT flag, which defaults OFF in
+// `main` — so `installChatGptSubmitProtection` is NOT called at all
+// in the shipped build and there is zero footprint (no listeners, no
+// core). A throwaway flag-ON build (or a `globalThis` override before
+// this module loads) flips it on for smoke testing. Adapters (M3)
+// add more sites the same way. The adapter re-checks the flag and the
+// master toggle per event, so it never blocks a send when either is
+// off, and it stands down for the session if the core's kill switch
+// engages.
+if (adapter.id === 'chatgpt' && isSubmitProtectionEnabled()) {
+  try {
+    installChatGptSubmitProtection({
+      isMasterEnabled: () => enabledState.isEnabled(),
+      isFlagEnabled: isSubmitProtectionEnabled,
+    })
+  } catch (err) {
+    console.error('[AI Leak Guard] submit protection install failed:', err)
+  }
+}

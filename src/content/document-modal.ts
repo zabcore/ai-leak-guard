@@ -32,6 +32,26 @@ import type { ExtractionReason } from './extraction/extract'
 
 export type DocumentModalOutcome = 'upload-anyway' | 'cancel'
 
+/**
+ * Copy overrides so the same modal component can front the V1.2
+ * document/upload surface AND the V1.3 M2 submit surface without a
+ * second component (spec: reuse the modal, don't build a new one).
+ * Every field defaults to the original document/upload copy, so
+ * existing callers (`document-decision.ts`) that pass nothing get
+ * byte-identical text — the document-modal test suite is unchanged.
+ *
+ *   surface 'file'    → "Checking this file…", "found in this file",
+ *                       "before upload", [Upload anyway] / [Cancel]
+ *   surface 'message' → "Checking this message…", "found in this
+ *                       message", "before sending", [Proceed anyway]
+ *                       / [Return to editing]
+ */
+export interface DocumentModalCopy {
+  readonly surface?: 'file' | 'message'
+  readonly primaryLabel?: string
+  readonly cancelLabel?: string
+}
+
 export interface SensitiveViewOpts {
   readonly fileCount: number
   readonly totalMaskable: number
@@ -329,7 +349,11 @@ function removeStrayModals(): void {
  */
 export function openDocumentModal(opts: {
   readonly opener: Element | null
+  readonly copy?: DocumentModalCopy
 }): DocumentModalController {
+  const surface = opts.copy?.surface ?? 'file'
+  const primaryLabel = opts.copy?.primaryLabel ?? 'Upload anyway'
+  const cancelLabel = opts.copy?.cancelLabel ?? 'Cancel'
   if (openModalHost !== null) {
     const resolved = Promise.resolve<DocumentModalOutcome>('cancel')
     const noop = (): void => {}
@@ -414,12 +438,12 @@ export function openDocumentModal(opts: {
   const cancelBtn = document.createElement('button')
   cancelBtn.type = 'button'
   cancelBtn.className = 'btn btn--secondary'
-  cancelBtn.textContent = 'Cancel'
+  cancelBtn.textContent = cancelLabel
 
   const uploadBtn = document.createElement('button')
   uploadBtn.type = 'button'
   uploadBtn.className = 'btn btn--primary'
-  uploadBtn.textContent = 'Upload anyway'
+  uploadBtn.textContent = primaryLabel
   // Hidden in the scanning view — nothing to upload-anyway to until
   // the scan resolves.
   uploadBtn.hidden = true
@@ -442,11 +466,15 @@ export function openDocumentModal(opts: {
   const applyScanning = (): void => {
     mode = 'scanning'
     headingIcon.textContent = '🔎'
-    headingText.textContent = 'Checking this file…'
+    headingText.textContent =
+      surface === 'message' ? 'Checking this message…' : 'Checking this file…'
     body.hidden = true
     severity.hidden = true
     chips.hidden = true
-    scanningText.textContent = 'Inspecting for sensitive content before upload.'
+    scanningText.textContent =
+      surface === 'message'
+        ? 'Inspecting for sensitive content before sending.'
+        : 'Inspecting for sensitive content before upload.'
     scanning.hidden = false
     scanning.setAttribute('aria-busy', 'true')
     uploadBtn.hidden = true
@@ -460,13 +488,17 @@ export function openDocumentModal(opts: {
     mode = 'sensitive'
     headingIcon.textContent = '⚠️'
     const itemNoun = opts.totalMaskable === 1 ? 'item' : 'items'
-    if (opts.fileCount <= 1) {
+    if (surface === 'message') {
+      headingText.textContent = `${opts.totalMaskable} sensitive ${itemNoun} found in this message`
+    } else if (opts.fileCount <= 1) {
       headingText.textContent = `${opts.totalMaskable} sensitive ${itemNoun} found in this file`
     } else {
       headingText.textContent = `${opts.totalMaskable} sensitive ${itemNoun} found across ${opts.fileCount} files`
     }
     body.textContent =
-      'Review before releasing. AI Leak Guard warns you about likely-sensitive content in uploads — you decide whether to send it.'
+      surface === 'message'
+        ? 'Review before sending. AI Leak Guard warns you about likely-sensitive content — you decide whether to send it.'
+        : 'Review before releasing. AI Leak Guard warns you about likely-sensitive content in uploads — you decide whether to send it.'
     body.hidden = false
     severity.textContent = opts.hasCriticalOrHigh ? 'Includes high-severity items.' : ''
     severity.hidden = !opts.hasCriticalOrHigh

@@ -28,6 +28,7 @@ import {
   projectAlgEvent,
   type AlgEvent,
 } from '../shared/event-log-schema'
+import { setSubmitKillSwitch } from '../shared/storage'
 
 console.log('[AI Leak Guard] service worker started')
 
@@ -162,4 +163,45 @@ export function handleInstalled(
 
 chrome.runtime.onInstalled.addListener((details) => {
   handleInstalled(details, chrome.tabs)
+})
+
+// ─── V1.3 M2 — submit-protection kill switch: clear on startup ──────
+//
+// M1 defined `submitKillSwitch` in storage; the core writes it when
+// an adapter's `resume()` fails `RESUME_FAILURE_KILL_THRESHOLD` times
+// in a row (surfaced as a popup notice), and the adapter stands down
+// for the rest of the browser session. That disable MUST be
+// session-scoped: without a clear, one transient resume failure would
+// leave the popup showing "paused" across restarts forever.
+//
+// `chrome.runtime.onStartup` fires once per browser launch — NOT on
+// every MV3 service-worker respawn — so clearing here re-arms
+// protection at each new session while leaving a mid-session disable
+// intact (the disable itself lives in the content script's in-memory
+// core, which dies with the tab anyway; this storage key is only the
+// cross-tab popup signal). We also clear on install/update. This
+// lands NOW, before the flag is ever turned on, so the very first
+// flag-on session starts from a clean slate.
+//
+// Best-effort and DOM-free (safe for the service worker): a rejected
+// storage write logs and moves on.
+function clearSubmitKillSwitchOnStartup(): void {
+  try {
+    void setSubmitKillSwitch(null).catch((err: unknown) => {
+      console.warn('[AI Leak Guard] failed to clear submit kill switch:', err)
+    })
+  } catch (err) {
+    console.warn('[AI Leak Guard] failed to clear submit kill switch:', err)
+  }
+}
+
+chrome.runtime.onStartup.addListener(() => {
+  clearSubmitKillSwitchOnStartup()
+})
+
+// onInstalled already fires above for the welcome tab; clear the kill
+// switch on install/update too so an update never inherits a stale
+// paused state.
+chrome.runtime.onInstalled.addListener(() => {
+  clearSubmitKillSwitchOnStartup()
 })

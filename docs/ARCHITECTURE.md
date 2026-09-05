@@ -1303,3 +1303,65 @@ content in memory. Fingerprints are **never** written to
 rule is unchanged. Actions used: `auto-cleared` (clean), `as-is`
 (proceed / dedup-skip), `cancelled` (return-to-edit / liveness /
 decision error), `unable-to-inspect` (fail-open).
+
+## V1.3 M2 — Protection at Send: ChatGPT adapter (flag still OFF in main)
+
+M2 makes ChatGPT the first live site for the M1 submit-scan core.
+The core is unchanged; M2 adds the site adapter, the decision-UI
+seam, the content-script wiring, and the kill-switch session-clear.
+The committed `SUBMIT` flag (`submit-flag.ts`) stays **OFF**, so
+`main` has zero live behaviour change — the adapter is only
+installed when the flag reads true (a throwaway flag-ON build for
+smoke, or a `globalThis` override).
+
+Files: `src/content/submit/adapters/chatgpt.ts` (the `SubmitAdapter`),
+`src/content/submit/submit-ui.ts` (decision seam), and
+`src/content/submit/install-chatgpt.ts` (wiring), invoked from
+`src/content/index.ts` for `adapter.id === 'chatgpt'` behind the flag.
+
+**Interception.** A capture-phase `keydown` and `click` on `window`
+(same ordering rationale as the paste path: window beats React's
+root-delegated handlers and ProseMirror's keymap; `document_start`
+wins registration ties). A real send intent is `Enter` with
+`!shiftKey && !isComposing && keyCode !== 229` targeting the
+composer, or a click whose composed path crosses an enabled send
+button. **IME composition is never intercepted** (the `isComposing`
+and legacy `keyCode === 229` guards are both checked — missing
+either breaks CJK candidate confirmation). On an intent the adapter
+`preventDefault` + `stopImmediatePropagation` + `stopPropagation`
+synchronously, then calls `core.handleSendIntent`.
+
+**Composer read.** Resolved at event time from the event's composed
+path (fresh query fallback — the ProseMirror subtree re-mounts on
+route/AB changes; never a stale cached reference), and read through
+the SAME `stripHtmlToText` boundary walk the EMR paste fix uses, so
+multi-paragraph `<p>`/`<br>` content doesn't glue into one line.
+
+**Resume (transient activation).** `resume()` resolves the send
+button FRESH (it only exists/enables once the composer has text and
+swaps to a Stop button while streaming) and calls
+`sendButton.click()` **synchronously** — the modal resolves its
+outcome inside the proceed-click handler and nothing `await`s
+between that click and the resume, so the click's user-activation
+window is still live (M0 verified an untrusted click submits). A
+re-dispatched Enter `KeyboardEvent` is the fallback when the button
+is absent/disabled. A synchronous post-check returns `submitted`
+(composer detached or its text changed/cleared), `failed` (no button
+and no composer — could not even attempt; feeds the kill-switch
+counter), or `unknown` (acted on a live composer but the text hasn't
+cleared yet — race-safe: the core treats `unknown` as sent so a real
+send never trips the kill switch). A re-entrancy flag makes the
+adapter ignore the synthetic click/keydown it fires during resume,
+so it never re-intercepts its own send.
+
+**Kill-switch session-clear.** The service worker clears
+`submitKillSwitch` on `chrome.runtime.onStartup` (once per browser
+launch, not per SW respawn) and on install/update, so a transient
+resume failure disables the adapter for the session only, never
+across restarts. This lands before the flag is ever turned on.
+
+**Counts.** The submit path logs metadata-only `eventType: 'submit'`
+events and never increments the paste-path masked-items counter, so
+a send-time warning can't inflate the headline count for content the
+paste path already handled. Cross-flow paste↔send coordination is
+M4.
