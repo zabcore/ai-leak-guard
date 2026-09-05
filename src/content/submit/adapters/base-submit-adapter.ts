@@ -153,7 +153,7 @@ export class BaseSubmitAdapter implements SubmitAdapter {
   resume(): ResumeResult {
     const el = this.currentComposer()
     const before = el === null ? '' : this.readComposerText()
-    const button = this.resolveSendButton()
+    const button = this.resolveSendButton(el)
 
     // Primary: click the site's own send button, resolved fresh. MUST
     // be synchronous — inside the proceed-click activation window. No
@@ -215,7 +215,14 @@ export class BaseSubmitAdapter implements SubmitAdapter {
     // A disabled send button click is a no-op for the site too — don't
     // intercept it (nothing to send yet).
     if (!isButtonUsable(button)) return
-    const composer = this.resolveComposerFrom(event)
+    // Anchor the composer to the CLICKED button, not to the first
+    // document match. A click moves focus onto the button, so
+    // `resolveComposerFrom`'s activeElement/query fallback can drift
+    // onto an unrelated composer when the page has more than one (e.g.
+    // Claude's edit-a-previous-message box beside the main composer).
+    // The button and its composer share a send container, so walking up
+    // from the button finds the RIGHT draft to scan and resume.
+    const composer = this.resolveComposerForButton(button) ?? this.resolveComposerFrom(event)
     if (composer === null) return
     this.intercept(event, composer)
   }
@@ -316,7 +323,40 @@ export class BaseSubmitAdapter implements SubmitAdapter {
     return this.queryComposer()
   }
 
-  private resolveSendButton(): HTMLButtonElement | null {
+  /**
+   * Resolve the composer that OWNS a clicked send button. Walk up from
+   * the button; the nearest ancestor whose subtree contains a composer
+   * yields that button's composer. On every current site the composer
+   * and its send button share a send container, so this lands on the
+   * clicked draft even when the page renders several composers (Claude's
+   * edit box, an artifact editor) — where "first document match" could
+   * drift onto an unrelated draft.
+   */
+  private resolveComposerForButton(button: Element): HTMLElement | null {
+    let node: Element | null = button.parentElement
+    while (node !== null) {
+      const composer = node.querySelector<HTMLElement>(this.config.composerSelector)
+      if (composer !== null) return composer
+      node = node.parentElement
+    }
+    return null
+  }
+
+  /**
+   * Send button for THIS send. Prefer the button co-located with the
+   * pending composer (walk up to the shared send container) so a
+   * multi-composer page resumes the SAME draft it scanned — clicking the
+   * first document button could submit an unrelated composer. Falls back
+   * to the first document match when no composer is known (the button is
+   * resolved fresh here, so it reflects the live enabled/disabled state).
+   */
+  private resolveSendButton(composer: HTMLElement | null): HTMLButtonElement | null {
+    let node: Element | null = composer
+    while (node !== null) {
+      const button = node.querySelector<HTMLButtonElement>(this.config.sendButtonSelector)
+      if (button !== null) return button
+      node = node.parentElement
+    }
     return document.querySelector<HTMLButtonElement>(this.config.sendButtonSelector)
   }
 

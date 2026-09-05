@@ -263,6 +263,67 @@ describe('Claude — end-to-end through the core', () => {
     expect(clicks).toBe(1)
   })
 
+  it('multi-composer: clicking the SECOND composer’s send button scans + resumes THAT draft', async () => {
+    // Claude renders an edit-a-previous-message box (also a
+    // [contenteditable][role=textbox]) above the live composer, so more
+    // than one element matches the composer selector, each in its own
+    // send container. A pointer click moves focus onto the button, so
+    // resolution must anchor to the CLICKED button, not the first
+    // document match — else the adapter scans/resumes an unrelated draft.
+    document.body.innerHTML = ''
+    const mk = (
+      text: string,
+    ): { form: HTMLElement; composer: HTMLElement; button: HTMLButtonElement } => {
+      const form = document.createElement('div')
+      const composer = document.createElement('div')
+      composer.setAttribute('contenteditable', 'true')
+      composer.setAttribute('role', 'textbox')
+      composer.innerHTML = `<p>${text}</p>`
+      const button = document.createElement('button')
+      button.setAttribute('data-testid', 'chat-input-send')
+      button.setAttribute('aria-label', 'Send message')
+      form.append(composer, button)
+      return { form, composer, button }
+    }
+    const first = mk('first draft alpha plenty long clean text here')
+    const second = mk('second draft bravo plenty long clean text here')
+    document.body.append(first.form, second.form)
+
+    const seen: string[] = []
+    const scan = vi.fn((t: string): ScanOutcome => {
+      seen.push(t)
+      return detectDetailed(t)
+    })
+    let clicks1 = 0
+    let clicks2 = 0
+    first.button.addEventListener('click', () => {
+      clicks1 += 1
+      first.composer.innerHTML = '<p></p>'
+    })
+    second.button.addEventListener('click', () => {
+      clicks2 += 1
+      second.composer.innerHTML = '<p></p>'
+    })
+    adapter = new ClaudeSubmitAdapter()
+    adapter.attach(makeCore({ scan }))
+
+    // A real pointer click focuses the button before the click fires.
+    second.button.focus()
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, composed: true })
+    second.button.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    await flush()
+
+    // Scanned the SECOND draft, never the first.
+    expect(seen.some((t) => t.includes('second draft bravo'))).toBe(true)
+    expect(seen.some((t) => t.includes('first draft alpha'))).toBe(false)
+    // Resumed (clicked) the SECOND composer’s button, never the first.
+    expect(clicks2).toBe(1)
+    expect(clicks1).toBe(0)
+
+    document.body.innerHTML = ''
+  })
+
   it('proceed → one click; return-to-edit → zero clicks, draft intact', async () => {
     // proceed
     harness = buildClaude()
