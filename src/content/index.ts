@@ -29,9 +29,9 @@ import { installGeminiSubmitProtection } from './submit/install-gemini'
 import type { InstallSubmitOptions, InstalledSubmit } from './submit/install-submit'
 import { runSelfTest } from './submit/self-test'
 import { showSelfTestBanner } from './submit/self-test-banner'
+import { openSelfTestReport } from './submit/self-test-report-open'
 import { getSelfTestSignal, clearSelfTestSignal, setSelfTestResult } from '../shared/storage'
 import type { SelfTestResultRecord } from '../shared/self-test'
-import { buildSelfTestReportUrl, coarseBrowser } from '../shared/self-test-report'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -546,37 +546,10 @@ async function maybeRunSelfTest(installed: InstalledSubmit): Promise<void> {
   try {
     showSelfTestBanner(
       { result: report.result, code: report.code },
-      { onReport: () => openSelfTestReportTab(record) },
+      { onReport: () => openSelfTestReport(record) },
     )
   } catch (err) {
     console.warn('[AI Leak Guard] self-test banner failed:', err)
-  }
-}
-
-/** Open the prefilled zabcore report page from a self-test result (metadata only). */
-function openSelfTestReportTab(record: SelfTestResultRecord): void {
-  let ext = ''
-  try {
-    ext = chrome.runtime?.getManifest?.().version ?? ''
-  } catch {
-    ext = ''
-  }
-  const url = buildSelfTestReportUrl({
-    site: record.site,
-    ext,
-    adapter: record.adapter,
-    result: record.result,
-    code: record.code,
-    composer: record.composer,
-    intercept: record.intercept,
-    modal: record.modal,
-    browser: coarseBrowser(globalThis.navigator?.userAgent),
-    ts: record.ts,
-  })
-  try {
-    void chrome.tabs?.create?.({ url })
-  } catch (err) {
-    console.warn('[AI Leak Guard] self-test report tab failed:', err)
   }
 }
 
