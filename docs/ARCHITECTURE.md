@@ -1424,3 +1424,5 @@ future store-copy coverage claim must exclude them:
   re-sending.
 
 Each list is also recorded at the top of the site's adapter file.
+
+**Known limitation (Gemini, non-English UI).** Gemini's send button has no `data-testid` or stable locale-independent handle, so the button-click intercept keys on the English `aria-label="Send message"`. On a non-English Gemini UI a _button-click_ send is not intercepted; **Enter-to-send stays protected in every locale** (it keys off the composer, not the button, and resume falls back to a re-dispatched Enter). A confirmed locale-independent send handle is a pre-ship requirement — a broader Material-icon-button selector is deliberately avoided because it would mis-target unrelated icon buttons.

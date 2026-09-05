@@ -29,6 +29,19 @@
 //     won't collide; the base's `isButtonUsable` covers the disabled
 //     case.
 //
+// KNOWN LIMITATION (locale): the send-button selector keys on the
+// ENGLISH `aria-label`, and Gemini exposes no `data-testid` / stable
+// locale-independent handle for it. On a non-English Gemini UI a
+// *button-click* send is therefore NOT intercepted (the label won't
+// match, so `sendButtonInPath` returns null). Enter-to-send stays
+// protected in every locale — it keys off the COMPOSER, not the
+// button, and the resume path falls back to a re-dispatched Enter when
+// the button can't be resolved. A confirmed locale-independent send
+// handle is a pre-ship requirement (owner live-audit); we do NOT guess
+// one here, because a broader Material-icon-button selector would
+// mis-target unrelated icon buttons (attach, mic, …) and intercept
+// clicks that are not sends.
+//
 // Q7 — programmatic send paths that bypass BOTH Enter and the send
 // button (documented coverage GAPS; NOT intercepted):
 //   • suggestion chips (new chat and under a response)
@@ -47,14 +60,18 @@ const GEMINI_CONFIG = {
   // The `<rich-textarea>` custom-element boundary can keep the inner
   // contenteditable out of a naive `.matches` on a composed-path node
   // (the node may be the host, or a wrapper). Accept: the inner
-  // contenteditable, the `<rich-textarea>` host itself, or any editable
-  // node inside a `<rich-textarea>`.
+  // contenteditable, or the `<rich-textarea>` host itself. The base
+  // then NORMALIZES a host match down to the inner contenteditable for
+  // reading + resume. `role="textbox"` is deliberately NOT a match
+  // condition — only a real `contenteditable` element (or the host) is
+  // the editor; a bare `role="textbox"` node could be a non-editable
+  // widget.
   matchesComposer: (el: Element): boolean => {
     if (el.matches('rich-textarea [contenteditable="true"]')) return true
     if (el.matches('rich-textarea')) return true
     const host = el.closest('rich-textarea')
     if (host === null) return false
-    return el.getAttribute('contenteditable') === 'true' || el.getAttribute('role') === 'textbox'
+    return el.getAttribute('contenteditable') === 'true'
   },
 } as const
 

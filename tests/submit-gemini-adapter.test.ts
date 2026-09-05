@@ -96,6 +96,30 @@ describe('Gemini — send-intent detection', () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
+  it('a HOST-matched event normalizes to the INNER contenteditable for read + resume', async () => {
+    harness = buildGemini()
+    // Put content that is only meaningful inside the editor, plus a
+    // sibling inside the host that is NOT the editor — the read must
+    // see only the editor.
+    harness.setComposerHtml('<p>Patient SSN 123-45-6789</p>')
+    const decoy = document.createElement('div')
+    decoy.textContent = 'PLACEHOLDER-999-99-9999'
+    harness.host.appendChild(decoy)
+    const scan = vi.fn((t: string): ScanOutcome => detectDetailed(t))
+    adapter = new GeminiSubmitAdapter()
+    adapter.attach(makeCore({ scan }))
+    pressEnter(harness.host) // event targets the host
+    // Synchronously (before the async intent completes and clears it),
+    // pendingComposer is the normalized INNER contenteditable.
+    const pending = (adapter as unknown as { pendingComposer: HTMLElement | null }).pendingComposer
+    expect(pending).toBe(harness.composer)
+    await flush()
+    // The scan saw the inner editor's text, not the host's decoy.
+    const scanned = scan.mock.calls[0]?.[0] ?? ''
+    expect(scanned).toContain('123-45-6789')
+    expect(scanned).not.toContain('PLACEHOLDER-999-99-9999')
+  })
+
   it('Shift+Enter → newline, no intent', async () => {
     harness = buildGemini()
     harness.setComposerHtml('<p>hello world this is plenty long</p>')

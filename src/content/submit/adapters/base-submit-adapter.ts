@@ -247,8 +247,17 @@ export class BaseSubmitAdapter implements SubmitAdapter {
     event.preventDefault()
     event.stopImmediatePropagation()
     event.stopPropagation()
-    this.pendingComposer = composer
-    this.pendingOpener = composer
+    // `composer` is the element the composed-path walk matched — which,
+    // for a custom-element wrapper (Gemini's `<rich-textarea>`), can be
+    // the HOST rather than the inner editor. `eventTargetsComposer`
+    // above already validated against that matched element; from here
+    // on we operate on the NORMALIZED inner editable so
+    // `readComposerText` reads only the editor (not host chrome /
+    // placeholders) and the resume Enter fallback dispatches on the
+    // element the site's key binding actually listens on.
+    const editable = normalizeComposer(composer)
+    this.pendingComposer = editable
+    this.pendingOpener = editable
     const intent: SendIntent = { composerKey: this.config.composerKey }
     const core = this.core
     if (core === null) return
@@ -275,6 +284,19 @@ export class BaseSubmitAdapter implements SubmitAdapter {
   }
 
   private queryComposer(): HTMLElement | null {
+    // Prefer the composer the user is actually IN over the first match
+    // in the document. A site may render more than one element matching
+    // the composer selector (an artifact editor, an edit-in-place box
+    // for a previous message); the FOCUSED one is the live draft, so
+    // scanning it — and resuming into it — cannot drift onto an
+    // unrelated editor. Falls back to the first document match only
+    // when nothing composer-shaped has focus.
+    const active = document.activeElement
+    if (active instanceof HTMLElement) {
+      if (this.composerMatches(active)) return active
+      const owning = active.closest<HTMLElement>(this.config.composerSelector)
+      if (owning !== null) return owning
+    }
     return document.querySelector<HTMLElement>(this.config.composerSelector)
   }
 
@@ -378,6 +400,20 @@ function dispatchEnter(el: HTMLElement): boolean {
   // handled it" signal, so a canceled event counts as an attempt.
   el.dispatchEvent(event)
   return true
+}
+
+/**
+ * Map a matched composer element down to the inner editable. For
+ * ChatGPT/Claude the match already IS the contenteditable, so this is a
+ * no-op; for Gemini a `<rich-textarea>` host match resolves to the
+ * `[contenteditable]` inside it, so `readComposerText` reads only the
+ * editor and the resume Enter fallback dispatches on the element the
+ * site's key binding listens on.
+ */
+function normalizeComposer(el: HTMLElement): HTMLElement {
+  if (el.matches('[contenteditable="true"]') || el.tagName === 'TEXTAREA') return el
+  const inner = el.querySelector<HTMLElement>('[contenteditable="true"], textarea')
+  return inner ?? el
 }
 
 function eventTargetsComposer(event: Event, composer: HTMLElement): boolean {
