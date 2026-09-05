@@ -4,6 +4,7 @@ import {
   setPrefs,
   getSubmitKillSwitch,
   setSelfTestSignal,
+  getSelfTestResult,
   clearSelfTestResult,
 } from '../shared/storage'
 import { localDateKey } from '../shared/counter'
@@ -366,7 +367,7 @@ async function startSelfTest(): Promise<void> {
   if (reportEl instanceof HTMLElement) reportEl.hidden = true
   if (resultEl !== null) {
     resultEl.hidden = false
-    resultEl.textContent = 'Testing… a new tab will open to run the check.'
+    resultEl.textContent = 'Opening a test tab — the result will appear in that tab.'
   }
   if (btn instanceof HTMLButtonElement) btn.disabled = true
 
@@ -401,9 +402,39 @@ async function startSelfTest(): Promise<void> {
     console.warn('[AI Leak Guard] self-test failed to start:', err)
     if (resultEl !== null) resultEl.textContent = selfTestResultCopy('fail', 'TIMEOUT')
   } finally {
+    // Only re-enable the button here. The result is written by the
+    // content script and shown IN THE TEST TAB (the popup usually closed
+    // when the tab took focus); clearing it here — in a `finally` that
+    // often never runs — would just drop the record the reopened popup
+    // wants to surface. The record is cleared on the next test start
+    // and after `renderLastSelfTestResult` shows it on reopen.
     if (btn instanceof HTMLButtonElement) btn.disabled = false
-    void clearSelfTestResult()
   }
+}
+
+/**
+ * On popup open, surface a RECENT self-test result the content script
+ * wrote while the popup was closed. Stale results (older than the window
+ * below) are ignored and cleared so a week-old outcome never resurfaces.
+ */
+export const SELF_TEST_RESULT_FRESH_MS = 2 * 60 * 1000
+export async function renderLastSelfTestResult(now: number = Date.now()): Promise<void> {
+  let record: Awaited<ReturnType<typeof getSelfTestResult>> = null
+  try {
+    record = await getSelfTestResult()
+  } catch {
+    record = null
+  }
+  if (record === null) return
+  const ageMs = now - Date.parse(record.ts)
+  // Consume the one-shot record either way (shown or too old).
+  try {
+    await clearSelfTestResult()
+  } catch {
+    // best-effort
+  }
+  if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > SELF_TEST_RESULT_FRESH_MS) return
+  renderSelfTestOutcome(record)
 }
 
 async function init(): Promise<void> {
@@ -424,6 +455,13 @@ async function init(): Promise<void> {
     selfTestBtn.addEventListener('click', () => {
       void startSelfTest()
     })
+  }
+  // Surface a recent result the content script wrote while the popup was
+  // closed (Chrome dismisses the popup when the test tab takes focus).
+  try {
+    await renderLastSelfTestResult()
+  } catch (err) {
+    console.warn('[AI Leak Guard] self-test result render failed:', err)
   }
 
   const viewAll = document.getElementById('view-all-activity')

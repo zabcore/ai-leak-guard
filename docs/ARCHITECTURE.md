@@ -1553,3 +1553,15 @@ Scope held: no `src/detector/**` changes, **no new permissions**
 `chrome.storage` signal), no network from the extension, metadata-only,
 and the committed `SUBMIT` flag stays OFF (so the shipped build's button
 reports "not supported here" until a flag-ON V1.3 build).
+
+**Follow-up (result visibility).** Chrome dismisses the action popup when
+the test tab takes focus, so the popup can't await the result. The
+outcome is therefore shown **in the test tab** via a small, dismissible,
+theme-aware, closed-shadow banner (`src/content/submit/self-test-banner.ts`;
+DOM only, no network — its one outbound action is the optional "Report
+this", which opens the prefilled URL via `chrome.tabs.create`). The popup
+also surfaces a **recent** result (`ts` within 2 min) on reopen via
+`renderLastSelfTestResult`, consuming the one-shot record. `DRAFT_PRESENT`
+(a supported site restoring the user's unsent draft into the "fresh" tab)
+gets an actionable banner — clear the box or open an empty chat and retry
+— and the runner still never inserts, clears, or touches that draft.
