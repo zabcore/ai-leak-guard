@@ -44,7 +44,12 @@
 //   The detection result is fingerprinted (category → count, see
 //   `fingerprint.ts`) in memory, scoped to (tab, composer). A
 //   fingerprint the user has already acknowledged with "proceed"
-//   skips the modal; any change in category or count re-warns.
+//   skips the modal WHILE THE SAME MESSAGE IS STILL UNSENT (a repeat
+//   Enter, a no-op edit, or a swallowed-resume retry). The moment a
+//   message actually sends, the acknowledgement set for that composer
+//   is cleared, so the NEXT message re-warns even at the same risk
+//   shape — a second patient's PHI is a new disclosure, not a
+//   duplicate. Any change in category or count re-warns immediately.
 //   Fingerprints are NEVER persisted — release blocker, test-pinned.
 //
 // KILL SWITCH
@@ -273,7 +278,14 @@ export class SubmitCore {
   private readonly deps: SubmitCoreDeps
   private readonly inFlight = new Map<string, InFlight>()
   private readonly states = new Map<string, SubmitState>()
-  /** In-memory ONLY. Never persisted. */
+  /**
+   * Fingerprints the user has waved through for the CURRENTLY-UNSENT
+   * message in each composer. In-memory ONLY, never persisted.
+   * Cleared for a composer as soon as one of its messages actually
+   * sends (see `resumePhase`) so the next same-shape message
+   * re-warns — the set exists only to avoid re-nagging within a
+   * single unsent message, not across sends.
+   */
   private readonly acknowledged = new Map<string, Set<RiskFingerprint>>()
   private readonly resumeFailures = new Map<string, number>()
   private readonly disabledAdapters = new Set<string>()
@@ -376,6 +388,12 @@ export class SubmitCore {
     }
 
     // ── flagged: dedup, then DECISION ──
+    // The acknowledged set only holds fingerprints for the composer's
+    // current unsent message — it is cleared on a confirmed send — so
+    // a dedup-skip here means "the user already OK'd this exact risk
+    // shape for the message still sitting in the composer" (a repeat
+    // Enter / no-op edit / swallowed-resume retry), never "they OK'd
+    // it for a message they already sent."
     const fingerprint = fingerprintFindings(scan.findings)
     const acked = this.acknowledged.get(key)
     if (acked?.has(fingerprint)) {
@@ -499,6 +517,16 @@ export class SubmitCore {
       // never double-submit; the adapter's own observer is the
       // authority on whether to nudge the user.
       this.resumeFailures.set(adapter.id, 0)
+      // A message actually went out (or the adapter treats it as
+      // sent). The composer is now empty; the next Enter is a NEW
+      // disclosure — possibly a different patient with the SAME risk
+      // shape — so drop every acknowledged fingerprint for this
+      // composer. Anything typed next re-warns. Dedup still
+      // suppresses re-nag WITHIN one unsent message: a 'failed'
+      // resume does NOT reach this branch (it falls through to the
+      // kill-switch / RETURNED_TO_EDIT path below), so the ack it set
+      // survives and the retry on the same content is still skipped.
+      this.acknowledged.delete(key)
       this.transition(key, 'SUBMITTED')
       return finish('SUBMITTED', route, failedOpen, result)
     }

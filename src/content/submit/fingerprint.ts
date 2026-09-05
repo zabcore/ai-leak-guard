@@ -3,20 +3,26 @@
 // A fingerprint is the *shape* of a detection result — category →
 // maskable-finding count — never its content. It exists so that a
 // user who has already looked at "2 × SSN, 1 × MRN" and chosen
-// "send anyway" is not shown the same warning again for the same
-// composer when they hit Enter a second time (e.g. after the site
-// swallowed the first resume, or after an edit that did not change
-// the risk picture).
+// "send anyway" is not shown the same warning again FOR THE SAME,
+// STILL-UNSENT MESSAGE: a repeat Enter, a no-op edit that didn't
+// change the risk picture, or a retry after the site swallowed the
+// first resume. The suppression spans one unsent message only —
+// `SubmitCore` clears the acknowledgement for a composer the moment
+// a message actually sends, so the NEXT message re-warns even at the
+// same risk shape. This is NOT a per-conversation "you already said
+// OK" pass: a second patient's PHI (same shape, new disclosure)
+// warns again.
 //
 // INTENTIONAL TRADE-OFF — keyed on risk shape, not identity. Two
 // *different* SSNs produce the same fingerprint ("government_financial:1"),
-// so replacing one SSN with another after acknowledging does NOT
-// re-warn. The alternative — hashing matched values — would put a
+// so editing one SSN into another WITHIN the same unsent message does
+// NOT re-warn. The alternative — hashing matched values — would put a
 // derivative of the sensitive content in memory keyed to the tab,
 // which the metadata-only posture forbids. Shape-keying is the
-// conservative choice: it can only ever under-warn on an edit that
-// keeps the exact same category/count profile, and any change in
-// category or count re-warns.
+// conservative choice: it can only ever under-warn on an edit to the
+// current unsent message that keeps the exact same category/count
+// profile; any change in category or count re-warns, and every send
+// resets it.
 //
 // Fingerprints live in memory only, scoped to (tab, composer), and
 // are NEVER written to `chrome.storage` — a release blocker, pinned
