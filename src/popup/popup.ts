@@ -204,18 +204,48 @@ const SELF_TEST_SITES: ReadonlyArray<{ id: string; origin: string; match: RegExp
   { id: 'gemini', origin: 'https://gemini.google.com/', match: /^https:\/\/gemini\.google\.com\// },
 ]
 
+export type SelfTestSiteId = 'chatgpt' | 'claude' | 'gemini'
+export interface SelfTestSiteChoice {
+  readonly id: SelfTestSiteId
+  readonly origin: string
+}
+
+/** Resolve a site by its chooser id; unknown ids fall back to ChatGPT. */
+export function selfTestSiteForId(id: string): SelfTestSiteChoice {
+  const site = SELF_TEST_SITES.find((s) => s.id === id) ?? SELF_TEST_SITES[0]
+  return { id: site.id as SelfTestSiteId, origin: site.origin }
+}
+
 /**
- * Pick which supported site to open a fresh tab on. Prefer an
- * already-open supported tab's origin (so the test runs where the user
- * already works), else default to ChatGPT. Pure — exported for tests.
+ * Pick which supported site to open a fresh tab on from a list of open
+ * tab URLs — the FIRST supported one, else ChatGPT. Pure — exported for
+ * tests. (Active-tab preference is layered on top by
+ * `pickSelfTestSitePreferringActive`.)
  */
-export function pickSelfTestSite(tabUrls: readonly string[]): { id: string; origin: string } {
+export function pickSelfTestSite(tabUrls: readonly string[]): SelfTestSiteChoice {
   for (const url of tabUrls) {
     const site = SELF_TEST_SITES.find((s) => s.match.test(url))
-    if (site !== undefined) return { id: site.id, origin: site.origin }
+    if (site !== undefined) return { id: site.id as SelfTestSiteId, origin: site.origin }
   }
   const fallback = SELF_TEST_SITES[0]
-  return { id: fallback.id, origin: fallback.origin }
+  return { id: fallback.id as SelfTestSiteId, origin: fallback.origin }
+}
+
+/**
+ * Prefer the ACTIVE tab's site so a user living in Claude/Gemini tests
+ * THAT site — not whichever supported tab happens to be open first. Only
+ * when the active tab is not a supported site do we consider other open
+ * tabs (then the ChatGPT default). Pure — exported for tests.
+ */
+export function pickSelfTestSitePreferringActive(
+  activeUrl: string | undefined | null,
+  allUrls: readonly string[],
+): SelfTestSiteChoice {
+  if (typeof activeUrl === 'string' && activeUrl.length > 0) {
+    const active = SELF_TEST_SITES.find((s) => s.match.test(activeUrl))
+    if (active !== undefined) return { id: active.id as SelfTestSiteId, origin: active.origin }
+  }
+  return pickSelfTestSite(allUrls)
 }
 
 /**
@@ -242,19 +272,34 @@ function makeNonce(): string {
   return `st-${Date.now()}-${Math.floor(Math.random() * 1e9)}`
 }
 
-async function chooseSelfTestSite(): Promise<{ id: string; origin: string }> {
+/**
+ * The default site to preselect in the chooser: the ACTIVE supported tab
+ * if there is one, else the first supported open tab, else ChatGPT.
+ */
+async function resolveDefaultSelfTestSite(): Promise<SelfTestSiteChoice> {
   try {
     const tabsApi = (globalThis as unknown as { chrome?: typeof chrome }).chrome?.tabs
     if (tabsApi && typeof tabsApi.query === 'function') {
-      const tabs = await tabsApi.query({})
-      const urls = tabs.map((t) => t.url ?? '').filter((u) => u.length > 0)
-      return pickSelfTestSite(urls)
+      const [activeTabs, allTabs] = await Promise.all([
+        tabsApi.query({ active: true, currentWindow: true }),
+        tabsApi.query({}),
+      ])
+      const activeUrl = activeTabs[0]?.url ?? ''
+      const allUrls = allTabs.map((t) => t.url ?? '').filter((u) => u.length > 0)
+      return pickSelfTestSitePreferringActive(activeUrl, allUrls)
     }
   } catch {
     // fall through to default
   }
   const fallback = SELF_TEST_SITES[0]
-  return { id: fallback.id, origin: fallback.origin }
+  return { id: fallback.id as SelfTestSiteId, origin: fallback.origin }
+}
+
+/** Read the site the user selected in the chooser (defaults to ChatGPT). */
+export function selectedSelfTestSite(): SelfTestSiteChoice {
+  const select = document.getElementById('selftest-site')
+  const id = select instanceof HTMLSelectElement ? select.value : 'chatgpt'
+  return selfTestSiteForId(id)
 }
 
 /** Wait for the content script to write a result with a matching nonce (or time out). */
@@ -360,7 +405,7 @@ function openSelfTestReport(record: SelfTestResultRecord): void {
   }
 }
 
-async function startSelfTest(): Promise<void> {
+export async function startSelfTest(): Promise<void> {
   const btn = document.getElementById('selftest-btn')
   const resultEl = document.getElementById('selftest-result')
   const reportEl = document.getElementById('selftest-report')
@@ -374,7 +419,9 @@ async function startSelfTest(): Promise<void> {
   try {
     await clearSelfTestResult()
     const nonce = makeNonce()
-    const site = await chooseSelfTestSite()
+    // Run against the SELECTED site (the chooser defaults to the active
+    // supported tab), so a user on Claude/Gemini tests that site.
+    const site = selectedSelfTestSite()
     await setSelfTestSignal({ nonce, ts: Date.now(), site: site.origin })
     const tabsApi = (globalThis as unknown as { chrome?: typeof chrome }).chrome?.tabs
     if (tabsApi && typeof tabsApi.create === 'function') {
@@ -455,6 +502,17 @@ async function init(): Promise<void> {
     selfTestBtn.addEventListener('click', () => {
       void startSelfTest()
     })
+  }
+  // Preselect the chooser to the active supported tab's site so the
+  // obvious "Test protection" click tests where the user actually is.
+  try {
+    const select = document.getElementById('selftest-site')
+    if (select instanceof HTMLSelectElement) {
+      const def = await resolveDefaultSelfTestSite()
+      select.value = def.id
+    }
+  } catch (err) {
+    console.warn('[AI Leak Guard] self-test site default failed:', err)
   }
   // Surface a recent result the content script wrote while the popup was
   // closed (Chrome dismisses the popup when the test tab takes focus).

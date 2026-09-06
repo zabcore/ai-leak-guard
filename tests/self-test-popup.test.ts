@@ -7,12 +7,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   pickSelfTestSite,
+  pickSelfTestSitePreferringActive,
+  selfTestSiteForId,
+  selectedSelfTestSite,
+  startSelfTest,
   selfTestResultCopy,
   renderSelfTestOutcome,
   renderLastSelfTestResult,
   SELF_TEST_RESULT_FRESH_MS,
 } from '../src/popup/popup'
-import { SELF_TEST_RESULT_KEY, type SelfTestResultRecord } from '../src/shared/self-test'
+import {
+  SELF_TEST_RESULT_KEY,
+  SELF_TEST_POPUP_TIMEOUT_MS,
+  type SelfTestResultRecord,
+} from '../src/shared/self-test'
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -42,6 +50,106 @@ describe('pickSelfTestSite', () => {
       origin: 'https://chatgpt.com/',
     })
     expect(pickSelfTestSite([])).toEqual({ id: 'chatgpt', origin: 'https://chatgpt.com/' })
+  })
+})
+
+describe('pickSelfTestSitePreferringActive (M5.1)', () => {
+  it('active tab = claude.ai → Claude even if a ChatGPT tab is also open', () => {
+    expect(
+      pickSelfTestSitePreferringActive('https://claude.ai/chat/x', [
+        'https://chatgpt.com/',
+        'https://claude.ai/chat/x',
+      ]),
+    ).toEqual({ id: 'claude', origin: 'https://claude.ai/' })
+  })
+
+  it('active tab = gemini → Gemini', () => {
+    expect(
+      pickSelfTestSitePreferringActive('https://gemini.google.com/app', ['https://chatgpt.com/']),
+    ).toEqual({ id: 'gemini', origin: 'https://gemini.google.com/' })
+  })
+
+  it('active tab unsupported + a Claude tab open → Claude (falls through to open tabs)', () => {
+    expect(
+      pickSelfTestSitePreferringActive('https://mail.example/', [
+        'https://mail.example/',
+        'https://claude.ai/',
+      ]),
+    ).toEqual({ id: 'claude', origin: 'https://claude.ai/' })
+  })
+
+  it('no supported tabs at all → ChatGPT fallback', () => {
+    expect(pickSelfTestSitePreferringActive('https://mail.example/', ['about:blank'])).toEqual({
+      id: 'chatgpt',
+      origin: 'https://chatgpt.com/',
+    })
+    expect(pickSelfTestSitePreferringActive('', [])).toEqual({
+      id: 'chatgpt',
+      origin: 'https://chatgpt.com/',
+    })
+  })
+})
+
+describe('selfTestSiteForId / selectedSelfTestSite (chooser mapping)', () => {
+  it('maps each chooser id to its origin', () => {
+    expect(selfTestSiteForId('chatgpt')).toEqual({ id: 'chatgpt', origin: 'https://chatgpt.com/' })
+    expect(selfTestSiteForId('claude')).toEqual({ id: 'claude', origin: 'https://claude.ai/' })
+    expect(selfTestSiteForId('gemini')).toEqual({
+      id: 'gemini',
+      origin: 'https://gemini.google.com/',
+    })
+    // Unknown → ChatGPT fallback.
+    expect(selfTestSiteForId('nope')).toEqual({ id: 'chatgpt', origin: 'https://chatgpt.com/' })
+  })
+
+  it('reads the <select> value the user chose', () => {
+    document.body.innerHTML = `<select id="selftest-site">
+      <option value="chatgpt">ChatGPT</option>
+      <option value="claude">Claude</option>
+      <option value="gemini">Gemini</option>
+    </select>`
+    const select = document.getElementById('selftest-site') as HTMLSelectElement
+    select.value = 'claude'
+    expect(selectedSelfTestSite()).toEqual({ id: 'claude', origin: 'https://claude.ai/' })
+    select.value = 'gemini'
+    expect(selectedSelfTestSite()).toEqual({ id: 'gemini', origin: 'https://gemini.google.com/' })
+  })
+})
+
+describe('startSelfTest opens a fresh tab of the SELECTED site', () => {
+  async function flush(n = 6): Promise<void> {
+    for (let i = 0; i < n; i++) await Promise.resolve()
+  }
+  it('selecting Gemini opens https://gemini.google.com/#alg-selftest', async () => {
+    vi.useFakeTimers()
+    document.body.innerHTML = `
+      <button id="selftest-btn">Test protection</button>
+      <select id="selftest-site">
+        <option value="chatgpt">ChatGPT</option>
+        <option value="claude">Claude</option>
+        <option value="gemini">Gemini</option>
+      </select>
+      <p id="selftest-result" hidden></p>
+      <button id="selftest-report" hidden>Report this</button>`
+    ;(document.getElementById('selftest-site') as HTMLSelectElement).value = 'gemini'
+    const create = vi.fn()
+    ;(globalThis as { chrome?: unknown }).chrome = {
+      storage: {
+        local: {
+          get: vi.fn(async () => ({})),
+          set: vi.fn(async () => {}),
+          remove: vi.fn(async () => {}),
+        },
+        onChanged: { addListener: vi.fn(), removeListener: vi.fn() },
+      },
+      tabs: { create },
+    }
+    const p = startSelfTest()
+    await flush()
+    expect(create).toHaveBeenCalledWith({ url: 'https://gemini.google.com/#alg-selftest' })
+    await vi.advanceTimersByTimeAsync(SELF_TEST_POPUP_TIMEOUT_MS)
+    await p
+    vi.useRealTimers()
   })
 })
 

@@ -319,3 +319,30 @@ body {
 .selftest__report:hover {
   background: #f8dcdc;
 }
+
+/* V1.3 M5.1 — self-test site chooser. Compact "Test on: [select]". */
+.selftest__chooser {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.selftest__chooser-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+}
+.selftest__select {
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid #c7d2e0;
+  background: #ffffff;
+  color: #1f2a37;
+  cursor: pointer;
+}
+.selftest__select:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}
