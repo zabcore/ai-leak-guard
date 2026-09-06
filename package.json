@@ -15,7 +15,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
-    "verify:sw": "node scripts/verify-sw.mjs"
+    "verify:sw": "node scripts/verify-sw.mjs",
+    "verify:no-network": "node scripts/verify-no-network.mjs"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.4.0",
