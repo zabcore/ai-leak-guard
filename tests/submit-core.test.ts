@@ -11,8 +11,8 @@
 //
 // No real site adapter exists in M1; every flow runs through
 // `FakeSubmitAdapter`, and the flag is enabled per-test via the
-// injected `isEnabled` seam (the compile-time default is OFF and is
-// asserted as such).
+// injected `isEnabled` seam. As of M7 (v1.3.0) the compile-time default
+// is ON (go-live) and is asserted as such in `describe('flag')`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -99,28 +99,39 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe('flag', () => {
-  it('compile-time default is OFF and the core does not take the send', async () => {
-    expect(isSubmitProtectionEnabled()).toBe(false)
+  it('compile-time default is ON (V1.3 go-live) and the core engages the send', async () => {
+    expect(isSubmitProtectionEnabled()).toBe(true)
     const core = new SubmitCore() // real default deps → real flag
     const adapter = new FakeSubmitAdapter({ text: SSN_TEXT })
     const out = await core.handleSendIntent(adapter, intent)
-    expect(out.handled).toBe(false)
-    expect(out.route).toBe('flag-off')
-    expect(out.state).toBe('IDLE')
-    expect(adapter.resumeCalls).toBe(0)
-    expect(adapter.readCalls).toBe(0)
+    // Flag ON → the core does NOT short-circuit as flag-off; it reads the
+    // composer and (flagged text + the M1 default decide → return-to-edit)
+    // HOLDS the send rather than auto-submitting.
+    expect(out.handled).toBe(true)
+    expect(out.route).not.toBe('flag-off')
+    expect(adapter.readCalls).toBeGreaterThan(0)
+    expect(adapter.resumeCalls).toBe(0) // default decide holds flagged content (A-1)
   })
 
-  it('globalThis override flips it on without touching the file', () => {
+  it('globalThis override can force it OFF without touching the file', async () => {
     ;(globalThis as { __AI_LEAK_GUARD_SUBMIT_FLAG__?: boolean }).__AI_LEAK_GUARD_SUBMIT_FLAG__ =
-      true
+      false
     try {
-      expect(isSubmitProtectionEnabled()).toBe(true)
+      expect(isSubmitProtectionEnabled()).toBe(false)
+      const core = new SubmitCore() // real default deps → real flag
+      const adapter = new FakeSubmitAdapter({ text: SSN_TEXT })
+      const out = await core.handleSendIntent(adapter, intent)
+      expect(out.handled).toBe(false)
+      expect(out.route).toBe('flag-off')
+      expect(out.state).toBe('IDLE')
+      expect(adapter.resumeCalls).toBe(0)
+      expect(adapter.readCalls).toBe(0)
     } finally {
       delete (globalThis as { __AI_LEAK_GUARD_SUBMIT_FLAG__?: boolean })
         .__AI_LEAK_GUARD_SUBMIT_FLAG__
     }
-    expect(isSubmitProtectionEnabled()).toBe(false)
+    // Back to the compile-time default (now ON).
+    expect(isSubmitProtectionEnabled()).toBe(true)
   })
 })
 

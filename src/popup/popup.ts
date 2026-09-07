@@ -17,7 +17,7 @@ import {
   type SelfTestResultRecord,
 } from '../shared/self-test'
 import { buildSelfTestReportUrl, coarseBrowser } from '../shared/self-test-report'
-import { siteLabel, actionLabel, relativeTime } from './labels'
+import { siteLabel, actionLabel, eventTypeLabel, relativeTime } from './labels'
 
 function setToggleLabel(enabled: boolean): void {
   const label = document.getElementById('toggle-label')
@@ -31,7 +31,7 @@ function setToggleLabel(enabled: boolean): void {
  * test can pin the string shape without a DOM.
  */
 export function formatRecentLine(event: AlgEvent, now: number = Date.now()): string {
-  const parts = [siteLabel(event.site), event.eventType]
+  const parts = [siteLabel(event.site), eventTypeLabel(event.eventType)]
   if (event.count > 0) {
     parts.push(`${event.count} item${event.count === 1 ? '' : 's'}`)
   } else if (event.action === 'auto-cleared') {

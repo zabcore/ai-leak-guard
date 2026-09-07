@@ -44,6 +44,22 @@ export function actionLabel(action: AlgEvent['action']): string {
 }
 
 /**
+ * Friendly, user-facing labels for the event SOURCE. DISPLAY ONLY — the
+ * STORED `eventType` values and the event-log schema/export stay the raw
+ * `paste` / `submit` / `document` (the no-content and schema tests pin
+ * that). An unlisted future type degrades to its raw value.
+ */
+export const EVENT_TYPE_LABELS: Readonly<Record<string, string>> = {
+  paste: 'Paste',
+  submit: 'Send',
+  document: 'File upload',
+}
+
+export function eventTypeLabel(eventType: string): string {
+  return EVENT_TYPE_LABELS[eventType] ?? eventType
+}
+
+/**
  * Friendly category labels — mirrors the A4 document-modal chip
  * copy so the popup + activity page render the same phrasing the
  * user just saw when they made the decision.

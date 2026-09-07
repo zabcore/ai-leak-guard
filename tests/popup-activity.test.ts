@@ -37,7 +37,7 @@ describe('formatRecentLine — metadata-only compact string', () => {
 
   it('paste protected: "ChatGPT · paste · 2 items · protected · 1m ago"', () => {
     const line = formatRecentLine(evt({ ts: NOW - 60_000 }), NOW)
-    expect(line).toBe('ChatGPT · paste · 2 items · protected · 1m ago')
+    expect(line).toBe('ChatGPT · Paste · 2 items · protected · 1m ago')
   })
 
   it('document uploaded-anyway with 1 item: singular noun', () => {
@@ -51,7 +51,7 @@ describe('formatRecentLine — metadata-only compact string', () => {
       }),
       NOW,
     )
-    expect(line).toBe('Claude · document · 1 item · uploaded anyway · 5m ago')
+    expect(line).toBe('Claude · File upload · 1 item · uploaded anyway · 5m ago')
   })
 
   it('clean auto-cleared document says "clean" instead of a count', () => {
@@ -67,7 +67,7 @@ describe('formatRecentLine — metadata-only compact string', () => {
       }),
       NOW,
     )
-    expect(line).toBe('Gemini · document · clean · auto-cleared · just now')
+    expect(line).toBe('Gemini · File upload · clean · auto-cleared · just now')
   })
 
   it('unable-to-inspect uses the friendly action verb', () => {
@@ -83,7 +83,7 @@ describe('formatRecentLine — metadata-only compact string', () => {
       }),
       NOW,
     )
-    expect(line).toBe("Perplexity · document · couldn't inspect · 3h ago")
+    expect(line).toBe("Perplexity · File upload · couldn't inspect · 3h ago")
   })
 
   it('never contains a filename-shaped or value-shaped substring — schema has neither', () => {
