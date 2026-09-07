@@ -18,7 +18,7 @@
 
 import type { DetectorCategory } from '../detector/types'
 import { getEvents, MAX_EVENTS, type AlgEvent } from '../shared/event-log'
-import { actionLabel, categoryLabel, relativeTime, siteLabel } from './labels'
+import { actionLabel, categoryLabel, eventTypeLabel, relativeTime, siteLabel } from './labels'
 import { exportCsv, exportJson } from './export'
 
 /**
@@ -50,7 +50,9 @@ function renderRow(tbody: HTMLElement, event: AlgEvent, now: number): void {
   site.textContent = siteLabel(event.site)
 
   const type = document.createElement('td')
-  type.textContent = event.eventType
+  // DISPLAY-ONLY friendly source label (Paste / Send / File upload); the
+  // stored `event.eventType` (paste/submit/document) is unchanged.
+  type.textContent = eventTypeLabel(event.eventType)
 
   const action = document.createElement('td')
   const actionBadge = document.createElement('span')

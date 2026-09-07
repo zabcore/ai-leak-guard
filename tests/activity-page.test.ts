@@ -99,7 +99,7 @@ describe('activity page (A5.1)', () => {
     // Newest-first: gemini (ts=300) first, chatgpt (ts=100) last.
     const firstCells = Array.from(rows[0].children).map((c) => c.textContent ?? '')
     expect(firstCells[1]).toBe('Gemini')
-    expect(firstCells[2]).toBe('document')
+    expect(firstCells[2]).toBe('File upload')
     expect(firstCells[3]).toContain('auto-cleared')
     // auto-cleared has no categories and no maskable count.
     expect(firstCells[4]).toBe('—')
@@ -107,7 +107,7 @@ describe('activity page (A5.1)', () => {
 
     const middleCells = Array.from(rows[1].children).map((c) => c.textContent ?? '')
     expect(middleCells[1]).toBe('Claude')
-    expect(middleCells[2]).toBe('document')
+    expect(middleCells[2]).toBe('File upload')
     expect(middleCells[3]).toContain('uploaded anyway')
     // Friendly category label (matches A4 modal copy).
     expect(middleCells[4]).toContain(CATEGORY_LABELS[DetectorCategory.HEALTHCARE_PATIENT_ID])
