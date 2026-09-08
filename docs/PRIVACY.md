@@ -4,6 +4,10 @@
 
 Your text never leaves your browser. Detection and masking happen locally on your device.
 
+For how the zabcore.com website handles contact information you voluntarily provide (updates opt-in, practice registration), see [zabcore.com/privacy](https://zabcore.com/privacy).
+
+When you send a message on a supported site, the extension reads the message you are about to send so it can check it on your device before it goes. That text is never uploaded or stored, the same as pasted text and attached files.
+
 ## What we do NOT collect
 
 AI Leak Guard does not collect, transmit, store, or have access to any of the following:
