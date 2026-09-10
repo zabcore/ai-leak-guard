@@ -16,7 +16,16 @@ import {
   type SelfTestCode,
   type SelfTestResultRecord,
 } from '../shared/self-test'
-import { buildSelfTestReportUrl, coarseBrowser } from '../shared/self-test-report'
+import {
+  buildFixedReportUrl,
+  buildDiagnosticsBlock,
+  reportFields,
+  coarseBrowser,
+  adapterStateForResult,
+  stepForCode,
+  type SelfTestReportInput,
+} from '../shared/self-test-report'
+import { showReportPreview } from '../content/submit/self-test-report-preview'
 import { siteLabel, actionLabel, eventTypeLabel, relativeTime } from './labels'
 
 function setToggleLabel(enabled: boolean): void {
@@ -381,10 +390,16 @@ function extVersion(): string {
 }
 
 function openSelfTestReport(record: SelfTestResultRecord): void {
-  const url = buildSelfTestReportUrl({
+  // V1.3.1 §E: same allowlist + PRE-OPEN PREVIEW as the in-tab flow. The
+  // preview shows the exact content-free fields; on proceed we copy the
+  // pasteable block and open the FIXED report page (no run data in the
+  // URL). The popup is an extension page, so it opens via chrome.tabs.
+  const input: SelfTestReportInput = {
     site: record.site,
     ext: extVersion(),
     adapter: record.adapter,
+    adapterState: adapterStateForResult(record.result),
+    step: stepForCode(record.code),
     result: record.result,
     code: record.code,
     composer: record.composer,
@@ -394,15 +409,30 @@ function openSelfTestReport(record: SelfTestResultRecord): void {
       (globalThis as unknown as { navigator?: { userAgent?: string } }).navigator?.userAgent,
     ),
     ts: record.ts,
-  })
-  const tabsApi = (globalThis as unknown as { chrome?: typeof chrome }).chrome?.tabs
-  if (tabsApi && typeof tabsApi.create === 'function') {
-    try {
-      void tabsApi.create({ url })
-    } catch (err) {
-      console.warn('[AI Leak Guard] report tab failed to open:', err)
-    }
   }
+  const fields = reportFields(input)
+  const block = buildDiagnosticsBlock(input)
+  showReportPreview(fields, block, {
+    onProceed: () => {
+      try {
+        void (
+          globalThis as unknown as {
+            navigator?: { clipboard?: { writeText?: (t: string) => unknown } }
+          }
+        ).navigator?.clipboard?.writeText?.(block)
+      } catch {
+        // best-effort; the preview also shows the block for manual copy
+      }
+      const tabsApi = (globalThis as unknown as { chrome?: typeof chrome }).chrome?.tabs
+      if (tabsApi && typeof tabsApi.create === 'function') {
+        try {
+          void tabsApi.create({ url: buildFixedReportUrl() })
+        } catch (err) {
+          console.warn('[AI Leak Guard] report tab failed to open:', err)
+        }
+      }
+    },
+  })
 }
 
 export async function startSelfTest(): Promise<void> {
