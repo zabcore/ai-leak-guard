@@ -53,9 +53,11 @@ describe('manifest — A5.1 permission delta', () => {
     expect(manifest.optional_host_permissions ?? []).toEqual([])
   })
 
-  it('host_permissions are unchanged (only the four in-scope AI tool sites + legacy chat.openai.com + copilot)', () => {
-    // Same list A4 shipped with — this PR must not add any host
-    // access. `options_ui` and the blob download need none.
+  it('host_permissions are the in-scope AI tool sites (+ legacy chat.openai.com + both Copilot origins)', () => {
+    // V1.3.1 added exactly ONE narrow origin — `copilot.cloud.microsoft`
+    // — because Copilot migrated there (personal AND work chat share
+    // that host). The legacy `copilot.microsoft.com` redirector stays.
+    // `permissions` remains `['storage']`; no blanket `*.microsoft.com`.
     expect(manifest.host_permissions).toEqual([
       'https://chatgpt.com/*',
       'https://chat.openai.com/*',
@@ -63,6 +65,7 @@ describe('manifest — A5.1 permission delta', () => {
       'https://gemini.google.com/*',
       'https://www.perplexity.ai/*',
       'https://copilot.microsoft.com/*',
+      'https://copilot.cloud.microsoft/*',
     ])
   })
 
