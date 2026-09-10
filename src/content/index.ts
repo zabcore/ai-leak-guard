@@ -26,6 +26,7 @@ import { isSubmitProtectionEnabled } from './submit/submit-flag'
 import { installChatGptSubmitProtection } from './submit/install-chatgpt'
 import { installClaudeSubmitProtection } from './submit/install-claude'
 import { installGeminiSubmitProtection } from './submit/install-gemini'
+import { installCopilotSubmitProtection } from './submit/install-copilot-submit'
 import type { InstallSubmitOptions, InstalledSubmit } from './submit/install-submit'
 import { runSelfTest } from './submit/self-test'
 import { showSelfTestBanner } from './submit/self-test-banner'
@@ -456,20 +457,33 @@ const SUBMIT_INSTALLERS: Record<string, (opts: InstallSubmitOptions) => Installe
   gemini: installGeminiSubmitProtection,
 }
 if (isSubmitProtectionEnabled()) {
-  const install = SUBMIT_INSTALLERS[adapter.id]
-  if (install !== undefined) {
+  const submitOpts: InstallSubmitOptions = {
+    isMasterEnabled: () => enabledState.isEnabled(),
+    isFlagEnabled: isSubmitProtectionEnabled,
+  }
+  if (adapter.id === 'copilot') {
+    // V1.3.1: Copilot uses the NO-RESUME adapter (it cannot be resumed —
+    // an untrusted click triggers a CAPTCHA), so it is wired separately
+    // from the resume-based core installers above. No self-test runner
+    // here: the self-test drives the resume path, which Copilot lacks.
     try {
-      const installed = install({
-        isMasterEnabled: () => enabledState.isEnabled(),
-        isFlagEnabled: isSubmitProtectionEnabled,
-      })
-      // V1.3 M5: if the popup queued a one-click self-test, run it once
-      // in this (fresh) tab. Only when submit protection is actually
-      // installed (flag on) — so in the shipped flag-OFF build the popup
-      // button reports "not supported here" and this never runs.
-      void maybeRunSelfTest(installed)
+      installCopilotSubmitProtection(submitOpts)
     } catch (err) {
-      console.error('[AI Leak Guard] submit protection install failed:', err)
+      console.error('[AI Leak Guard] copilot submit protection install failed:', err)
+    }
+  } else {
+    const install = SUBMIT_INSTALLERS[adapter.id]
+    if (install !== undefined) {
+      try {
+        const installed = install(submitOpts)
+        // V1.3 M5: if the popup queued a one-click self-test, run it once
+        // in this (fresh) tab. Only when submit protection is actually
+        // installed (flag on) — so in the shipped flag-OFF build the popup
+        // button reports "not supported here" and this never runs.
+        void maybeRunSelfTest(installed)
+      } catch (err) {
+        console.error('[AI Leak Guard] submit protection install failed:', err)
+      }
     }
   }
 }

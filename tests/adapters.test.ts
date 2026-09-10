@@ -41,6 +41,10 @@ describe('getAdapterForHost', () => {
     expect(getAdapterForHost('copilot.microsoft.com').id).toBe('copilot')
   })
 
+  it('returns the Copilot adapter for the migrated copilot.cloud.microsoft host (V1.3.1)', () => {
+    expect(getAdapterForHost('copilot.cloud.microsoft').id).toBe('copilot')
+  })
+
   it('matches case-insensitively', () => {
     expect(getAdapterForHost('CHATGPT.COM').id).toBe('chatgpt')
   })
@@ -291,6 +295,14 @@ describe('site adapter isPromptInput', () => {
 
   it('copilot matches a textarea', () => {
     expect(copilot.isPromptInput(document.createElement('textarea'))).toBe(true)
+  })
+
+  it('copilot matches the migrated Lexical contenteditable composer (V1.3.1)', () => {
+    const span = document.createElement('span')
+    span.setAttribute('contenteditable', 'true')
+    span.setAttribute('role', 'textbox')
+    span.setAttribute('data-lexical-editor', 'true')
+    expect(copilot.isPromptInput(span)).toBe(true)
   })
 
   it('site adapters reject a plain div', () => {

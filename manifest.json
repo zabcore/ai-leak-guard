@@ -10,7 +10,8 @@
     "https://claude.ai/*",
     "https://gemini.google.com/*",
     "https://www.perplexity.ai/*",
-    "https://copilot.microsoft.com/*"
+    "https://copilot.microsoft.com/*",
+    "https://copilot.cloud.microsoft/*"
   ],
   "background": {
     "service_worker": "src/background/service-worker.ts",
@@ -30,7 +31,8 @@
         "https://claude.ai/*",
         "https://gemini.google.com/*",
         "https://www.perplexity.ai/*",
-        "https://copilot.microsoft.com/*"
+        "https://copilot.microsoft.com/*",
+        "https://copilot.cloud.microsoft/*"
       ],
       "js": ["src/content/index.ts"],
       "run_at": "document_start"
@@ -42,7 +44,8 @@
         "https://claude.ai/*",
         "https://gemini.google.com/*",
         "https://www.perplexity.ai/*",
-        "https://copilot.microsoft.com/*"
+        "https://copilot.microsoft.com/*",
+        "https://copilot.cloud.microsoft/*"
       ],
       "js": ["src/content/main-world/fsa-hook.ts"],
       "run_at": "document_start",

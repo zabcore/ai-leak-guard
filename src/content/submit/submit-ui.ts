@@ -35,13 +35,19 @@ import type { DecisionSummary, UserDecision } from './submit-core'
 export function openSubmitDecision(
   summary: DecisionSummary,
   opener: Element | null,
+  copyOverride?: { readonly primaryLabel?: string; readonly cancelLabel?: string },
 ): Promise<UserDecision> {
   const controller = openDocumentModal({
     opener,
     copy: {
       surface: 'message',
-      primaryLabel: 'Proceed anyway',
-      cancelLabel: 'Return to editing',
+      // V1.3.1: Copilot cannot be resumed programmatically (untrusted
+      // click → CAPTCHA), so its adapter overrides the primary label to
+      // tell the user to press Send again themselves — the proceed there
+      // acknowledges, it does not send. Every other site keeps the
+      // default labels (the resume happens inside the proceed click).
+      primaryLabel: copyOverride?.primaryLabel ?? 'Proceed anyway',
+      cancelLabel: copyOverride?.cancelLabel ?? 'Return to editing',
     },
   })
   // Paint the terminal view synchronously (same task) so the scanning
