@@ -4,6 +4,7 @@ import { MEDICATIONS } from './data/medications'
 import {
   isPlausiblePhone,
   isValidDea,
+  isValidDobDate,
   isValidNpi,
   isValidSsn,
   luhn,
@@ -111,6 +112,22 @@ function ci(s: string): string {
 // Medication dictionary is compiled into a single alternation; all entries are
 // plain lower-case words so no regex-escaping is needed.
 const MEDICATION_PATTERN = new RegExp(`\\b(?:${MEDICATIONS.join('|')})\\b`, 'gi')
+
+// V1.3.1 — English month names (abbreviated + full) for written-month DOB
+// forms. Matched case-insensitively (the DOB rule compiles with `gi`).
+const MONTH_NAME =
+  'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|' +
+  'Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?'
+// DOB date VALUE: numeric US (M/D or D/M), ISO Y-M-D, and written-month forms
+// in BOTH month-first ("Sep/20/1988", "September 20, 1988") and day-first
+// ("20-Sep-1988", "23 December 2017") order, over space / slash / hyphen / dot
+// separators. `isValidDobDate` does calendar validation + day/month resolution.
+const DOB_VALUE = [
+  '\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4}',
+  '\\d{4}[-.]\\d{1,2}[-.]\\d{1,2}',
+  `(?:${MONTH_NAME})[\\s./-]+\\d{1,2},?[\\s./-]+\\d{2,4}`,
+  `\\d{1,2}[\\s./-]+(?:${MONTH_NAME})[\\s./-]+\\d{2,4}`,
+].join('|')
 
 // `anthropic_key` is intentionally ordered before `openai_key`: an Anthropic key
 // (`sk-ant-...`) also satisfies the broader OpenAI pattern, so listing the more
@@ -244,6 +261,15 @@ export const RULES: DetectorRule[] = [
   },
 
   // ─── V1.1: IDENTITY ────────────────────────────────────────────────────────
+  // V1.3.1 — DOB recall expansion. Adds `born` / `born on` phrasing,
+  // `Birth Date` / `Birthdate`, and ISO `Y-M-D` dates, and now VALIDATES
+  // the date as a real calendar date + plausible birth year
+  // (`isValidDobDate`). Still strictly label-anchored: contextualRule
+  // permits only whitespace / `:` / `#` between the label and the date,
+  // so an ordinary unlabelled date (an appointment, a meeting) is never a
+  // DOB. `\bborn` does not match inside `newborn` / `stillborn` / `reborn`
+  // (no word boundary), and "born in 2019" (a bare year, no full date)
+  // fails the value pattern.
   contextualRule({
     id: 'date_of_birth',
     label: 'Date of Birth',
@@ -251,8 +277,9 @@ export const RULES: DetectorRule[] = [
     baseSensitivity: SensitivityLevel.HIGH,
     maskToken: '[DOB]',
     severity: 'high',
-    labelPattern: 'DOB|D\\.O\\.B\\.?|Date\\s+of\\s+Birth',
-    valuePattern: '\\d{1,2}[./-]\\d{1,2}[./-]\\d{2,4}',
+    labelPattern: 'born(?:\\s+on)?|DOB|D\\.O\\.B\\.?|Date\\s+of\\s+Birth|Birth\\s*Date',
+    valuePattern: DOB_VALUE,
+    validateValue: isValidDobDate,
   }),
   {
     id: 'phone',
@@ -329,12 +356,94 @@ export const RULES: DetectorRule[] = [
       `|(?:${nameToken}\\s+){1,3}${nameWord})`
     return {
       id: 'patient_name' as const,
-      label: 'Patient Name',
+      label: 'Person Name',
       severity: 'high' as const,
       category: DetectorCategory.IDENTITY,
       baseSensitivity: SensitivityLevel.HIGH,
-      maskToken: '[PATIENT_NAME]',
+      maskToken: '[PERSON_NAME]',
       pattern: new RegExp(`\\b(?:${label})\\s*[:=–-]\\s*${value}\\b`, 'g'),
+    }
+  })(),
+  // ─── V1.3.1: precision-focused patient-name recall additions ──────────────
+  // Three NARROW rules (no blanket two-token title-case match, no broad
+  // proximity): (1) strong "<label> Name" with an OPTIONAL separator,
+  // (2) honorific + surname, (3) a name IMMEDIATELY adjacent to a strong
+  // identifier label. Each is independently corpus-tested; see
+  // tests/name-dob-recall.test.ts and the grown precision corpus.
+  (() => {
+    // (1) Strong patient-name labels that ALREADY contain "Name" are
+    // unambiguous enough to allow an OPTIONAL separator, so
+    // "Patient Name John Smith" (no colon) warns like "Patient Name: John
+    // Smith". Bare "Patient"/"Member" still REQUIRE a separator (the
+    // patient_name rule above). Provider-side "Name" is excluded because
+    // every alternative pins an explicit patient-side prefix.
+    const strong =
+      `${ci('Patient')}\\s+${ci('Name')}|` +
+      `${ci('Patient')}['’]${ci('s')}\\s+${ci('Name')}|` +
+      `${ci('Pt')}\\s+${ci('Name')}|` +
+      `${ci('Member')}\\s+${ci('Name')}|` +
+      `${ci('Insured')}\\s+${ci('Name')}|` +
+      `${ci('Subscriber')}\\s+${ci('Name')}|` +
+      `${ci('Guarantor')}\\s+${ci('Name')}|` +
+      `${ci('Beneficiary')}\\s+${ci('Name')}`
+    const nameWord = "[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*"
+    const nameToken = `(?:${nameWord}|[A-Z]\\.)`
+    const value =
+      `(?:${nameWord},\\s+${nameWord}(?:\\s+${nameWord})?` +
+      `|(?:${nameToken}\\s+){1,3}${nameWord})`
+    return {
+      id: 'patient_name_labeled' as const,
+      label: 'Person Name',
+      severity: 'high' as const,
+      category: DetectorCategory.IDENTITY,
+      baseSensitivity: SensitivityLevel.HIGH,
+      maskToken: '[PERSON_NAME]',
+      pattern: new RegExp(`\\b(?:${strong})\\s*[:=–-]?\\s*${value}\\b`, 'g'),
+    }
+  })(),
+  (() => {
+    // (2) Honorific + surname — a strong patient-name signal in prose
+    // ("Mrs. Khan", "Mr. Thompson"). Honorific is CASE-SENSITIVE so "ms"
+    // (milliseconds) never matches; provider titles (Dr, Prof) are absent
+    // by design. A short, TESTED exclusion drops known non-person
+    // "<Honorific> <Capital>" forms seen in the negative corpus. This is
+    // NOT a bare two-token name match — an explicit honorific is required.
+    const NON_PERSON = new Set(['Bumble'])
+    return {
+      id: 'patient_name_honorific' as const,
+      label: 'Person Name',
+      severity: 'high' as const,
+      category: DetectorCategory.IDENTITY,
+      baseSensitivity: SensitivityLevel.HIGH,
+      maskToken: '[PERSON_NAME]',
+      pattern: /\b(?:Mrs|Mr|Miss|Ms|Mx)\.?\s+[A-Z][a-z]+(?:[-'][A-Z][a-z]+)?(?:\s+[A-Z][a-z]+)?\b/g,
+      validate: (m: string): boolean => {
+        const s = /^(?:Mrs|Mr|Miss|Ms|Mx)\.?\s+([A-Z][a-z]+)/.exec(m)
+        return s !== null && !NON_PERSON.has(s[1])
+      },
+    }
+  })(),
+  (() => {
+    // (3) A 2–3 token proper name IMMEDIATELY before a strong identifier
+    // label ("John Smith, MRN 12345678"). TIGHT adjacency via a lookahead
+    // (optional comma + one run of whitespace, then the identifier) — NOT
+    // broad proximity. Requires ≥2 name tokens so a lone capitalized verb
+    // ("Order SSN…") can't match. The identifier itself is caught by its
+    // own rule; this rule ensures the NAME is detected too, so an MRN
+    // warning never conceals a missed name.
+    const nameWord = "[A-Z](?:[a-z]+|'[A-Za-z]+)(?:[-'][A-Za-z]+)*"
+    const idLabel = 'MRN|SSN|DOB|Member\\s*(?:ID|#)|Account\\s*(?:No\\.?|#)|Claim\\s*#'
+    return {
+      id: 'patient_name_id_adjacent' as const,
+      label: 'Person Name',
+      severity: 'high' as const,
+      category: DetectorCategory.IDENTITY,
+      baseSensitivity: SensitivityLevel.HIGH,
+      maskToken: '[PERSON_NAME]',
+      pattern: new RegExp(
+        `\\b${nameWord}(?:\\s+${nameWord}){1,2}(?=\\s*,?\\s+(?:${idLabel})\\b)`,
+        'g',
+      ),
     }
   })(),
   (() => {

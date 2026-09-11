@@ -19,6 +19,70 @@ export function luhn(num: string): boolean {
   return sum % 10 === 0
 }
 
+/** True if (year, month, day) is a real calendar date with a plausible birth year. */
+function isRealBirthDate(year: number, month: number, day: number): boolean {
+  const currentYear = new Date().getUTCFullYear()
+  if (year < 1900 || year > currentYear) return false
+  if (month < 1 || month > 12) return false
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
+  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  return day >= 1 && day <= daysInMonth[month - 1]
+}
+
+// Expand a 2-digit year: this century if not in the future, else last
+// century (so "05" reads as 2005, "62" as 1962).
+function expandYear(raw: string): number {
+  const y = Number(raw)
+  if (raw.length !== 2) return y
+  const nowYY = new Date().getUTCFullYear() % 100
+  return y <= nowYY ? 2000 + y : 1900 + y
+}
+
+/**
+ * V1.3.1 — validate the DATE VALUE of a date-of-birth match as a real
+ * calendar date and a plausible birth year. Accepts ISO `Y-M-D`
+ * (unambiguous) and a two-field slashed/dotted/dashed form `A/B/Y`.
+ *
+ * DAY-FIRST SUPPORT (V1.3.1 fix): the slashed form is accepted if EITHER
+ * `A=month,B=day` (US `MM/DD/YYYY`) OR `A=day,B=month` (`DD/MM/YYYY`) is a
+ * real calendar date. So `23/12/2017` (day-first) and `12/23/2017`
+ * (month-first) both pass, and an ambiguous `03/04/2017` passes without
+ * us choosing or converting its meaning — we only detect and protect the
+ * ORIGINAL text. A date invalid under BOTH readings (`31/04/2017`,
+ * `13/40/1980`, `02/30/1980`) is rejected. Label anchoring is unchanged
+ * (an unlabelled date never reaches this validator).
+ */
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+}
+
+export function isValidDobDate(value: string): boolean {
+  const iso = /^(\d{4})[-.](\d{1,2})[-.](\d{1,2})$/.exec(value)
+  if (iso !== null) {
+    return isRealBirthDate(Number(iso[1]), Number(iso[2]), Number(iso[3]))
+  }
+  // Written-month form (either order). The month is a NAME, so the two
+  // numeric fields are unambiguous: read left-to-right the first is the
+  // day and the second is the year, in BOTH "Sep 20 1988" (month-first)
+  // and "20 Sep 1988" (day-first).
+  const mn = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/i.exec(value)
+  if (mn !== null) {
+    const month = MONTHS[mn[1].toLowerCase()]
+    const nums = value.match(/\d{1,4}/g)
+    if (nums === null || nums.length < 2) return false
+    return isRealBirthDate(expandYear(nums[1]), month, Number(nums[0]))
+  }
+  const two = /^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/.exec(value)
+  if (two === null) return false
+  const a = Number(two[1])
+  const b = Number(two[2])
+  const year = expandYear(two[3])
+  // Accept if either month/day assignment yields a real date. Ambiguous
+  // values are detected (and protected) without disambiguating.
+  return isRealBirthDate(year, a, b) || isRealBirthDate(year, b, a)
+}
+
 export function shannonEntropy(s: string): number {
   if (s.length === 0) return 0
 

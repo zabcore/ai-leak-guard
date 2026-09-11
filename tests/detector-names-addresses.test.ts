@@ -265,9 +265,9 @@ describe('street_address — negatives (no anchor, no structure)', () => {
 // ─── mask token rendering ────────────────────────────────────────────────────
 
 describe('mask tokens', () => {
-  it('replaces patient_name with [PATIENT_NAME]', () => {
+  it('replaces patient_name with [PERSON_NAME]', () => {
     const { text: masked } = mask('Patient: Sarah Khan', detect('Patient: Sarah Khan'))
-    expect(masked).toContain('[PATIENT_NAME]')
+    expect(masked).toContain('[PERSON_NAME]')
     expect(masked).not.toContain('Sarah Khan')
   })
 

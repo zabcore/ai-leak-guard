@@ -61,7 +61,7 @@ describe('buildPreviewSummary', () => {
     // patient_name + date_of_birth should count; icd10 + medication (LOW) should not.
     expect(summary.count).toBe(2)
     const labelSet = new Set(summary.groups.map((g) => g.label))
-    expect(labelSet.has('Patient Name')).toBe(true)
+    expect(labelSet.has('Person Name')).toBe(true)
     expect(labelSet.has('Date of Birth')).toBe(true)
     expect(labelSet.has('ICD-10 Code')).toBe(false)
     expect(labelSet.has('Medication')).toBe(false)
@@ -102,7 +102,7 @@ describe('buildPreviewSummary', () => {
     // The medication word must survive in the protected preview because it
     // was filtered out of the maskable set. The patient name is redacted.
     expect(summary.protectedText.toLowerCase()).toContain('metformin')
-    expect(summary.protectedText).toContain('[PATIENT_NAME]')
+    expect(summary.protectedText).toContain('[PERSON_NAME]')
     expect(summary.protectedText).not.toContain('Sarah Khan')
   })
 

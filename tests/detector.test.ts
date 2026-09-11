@@ -259,8 +259,8 @@ describe('mergeOverlapping', () => {
 })
 
 describe('RULES integrity', () => {
-  it('defines the expected number of rules (11 V1 + 15 V1.1 PR 2 + 2 V1.1 PR 3)', () => {
-    expect(RULES).toHaveLength(28)
+  it('defines the expected number of rules (11 V1 + 15 V1.1 PR 2 + 2 V1.1 PR 3 + 3 V1.3.1 name)', () => {
+    expect(RULES).toHaveLength(31)
   })
 
   it('uses globally-flagged patterns for every rule', () => {
