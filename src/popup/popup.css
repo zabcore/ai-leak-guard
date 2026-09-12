@@ -346,3 +346,99 @@ body {
   outline: 2px solid #7dd3fc;
   outline-offset: 2px;
 }
+
+/* ── V1.3.1 §Growth Loop — review/referral card (popup, position 3) ── */
+.growth-slot {
+  margin-top: 16px;
+}
+.growth {
+  text-align: left;
+  padding: 14px;
+  border: 1px solid #e3e8ef;
+  border-radius: 10px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.growth__heading {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2a37;
+}
+.growth__sub {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #4b5563;
+}
+.growth__thanks {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #166534;
+}
+.growth__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.growth__btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.growth__btn:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}
+.growth__btn--review {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+}
+.growth__btn--review:hover {
+  background: #1d4ed8;
+}
+.growth__btn--share {
+  background: #eef2ff;
+  color: #3730a3;
+  border-color: #c7d2fe;
+}
+.growth__btn--share:hover {
+  background: #e0e7ff;
+}
+.growth__btn--dismiss {
+  background: transparent;
+  color: #6b7280;
+  border-color: transparent;
+  margin-left: auto;
+}
+.growth__btn--dismiss:hover {
+  color: #374151;
+}
+.growth__support-link {
+  display: inline;
+  margin-left: 6px;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: #6b7280;
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.growth__support-link:hover {
+  color: #2563eb;
+}
+.growth__support-link:focus-visible {
+  outline: 2px solid #7dd3fc;
+  outline-offset: 2px;
+}

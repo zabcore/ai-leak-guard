@@ -134,7 +134,22 @@
         </div>
       </section>
 
-      <footer class="popup__footer">Local-only. No data leaves your device.</footer>
+      <!--
+        V1.3.1 §Growth Loop — INDEPENDENT local review/referral card. Position
+        (3): after recent activity, before settings/help. Populated by the
+        growth module ONLY when the user is eligible and no failure-suppression
+        signal is active; otherwise it stays empty + hidden. Metadata only — it
+        never shows event counts or any value. Removable/delayable without
+        touching protection logic.
+      -->
+      <div class="growth-slot" id="growth-slot" hidden></div>
+
+      <footer class="popup__footer">
+        Local-only. No data leaves your device.
+        <button type="button" class="growth__support-link" id="growth-support">
+          Support AI Leak Guard
+        </button>
+      </footer>
     </main>
     <script type="module" src="./popup.ts"></script>
   </body>

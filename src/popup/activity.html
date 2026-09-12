@@ -59,10 +59,20 @@
         </div>
       </section>
 
+      <!--
+        V1.3.1 §Growth Loop — small review/referral card near the BOTTOM of the
+        activity page. Independent module; populated only when eligible + no
+        failure suppression. Metadata only, no event counts.
+      -->
+      <div class="growth-slot growth-slot--activity" id="growth-slot" hidden></div>
+
       <footer class="page__footer">
         AI Leak Guard is local-only. This activity log is stored in your browser
         (<code>chrome.storage.local</code>), capped at the most recent 200 events, and never
         transmitted.
+        <button type="button" class="growth__support-link" id="growth-support">
+          Support AI Leak Guard
+        </button>
       </footer>
     </main>
     <script type="module" src="./activity.ts"></script>
