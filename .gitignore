@@ -152,3 +152,8 @@ vite.config.ts.timestamp-*
 *.zip
 *_HANDOFF.md
 /Claude outputs/
+
+# §C coverage monitor (Playwright) run artifacts — regenerated each run.
+monitor/test-results/
+monitor/playwright-report/
+monitor/.auth/

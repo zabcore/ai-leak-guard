@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Claude</title>
+<!--
+  §C monitor fixture — Claude (claude.ai). Served (dry-run) at
+  https://claude.ai/*.
+
+  Shipped contract (src/content/adapters/claude.ts + submit/adapters/claude.ts):
+    composer     [contenteditable="true"][role="textbox"]  (ProseMirror)
+    send button  button[data-testid="chat-input-send"]
+-->
+<main>
+  <div contenteditable="true" role="textbox" data-monitor="composer"></div>
+  <button data-testid="chat-input-send" aria-label="Send message" data-monitor="send">Send</button>
+  <input type="file" data-monitor="file" />
+</main>

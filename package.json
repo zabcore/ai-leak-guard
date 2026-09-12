@@ -15,11 +15,14 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit",
+    "typecheck:monitor": "tsc -p monitor/tsconfig.json",
     "verify:sw": "node scripts/verify-sw.mjs",
-    "verify:no-network": "node scripts/verify-no-network.mjs"
+    "verify:no-network": "node scripts/verify-no-network.mjs",
+    "monitor": "playwright test -c monitor/playwright.config.ts"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.4.0",
+    "@playwright/test": "^1.55.0",
     "@types/chrome": "^0.1.42",
     "@types/node": "^22.0.0",
     "@typescript-eslint/eslint-plugin": "^8.59.4",

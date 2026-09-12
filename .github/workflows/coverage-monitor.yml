@@ -1,0 +1,68 @@
+name: Coverage Monitor (Gate C)
+
+# V1.3.1 §C — the compatibility monitor. Loads the PACKAGED extension in
+# Chromium and, for every route the §D coverage definition describes,
+# checks the shipped extension does what coverage promises (intervenes on
+# supported routes, stays out of the way on unsupported ones).
+#
+# Runs in DRY-RUN by default: each surface's real origin is served a
+# synthetic fixture via request interception, so the run needs no network
+# and no credentials. A weekly schedule catches the day a surface's DOM
+# drifts and breaks an adapter; it can also be launched on demand.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays 06:00 UTC — a weekly compatibility heartbeat.
+    - cron: '0 6 * * 1'
+  # Also guard against self-regressions: run when the monitor, the
+  # adapters, or the coverage definition change.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'monitor/**'
+      - 'src/content/adapters/**'
+      - 'src/content/submit/**'
+      - 'src/shared/coverage.ts'
+      - '.github/workflows/coverage-monitor.yml'
+
+jobs:
+  monitor:
+    name: Dry-run coverage monitor
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check the monitor
+        run: npm run typecheck:monitor
+
+      - name: Build the packaged extension
+        run: npm run build
+
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the coverage monitor (dry-run)
+        run: npm run monitor
+        env:
+          CI: 'true'
+          MONITOR_MODE: dry
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-monitor-report
+          path: monitor/playwright-report/
+          retention-days: 14

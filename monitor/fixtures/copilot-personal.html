@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Copilot</title>
+<!--
+  §C monitor fixture — Microsoft Copilot, personal (copilot.cloud.microsoft).
+  Served (dry-run) at https://copilot.cloud.microsoft/*.
+
+  Shipped contract (src/content/adapters/copilot.ts +
+  submit/adapters/copilot-noresume.ts):
+    composer     #m365-chat-editor-target-element / [contenteditable][role=textbox]  (Lexical)
+    send button  button[aria-label="Send"]
+
+  document is UNSUPPORTED on Copilot (deferred; not in DOCUMENT_PROTECTION_SITES),
+  so the file input here backs a NEGATIVE probe: the extension must NOT
+  intercept it. Never claim Copilot document coverage.
+-->
+<main>
+  <div
+    id="m365-chat-editor-target-element"
+    contenteditable="true"
+    role="textbox"
+    data-lexical-editor="true"
+    data-monitor="composer"
+  ></div>
+  <button aria-label="Send" data-monitor="send">Send</button>
+  <input type="file" data-monitor="file" />
+</main>
