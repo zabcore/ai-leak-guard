@@ -21,10 +21,15 @@ on:
     branches: [main]
     paths:
       - 'monitor/**'
-      - 'src/content/adapters/**'
-      - 'src/content/submit/**'
+      # Any content-script change can move monitored behaviour (adapters,
+      # modals, document/submit handling), so watch the whole tree.
+      - 'src/content/**'
       - 'src/shared/coverage.ts'
       - '.github/workflows/coverage-monitor.yml'
+
+# Least privilege: the job only reads the repo to build + dry-run the monitor.
+permissions:
+  contents: read
 
 jobs:
   monitor:
@@ -34,6 +39,9 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          # No pushes from this job — don't leave GITHUB_TOKEN in .git/config.
+          persist-credentials: false
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

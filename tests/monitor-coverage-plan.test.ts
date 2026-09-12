@@ -41,6 +41,7 @@ describe('§C monitor plan — derived from §D coverage', () => {
       )
       expect(negatives.has('paste')).toBe(surface.paste === 'unsupported')
       expect(negatives.has('send-enter')).toBe(surface.send === 'unsupported')
+      expect(negatives.has('send-button')).toBe(surface.send === 'unsupported')
       expect(negatives.has('document')).toBe(surface.document === 'unsupported')
     }
   })
@@ -106,6 +107,6 @@ describe('§C monitor plan — host isolation & honesty', () => {
     expect(positive('copilot-personal')).toEqual(new Set(['paste', 'send-enter', 'send-button']))
     expect(negative('copilot-personal')).toEqual(new Set(['document']))
     expect(positive('perplexity')).toEqual(new Set(['paste', 'document']))
-    expect(negative('perplexity')).toEqual(new Set(['send-enter']))
+    expect(negative('perplexity')).toEqual(new Set(['send-enter', 'send-button']))
   })
 })

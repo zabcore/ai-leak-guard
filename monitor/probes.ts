@@ -39,24 +39,25 @@ async function noModalHost(page: Page): Promise<boolean> {
   )
 }
 
-/** Dismiss whichever guard modal is open (Escape → cancel) and settle. */
+/**
+ * Dismiss whichever guard modal is open (Escape → cancel) and wait until
+ * neither host remains. The readiness gate reuses the SAME page for the
+ * real probe, so a modal left behind here would let a later probe report
+ * `modalAppeared: true` without mounting a new one — the wait therefore
+ * throws on timeout rather than swallowing it.
+ */
 export async function closeAnyModal(page: Page): Promise<void> {
   await page.evaluate(() => {
     document.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
     )
   })
-  await page
-    .waitForFunction(
-      (hosts) =>
-        !document.querySelector(`[${hosts.paste}]`) &&
-        !document.querySelector(`[${hosts.document}]`),
-      MODAL_HOST,
-      { timeout: 3000 },
-    )
-    .catch(() => {
-      /* best-effort; a fresh page is used per probe anyway */
-    })
+  await page.waitForFunction(
+    (hosts) =>
+      !document.querySelector(`[${hosts.paste}]`) && !document.querySelector(`[${hosts.document}]`),
+    MODAL_HOST,
+    { timeout: 3000 },
+  )
 }
 
 /** Dispatch a synthetic sensitive paste on the composer; return defaultPrevented. */

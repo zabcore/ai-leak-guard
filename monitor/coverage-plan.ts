@@ -116,7 +116,13 @@ function planForSurface(surface: SurfaceCoverage, all: readonly SurfaceCoverage[
   const unvalidated: ProbeRoute[] = []
   if (surface.paste === 'unsupported') add('paste', 'passthrough', "paste flag is 'unsupported'")
   if (surface.paste === 'unvalidated') unvalidated.push('paste')
-  if (surface.send === 'unsupported') add('send-enter', 'passthrough', "send flag is 'unsupported'")
+  if (surface.send === 'unsupported') {
+    // The submit adapter's contract covers BOTH Enter and the Send button,
+    // so an unsupported send must be verified passthrough on both — else a
+    // button-only interceptor could slip past an Enter-only negative.
+    add('send-enter', 'passthrough', "send flag is 'unsupported'")
+    add('send-button', 'passthrough', "send flag is 'unsupported'")
+  }
   if (surface.send === 'unvalidated') unvalidated.push('send-enter')
   if (surface.document === 'unsupported')
     add('document', 'passthrough', "document flag is 'unsupported'")

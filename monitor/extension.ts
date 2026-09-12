@@ -43,8 +43,11 @@ export const test = base.extend<{ context: BrowserContext }>({
       `--load-extension=${DIST}`,
       '--headless=new',
     ]
-    // CI containers usually need --no-sandbox; set MONITOR_NO_SANDBOX=0 to opt out.
-    if (process.env.MONITOR_NO_SANDBOX !== '0') args.push('--no-sandbox')
+    // The Chromium sandbox stays ON by default — a live (MONITOR_MODE=live)
+    // run visits real sites, so we must not weaken isolation implicitly. CI
+    // containers can't use the sandbox, and a local sandbox-less environment
+    // can opt in with MONITOR_NO_SANDBOX=1.
+    if (process.env.CI || process.env.MONITOR_NO_SANDBOX === '1') args.push('--no-sandbox')
 
     const context = await chromium.launchPersistentContext(userDataDir, {
       // MUST be `false`: with `headless: true` Playwright launches the
@@ -60,18 +63,22 @@ export const test = base.extend<{ context: BrowserContext }>({
       args,
     })
 
-    let sw: Worker | undefined = context.serviceWorkers()[0]
-    if (sw === undefined) {
-      sw = await context.waitForEvent('serviceworker', { timeout: 20_000 }).catch(() => undefined)
-    }
-    if (sw === undefined) {
-      throw new Error(
-        'Extension service worker never started — the packaged extension in dist/ failed to load (run `npm run build` first).',
-      )
-    }
+    try {
+      let sw: Worker | undefined = context.serviceWorkers()[0]
+      if (sw === undefined) {
+        sw = await context.waitForEvent('serviceworker', { timeout: 20_000 }).catch(() => undefined)
+      }
+      if (sw === undefined) {
+        throw new Error(
+          'Extension service worker never started — the packaged extension in dist/ failed to load (run `npm run build` first).',
+        )
+      }
 
-    await use(context)
-    await context.close()
+      await use(context)
+    } finally {
+      // Always release the Chromium context, even if startup validation threw.
+      await context.close()
+    }
   },
 })
 
