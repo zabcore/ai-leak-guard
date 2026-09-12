@@ -24,10 +24,10 @@ function textSummary(overrides: Partial<PreviewSummary> = {}): PreviewSummary {
   return {
     count: 2,
     groups: [
-      { label: 'Patient Name', count: 1 },
+      { label: 'Person Name', count: 1 },
       { label: 'MRN', count: 1 },
     ],
-    protectedText: 'Patient: [PATIENT_NAME], MRN: [MRN]',
+    protectedText: 'Patient: [PERSON_NAME], MRN: [MRN]',
     ...overrides,
   }
 }

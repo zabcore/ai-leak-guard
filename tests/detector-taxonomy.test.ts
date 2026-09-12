@@ -95,6 +95,10 @@ describe('RULES taxonomy', () => {
       medication: { category: 'clinical_context', baseSensitivity: 'low' },
       // V1.1 PR 3 — IDENTITY (names + addresses)
       patient_name: { category: 'identity', baseSensitivity: 'high' },
+      // V1.3.1 — precision-focused patient-name recall additions
+      patient_name_labeled: { category: 'identity', baseSensitivity: 'high' },
+      patient_name_honorific: { category: 'identity', baseSensitivity: 'high' },
+      patient_name_id_adjacent: { category: 'identity', baseSensitivity: 'high' },
       street_address: { category: 'identity', baseSensitivity: 'high' },
     })
   })

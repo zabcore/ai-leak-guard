@@ -1,0 +1,88 @@
+{
+  "note": "V1.3.1 name/DOB recall corpus. `positive.*` MUST warn (hasCriticalOrHigh). `held_out_*` are INDEPENDENT cases not used while tuning the rules — reported separately. `negative_extra` MUST NOT warn (they live permanently in precision-corpus.json too). Synthetic fake names only.",
+  "positive_dob": [
+    "born 03/12/1958",
+    "born on 01/02/1980",
+    "Patient Robert Lee, born 03/12/1958, presented with dyspnea.",
+    "New intake: Emily Carter, born 07/04/1990.",
+    "DOB 11/22/1975",
+    "DOB: 11/22/1975",
+    "D.O.B. 5/6/1962",
+    "Date of Birth: 07/04/1990",
+    "date of birth 07/04/1990",
+    "Birth Date 02/28/1955",
+    "Birthdate: 12/31/1948",
+    "DOB 1975-11-22",
+    "born 1975-11-22",
+    "DOB: 23/12/2017",
+    "born 23/12/2017",
+    "Date of Birth 03/04/2017",
+    "DOB 29/02/2016",
+    "DOB 31.12.1955",
+    "DOB: Sep/20/1988",
+    "DOB Sep/20/1988",
+    "Date of Birth: 23 December 2017",
+    "DOB September 20, 1988",
+    "DOB 20-Sep-1988",
+    "born 20 September 1988",
+    "DOB: Sept 5, 1970"
+  ],
+  "positive_relative_name": [
+    "Patient's mother, Mrs. Rivera, attended the visit.",
+    "Patient's mother Jane Doe, MRN 12345678, attended.",
+    "Spoke with Mr. Okonkwo, the patient's father, about discharge.",
+    "Emergency contact Ms. Petrova, sister, was notified."
+  ],
+  "positive_name_labeled": [
+    "Patient Name John Smith confirmed for surgery.",
+    "Patient's Name: Alice Wong",
+    "Pt Name Robert Lee",
+    "Member Name: Sandra Diaz",
+    "Patient: John Smith",
+    "Pt: Jane Doe",
+    "Insured Name Carla Perez",
+    "Guarantor Name: Thomas Reed"
+  ],
+  "positive_name_honorific": [
+    "Mrs. Khan needs a refill of her lisinopril.",
+    "Mr. Thompson reported chest pain this morning.",
+    "Discussed the biopsy results with Ms. Rodriguez.",
+    "Spoke with Mr. Alvarez about hospice.",
+    "Miss Delgado is scheduled for Monday."
+  ],
+  "positive_name_id_adjacent": [
+    "John Smith, MRN 12345678, needs a refill.",
+    "Contact Maria Garcia, DOB 01/02/1980, about results.",
+    "Jane Doe SSN 123-45-6789 on file.",
+    "Robert Lee, Member ID A1234567, called back."
+  ],
+  "positive_together": [
+    "Patient: John Smith, DOB 01/02/1980, MRN 12345678.",
+    "Mrs. Khan, born 03/12/1958, follow-up next week.",
+    "Patient Name David Nguyen, SSN 123-45-6789 verified."
+  ],
+  "held_out_positive": [
+    "Patient Name Gregory Sullivan admitted overnight.",
+    "Pt Name: Yuki Tanaka",
+    "Mr. Okafor requested a medication change.",
+    "Ms. Petrova completed her intake.",
+    "born 09/09/1943 with no acute distress",
+    "Date of Birth 04/17/1972 on the referral",
+    "Harold Vance, MRN 98765432, admitted for observation.",
+    "DOB 1968-06-30 recorded at registration"
+  ],
+  "held_out_negative": [
+    "Wilson Disease was ruled out on labs.",
+    "Cushing Syndrome features were absent.",
+    "The Braden Scale was completed on admission.",
+    "The Charlson Comorbidity index was calculated.",
+    "New Jersey office will handle the transfer.",
+    "San Diego clinic referral placed.",
+    "Aetna Better Health coverage confirmed.",
+    "Brigham Health pathway referenced.",
+    "Occupational Therapy referral placed.",
+    "Palliative Care consult requested.",
+    "Tommy John surgery was discussed as an analogy.",
+    "The Ranson Criteria were applied for pancreatitis."
+  ]
+}
