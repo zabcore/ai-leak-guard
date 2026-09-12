@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Gemini</title>
+<!--
+  §C monitor fixture — Gemini (gemini.google.com). Served (dry-run) at
+  https://gemini.google.com/*.
+
+  Shipped contract (src/content/adapters/gemini.ts + submit/adapters/gemini.ts):
+    composer     rich-textarea [contenteditable="true"]      (custom element)
+    send button  gem-icon-button.send-button button          (locale-independent)
+  The custom elements <rich-textarea> / <gem-icon-button> are reproduced
+  verbatim so the composed-path + wrapper-class matching is exercised.
+-->
+<main>
+  <rich-textarea>
+    <div contenteditable="true" role="textbox" data-monitor="composer"></div>
+  </rich-textarea>
+  <gem-icon-button class="send-button submit">
+    <button aria-label="Send message" data-monitor="send">Send</button>
+  </gem-icon-button>
+  <input type="file" data-monitor="file" />
+</main>

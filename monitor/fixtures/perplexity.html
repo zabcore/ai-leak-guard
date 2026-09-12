@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Perplexity</title>
+<!--
+  §C monitor fixture — Perplexity (www.perplexity.ai). Served (dry-run) at
+  https://www.perplexity.ai/*.
+
+  Shipped contract (src/content/adapters/perplexity.ts):
+    composer     textarea[placeholder*="Ask"]
+
+  send is UNSUPPORTED on Perplexity this release (no submit adapter is
+  installed), so the send button here backs a NEGATIVE probe: pressing
+  Enter in the composer must NOT be intercepted. document IS supported
+  (Perplexity is in DOCUMENT_PROTECTION_SITES), so the file input backs a
+  positive probe.
+-->
+<main>
+  <textarea placeholder="Ask anything…" data-monitor="composer"></textarea>
+  <button aria-label="Submit" data-monitor="send">Send</button>
+  <input type="file" data-monitor="file" />
+</main>
