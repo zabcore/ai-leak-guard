@@ -47,7 +47,12 @@ export const test = base.extend<{ context: BrowserContext }>({
     if (process.env.MONITOR_NO_SANDBOX !== '0') args.push('--no-sandbox')
 
     const context = await chromium.launchPersistentContext(userDataDir, {
-      headless: true,
+      // MUST be `false`: with `headless: true` Playwright launches the
+      // headless SHELL binary, which cannot load an MV3 extension — the
+      // service worker never starts and every probe hangs (the CI failure).
+      // `false` selects the FULL Chromium; `--headless=new` in `args` runs
+      // it headless (extension-capable, needs no display) in CI.
+      headless: false,
       // In this environment the pre-installed Chromium is set via
       // MONITOR_CHROMIUM; in CI Playwright resolves its own managed build,
       // so leave executablePath undefined when the var is absent.
