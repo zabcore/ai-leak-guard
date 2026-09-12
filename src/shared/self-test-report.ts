@@ -14,11 +14,16 @@
 // filenames, PHI, findings, full URLs, exception messages, stacks, or a
 // stray `note` can never survive, even if handed in.
 
+import { COVERAGE_SURFACE_IDS } from './coverage'
+
 /** Support endpoint. Track A owns the final path; this is the only place to update it. */
 export const SELF_TEST_REPORT_ENDPOINT = 'https://zabcore.com/self-test-report'
 
-/** Known surface ids (align with the §D coverage file). Personal Copilot and M365 Copilot are SEPARATE. */
-export const SELF_TEST_SITES = ['chatgpt', 'claude', 'gemini', 'copilot', 'copilot-m365'] as const
+// V1.3.1 §D: the self-test `site` allowlist READS the surface ids from
+// the single coverage definition, so the report can never name a surface
+// the product doesn't formally cover. (The self-test itself only runs on
+// the resume sites today; an unknown/other id coerces to 'unknown'.)
+export const SELF_TEST_SITES: readonly string[] = COVERAGE_SURFACE_IDS
 /** Truthful runtime state of the adapter for this surface (distinct from its id). */
 export const ADAPTER_STATES = ['ready', 'unsupported', 'unavailable'] as const
 /** The step a run reached / failed at. */
