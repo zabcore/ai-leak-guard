@@ -27,6 +27,8 @@ import {
 } from '../shared/self-test-report'
 import { showReportPreview } from '../content/submit/self-test-report-preview'
 import { siteLabel, actionLabel, eventTypeLabel, relativeTime } from './labels'
+import { mountGrowthPrompt, wireSupportLink, type GrowthCardDeps } from '../growth/card'
+import { recordProblemReport } from '../growth/store'
 
 function setToggleLabel(enabled: boolean): void {
   const label = document.getElementById('toggle-label')
@@ -414,6 +416,10 @@ function openSelfTestReport(record: SelfTestResultRecord): void {
   const block = buildDiagnosticsBlock(input)
   showReportPreview(fields, block, {
     onProceed: () => {
+      // §Growth Loop: the user is reporting a problem — record it so the
+      // review/referral prompt is suppressed for a window (bad experience →
+      // support, not a review request). Best-effort, independent of the report.
+      void recordProblemReport()
       try {
         void (
           globalThis as unknown as {
@@ -544,6 +550,23 @@ async function init(): Promise<void> {
   } catch (err) {
     console.warn('[AI Leak Guard] self-test site default failed:', err)
   }
+  // V1.3.1 §Growth Loop — mount the review/referral card (position 3). This
+  // runs BEFORE `renderLastSelfTestResult` below, which CONSUMES (clears) the
+  // one-shot self-test result: gathering the growth signals first lets a recent
+  // self-test FAIL suppress the prompt before the record is cleared. The whole
+  // block is best-effort — the growth loop can never break the popup.
+  try {
+    const slot = document.getElementById('growth-slot')
+    if (slot instanceof HTMLElement) {
+      const deps: GrowthCardDeps = { checkActiveSite: true }
+      await mountGrowthPrompt(slot, deps)
+      const support = document.getElementById('growth-support')
+      if (support instanceof HTMLElement) wireSupportLink(support, slot, deps)
+    }
+  } catch (err) {
+    console.warn('[AI Leak Guard] growth prompt mount failed:', err)
+  }
+
   // Surface a recent result the content script wrote while the popup was
   // closed (Chrome dismisses the popup when the test tab takes focus).
   try {

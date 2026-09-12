@@ -20,6 +20,7 @@ import {
 } from '../../shared/self-test-report'
 import { showReportPreview } from './self-test-report-preview'
 import type { SelfTestResultRecord } from '../../shared/self-test'
+import { recordProblemReport } from '../../growth/store'
 
 export interface ReportOpenDeps {
   /** Extension version; defaults to the manifest version. */
@@ -107,6 +108,9 @@ export function openSelfTestReport(record: SelfTestResultRecord, deps: ReportOpe
 
   preview(fields, block, {
     onProceed: () => {
+      // §Growth Loop: record the problem report (metadata-only, best-effort)
+      // so the review/referral prompt is suppressed for a window afterwards.
+      void recordProblemReport()
       if (deps.mode === 'url') {
         // Owner override: legacy content-free URL-prefill.
         try {

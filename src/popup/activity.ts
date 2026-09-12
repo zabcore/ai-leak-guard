@@ -20,6 +20,7 @@ import type { DetectorCategory } from '../detector/types'
 import { getEvents, MAX_EVENTS, type AlgEvent } from '../shared/event-log'
 import { actionLabel, categoryLabel, eventTypeLabel, relativeTime, siteLabel } from './labels'
 import { exportCsv, exportJson } from './export'
+import { mountGrowthPrompt, wireSupportLink, type GrowthCardDeps } from '../growth/card'
 
 /**
  * Human-readable absolute timestamp for the row's "abs" line.
@@ -168,8 +169,27 @@ async function render(): Promise<void> {
   }
 }
 
+/**
+ * V1.3.1 §Growth Loop — mount the small review/referral card near the bottom.
+ * The activity page is a deliberate destination (not a live browsing surface),
+ * so it passes `checkActiveSite: false`. Best-effort — never breaks the page.
+ */
+async function mountGrowth(): Promise<void> {
+  try {
+    const slot = document.getElementById('growth-slot')
+    if (!(slot instanceof HTMLElement)) return
+    const deps: GrowthCardDeps = { checkActiveSite: false }
+    await mountGrowthPrompt(slot, deps)
+    const support = document.getElementById('growth-support')
+    if (support instanceof HTMLElement) wireSupportLink(support, slot, deps)
+  } catch (err) {
+    console.warn('[AI Leak Guard] growth prompt mount failed:', err)
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   void render()
+  void mountGrowth()
 })
 
 // Test seam — the DOMContentLoaded auto-invoke can't run in the
