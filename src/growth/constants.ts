@@ -54,17 +54,12 @@ export const LINK_COPIED_REVERT_MS = 2000
 // ── URLs ──────────────────────────────────────────────────────────────────
 
 /**
- * Chrome Web Store review page. Centralized here (mirroring how `WELCOME_URL`
- * is centralized in the service worker) so the owner fills the published
- * extension id in exactly ONE place.
- *
- * TODO(owner) — CONFIRM THIS VALUE before release: replace `<EXTENSION_ID>`
- * with the published extension id, e.g.
- *   https://chromewebstore.google.com/detail/abcdefghijklmnopabcdefghijklmnop/reviews
- * Until then the review CTA opens a Store URL with the placeholder id.
+ * Chrome Web Store review page for the published extension
+ * (id `ebknkkimodbdplohbgpgglmppokedfdp`, publisher Zabcore). Centralized
+ * here (mirroring how `WELCOME_URL` is centralized in the service worker).
  */
 export const STORE_REVIEW_URL =
-  'https://chromewebstore.google.com/detail/<EXTENSION_ID>/reviews'
+  'https://chromewebstore.google.com/detail/ebknkkimodbdplohbgpgglmppokedfdp/reviews'
 
 /**
  * Static install/landing link the referral CTA copies to the clipboard.
