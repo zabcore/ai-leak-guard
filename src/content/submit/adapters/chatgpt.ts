@@ -31,7 +31,7 @@ import { BaseSubmitAdapter, type SubmitAdapterOptions } from './base-submit-adap
 const CHATGPT_CONFIG = {
   id: 'chatgpt',
   composerSelector:
-    '#prompt-textarea, [contenteditable="true"][role="textbox"], textarea[data-testid="prompt-textarea"]',
+    '#prompt-textarea, [contenteditable="true"][role="textbox"], textarea[data-testid="prompt-textarea"], textarea[name="prompt-textarea"]',
   sendButtonSelector:
     'button[data-testid="send-button"], #composer-submit-button, button[aria-label="Send prompt"]',
   composerKey: 'chatgpt-composer',

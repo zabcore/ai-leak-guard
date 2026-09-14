@@ -271,10 +271,22 @@ describe('site adapter isPromptInput', () => {
     expect(chatgpt.isPromptInput(el)).toBe(true)
   })
 
+  it('chatgpt matches the logged-out fallback textarea (name="prompt-textarea") — regression for the chatgpt.com/uc PHI-leak gap', () => {
+    const el = document.createElement('textarea')
+    el.setAttribute('name', 'prompt-textarea')
+    expect(chatgpt.isPromptInput(el)).toBe(true)
+  })
+
   it('claude matches a contenteditable textbox', () => {
     const el = document.createElement('div')
     el.setAttribute('contenteditable', 'true')
     el.setAttribute('role', 'textbox')
+    expect(claude.isPromptInput(el)).toBe(true)
+  })
+
+  it('claude matches the pre-hydration static composer textarea (#static-composer-input) — regression for the fallback-composer PHI-leak gap', () => {
+    const el = document.createElement('textarea')
+    el.id = 'static-composer-input'
     expect(claude.isPromptInput(el)).toBe(true)
   })
 

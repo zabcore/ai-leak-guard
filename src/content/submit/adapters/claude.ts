@@ -30,7 +30,7 @@ import { BaseSubmitAdapter, type SubmitAdapterOptions } from './base-submit-adap
 
 const CLAUDE_CONFIG = {
   id: 'claude',
-  composerSelector: '[contenteditable="true"][role="textbox"]',
+  composerSelector: '[contenteditable="true"][role="textbox"], textarea#static-composer-input',
   sendButtonSelector: 'button[data-testid="chat-input-send"], button[aria-label="Send message"]',
   composerKey: 'claude-composer',
 } as const
