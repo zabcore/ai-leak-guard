@@ -47,7 +47,7 @@ jobs:
           # bill. The input is still named `anthropic_api_key` per the action's
           # setup docs — it just reads the OAuth secret. (To switch to a metered
           # API key later, point this at secrets.ANTHROPIC_API_KEY instead.)
-          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+                    claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # The reviewer's standing instructions live in the repo so they are
           # versioned and reviewable. Keep the inline prompt a thin pointer.
           prompt: |
