@@ -184,3 +184,88 @@ export async function probeDocument(page: Page): Promise<ProbeResult> {
 export async function assertClean(page: Page): Promise<boolean> {
   return noModalHost(page)
 }
+
+// ── live-noauth drift probe ────────────────────────────────────────────────
+//
+// Runs against the REAL logged-out site (no fixture, no login). It catches the
+// site drifting under us — the extension appearing installed while silently
+// not recognising a composer. Every non-PASS is a red run; the classification
+// lets triage separate a real product regression from an environment problem.
+
+/**
+ * PASS           — the composer was found AND the extension mounted its modal.
+ * PRODUCT_FAILURE — the composer was found but NO modal mounted (drift: the
+ *                   adapter no longer recognises this surface). This is the
+ *                   leak we ship.
+ * ENV_AUTH_FAILURE — no composer ever appeared (page didn't load, CAPTCHA,
+ *                   interstitial, or a login wall). Still red, but not a
+ *                   product regression — triage differs.
+ */
+export type LiveNoauthResult = 'PASS' | 'PRODUCT_FAILURE' | 'ENV_AUTH_FAILURE'
+
+export interface LiveNoauthOutcome {
+  readonly result: LiveNoauthResult
+  readonly detail: string
+}
+
+/** Poll for any of the selectors to attach; return the first that matched. */
+async function firstPresentSelector(
+  page: Page,
+  selectors: readonly string[],
+  timeoutMs: number,
+): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs
+  do {
+    for (const sel of selectors) {
+      const handle = await page.$(sel).catch(() => null)
+      if (handle !== null) return sel
+    }
+    await page.waitForTimeout(300)
+  } while (Date.now() < deadline)
+  return null
+}
+
+/**
+ * Drive the real logged-out composer and assert the extension warns. The page
+ * must already be navigated (see `openLiveNoauthPage`). Never throws on a site
+ * problem — it classifies instead, so the caller asserts on `result === 'PASS'`
+ * and any other value fails the test with a triage-ready message.
+ */
+export async function probeLiveNoauth(
+  page: Page,
+  selectors: readonly string[],
+): Promise<LiveNoauthOutcome> {
+  const sel = await firstPresentSelector(page, selectors, 15_000)
+  if (sel === null) {
+    return {
+      result: 'ENV_AUTH_FAILURE',
+      detail:
+        'no composer appeared within 15s — page did not load / CAPTCHA / interstitial / login wall',
+    }
+  }
+
+  // Type through the real DOM, then trigger the paste path the extension hooks.
+  await page.evaluate(
+    ([s, text]) => {
+      const el = document.querySelector(s)
+      if (el === null) return
+      ;(el as HTMLElement).focus()
+      if (el.tagName === 'TEXTAREA') (el as HTMLTextAreaElement).value = text
+      const dt = new DataTransfer()
+      dt.setData('text/plain', text)
+      el.dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+      )
+    },
+    [sel, SENSITIVE_TEXT] as const,
+  )
+
+  const mounted = await hostAppears(page, MODAL_HOST.paste, 5_000)
+  if (mounted) {
+    return { result: 'PASS', detail: `composer "${sel}" recognised; modal host mounted` }
+  }
+  return {
+    result: 'PRODUCT_FAILURE',
+    detail: `composer "${sel}" is present but the extension mounted no modal host — the surface drifted (silent leak)`,
+  }
+}

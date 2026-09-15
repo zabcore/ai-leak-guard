@@ -24,6 +24,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # --- Gates. Every one of these must pass for the job to be green, and
+      #     branch protection requires this job before a PR can merge. Adding
+      #     a gate here (not just to package.json) is what makes it enforced.
+
+      - name: Type-check (src)
+        run: npm run typecheck
+
+      - name: Type-check (monitor)
+        run: npm run typecheck:monitor
+
       - name: Run linter
         run: npm run lint
 
@@ -35,6 +45,13 @@ jobs:
 
       - name: Verify service worker has no DOM (window/document) references
         run: npm run verify:sw
+
+      # The load-bearing Teams-Lite safety gate. Free / unenrolled must make
+      # ZERO outbound requests. This was NOT enforced in CI before; it is now.
+      # When the paid layer lands, extend verify-no-network.mjs so it also
+      # fails if any paid path can issue a request in the unenrolled state.
+      - name: Verify extension issues no network requests
+        run: npm run verify:no-network
 
       - name: Check build output
         run: |

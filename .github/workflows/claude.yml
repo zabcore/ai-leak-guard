@@ -1,0 +1,48 @@
+name: Claude
+
+# The @claude responder. Once this is on main, mentioning @claude in an issue,
+# an issue comment, or a PR review comment makes Claude implement the request
+# and open / update a PR. THIS is what lets tasks be driven from an issue
+# instead of copied into a local terminal.
+#
+# Auth: CLAUDE_CODE_OAUTH_TOKEN (Claude Pro/Max subscription) — draws on the
+# subscription, no metered API bill.
+#
+# NOTE: confirm the action ref and inputs against the current
+# anthropics/claude-code-action README before first run.
+
+on:
+  issues:
+    types: [opened, assigned]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+# Least privilege for an implementer: write code + PRs, read the rest.
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  claude:
+    # Only run when @claude is actually mentioned — never on unrelated activity.
+    if: |
+      (github.event_name == 'issues' && contains(github.event.issue.body, '@claude')) ||
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

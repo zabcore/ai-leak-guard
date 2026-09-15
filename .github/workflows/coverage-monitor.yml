@@ -1,22 +1,37 @@
 name: Coverage Monitor (Gate C)
 
-# V1.3.1 §C — the compatibility monitor. Loads the PACKAGED extension in
-# Chromium and, for every route the §D coverage definition describes,
-# checks the shipped extension does what coverage promises (intervenes on
-# supported routes, stays out of the way on unsupported ones).
+# V1.3.1 §C — the compatibility monitor, promoted from scaffold to a real
+# always-on monitor.
 #
-# Runs in DRY-RUN by default: each surface's real origin is served a
-# synthetic fixture via request interception, so the run needs no network
-# and no credentials. A weekly schedule catches the day a surface's DOM
-# drifts and breaks an adapter; it can also be launched on demand.
+# TWO modes run here:
+#   • DRY-RUN     — a synthetic fixture served at each surface's real origin.
+#                   Catches OUR regressions (an adapter change breaking a
+#                   route). Needs no network, no credentials. It does NOT
+#                   catch the site drifting under us, because the fixture is
+#                   frozen.
+#   • LIVE-NOAUTH — navigates the REAL logged-out origin (chatgpt.com,
+#                   perplexity.ai, and the pre-hydration composer states) and
+#                   asserts the packaged extension still recognises the
+#                   composer and mounts its modal host. This is the drift
+#                   detector — the states that actually leaked to users.
+#                   Needs no credentials. CAPTCHA / IP block / outage must
+#                   surface as a FAILED (never-green) run, classified in the
+#                   report as ENVIRONMENT/AUTH, distinct from PRODUCT FAILURE.
+#
+# Authenticated (logged-in) states are added later via MONITOR_MODE=live +
+# a storageState secret, once test accounts exist.
 
 on:
   workflow_dispatch:
+    inputs:
+      induce_failure:
+        description: 'Deliberately fail one probe, to test that alerting fires'
+        type: boolean
+        default: false
   schedule:
-    # Mondays 06:00 UTC — a weekly compatibility heartbeat.
-    - cron: '0 6 * * 1'
-  # Also guard against self-regressions: run when the monitor, the
-  # adapters, or the coverage definition change.
+    # Daily 06:00 UTC. A missed/late cron run is caught by the dead-man's
+    # switch below, so a silent non-run cannot read as green.
+    - cron: '0 6 * * *'
   pull_request:
     branches: [main]
     paths:
@@ -26,43 +41,85 @@ on:
       - 'src/shared/coverage.ts'
       - '.github/workflows/coverage-monitor.yml'
 
+permissions:
+  contents: read
+
 jobs:
-  monitor:
+  monitor-dry:
     name: Dry-run coverage monitor
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Type-check the monitor
-        run: npm run typecheck:monitor
-
-      - name: Build the packaged extension
-        run: npm run build
-
+      - run: npm ci
+      - run: npm run typecheck:monitor
+      - run: npm run build
       - name: Install Chromium for Playwright
         run: npx playwright install --with-deps chromium
-
       - name: Run the coverage monitor (dry-run)
         run: npm run monitor
         env:
           CI: 'true'
           MONITOR_MODE: dry
-
-      - name: Upload Playwright report
+          MONITOR_INDUCE_FAILURE: ${{ inputs.induce_failure && '1' || '' }}
+      - name: Upload dry-run report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-monitor-report
+          name: coverage-monitor-dry-report
           path: monitor/playwright-report/
           retention-days: 14
+
+  monitor-live-noauth:
+    name: Live no-auth drift monitor
+    runs-on: ubuntu-latest
+    # Only on the schedule / manual run — a live hit on every PR is wasteful
+    # and flaky. PRs are covered by the dry-run job above.
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run typecheck:monitor
+      - run: npm run build
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - name: Run the coverage monitor (live, no credentials)
+        run: npm run monitor
+        env:
+          CI: 'true'
+          MONITOR_MODE: live-noauth
+      - name: Upload live report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-monitor-live-report
+          path: monitor/playwright-report/
+          retention-days: 14
+
+  # Dead-man's switch: pings the healthcheck ONLY when both monitor jobs ran
+  # and passed. If a scheduled run is skipped, delayed, or a job fails, no
+  # ping is sent and the external healthcheck service alerts the owner. This
+  # is what makes "runner outage / CAPTCHA / never-ran must never read green"
+  # true — GitHub sends no email when a scheduled run simply never happens.
+  heartbeat:
+    name: Signal healthy run
+    runs-on: ubuntu-latest
+    needs: [monitor-dry, monitor-live-noauth]
+    if: ${{ github.event_name == 'schedule' && success() }}
+    steps:
+      - name: Ping dead-man's switch
+        run: |
+          if [ -z "${HC_URL}" ]; then
+            echo "HEALTHCHECK_URL secret not set — skipping ping. Set it to arm the dead-man's switch."
+            exit 0
+          fi
+          curl -fsS -m 10 --retry 3 "${HC_URL}" && echo "pinged healthcheck"
+        env:
+          HC_URL: ${{ secrets.HEALTHCHECK_URL }}
