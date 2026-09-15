@@ -8,9 +8,16 @@
 // is fulfilled locally with the synthetic fixture (no network, no
 // credentials), and because the committed URL is still the real https
 // origin, the packaged content script injects precisely as it would on
-// the live site. LIVE mode (MONITOR_MODE=live, needs an authenticated
-// storageState — see README) skips the interception and hits the real
-// site.
+// the live site.
+//
+// Non-dry modes skip the interception and hit the REAL site:
+//   • LIVE-NOAUTH (MONITOR_MODE=live-noauth) — navigates the real
+//     logged-out origins (chatgpt.com, perplexity.ai, and pre-hydration
+//     composer states). No credentials. This is the drift detector for the
+//     exact states that leaked to users; see `openLiveNoauthPage` +
+//     `probeLiveNoauth`.
+//   • LIVE (MONITOR_MODE=live) — the authenticated variant, needs a
+//     storageState (see README); reserved for once test accounts exist.
 
 import {
   test as base,
@@ -28,7 +35,14 @@ import type { SurfacePlan } from './coverage-plan'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DIST = resolve(HERE, '..', 'dist')
 
-export const MONITOR_MODE: 'dry' | 'live' = process.env.MONITOR_MODE === 'live' ? 'live' : 'dry'
+export type MonitorMode = 'dry' | 'live' | 'live-noauth'
+
+export const MONITOR_MODE: MonitorMode =
+  process.env.MONITOR_MODE === 'live'
+    ? 'live'
+    : process.env.MONITOR_MODE === 'live-noauth'
+      ? 'live-noauth'
+      : 'dry'
 
 /** `https://host/*` (a coverage/manifest match) → a Playwright route glob. */
 function routeGlob(origin: string): string {
@@ -77,7 +91,11 @@ export const test = base.extend<{ context: BrowserContext }>({
 
 export { expect }
 
-/** Open a surface page (dry-run: fixture served at the real origin). */
+/**
+ * Open a surface page. In dry-run the fixture is served at the real origin
+ * via request interception; in any live mode the interception is skipped and
+ * the real site is loaded.
+ */
 export async function openSurface(context: BrowserContext, plan: SurfacePlan): Promise<Page> {
   const page = await context.newPage()
   if (MONITOR_MODE === 'dry') {
@@ -89,5 +107,21 @@ export async function openSurface(context: BrowserContext, plan: SurfacePlan): P
     }
   }
   await page.goto(navigationUrl(plan.origins), { waitUntil: 'domcontentloaded' })
+  return page
+}
+
+/**
+ * Open a REAL logged-out URL for the live-noauth drift monitor — no request
+ * interception, no credentials. A navigation error (timeout, DNS, an
+ * interstitial that never settles) is swallowed here on purpose: the page is
+ * returned regardless, and `probeLiveNoauth` classifies "no composer found"
+ * as an ENVIRONMENT/AUTH failure rather than crashing the run with an opaque
+ * stack. The run is still red — a non-PASS never reads green.
+ */
+export async function openLiveNoauthPage(context: BrowserContext, url: string): Promise<Page> {
+  const page = await context.newPage()
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {
+    /* classified downstream as ENV/AUTH when no composer appears */
+  })
   return page
 }

@@ -1,0 +1,59 @@
+name: Claude Review
+
+# Adversarial PR review, encoded so it runs on every PR without a human
+# relaying "a PR is ready" to a reviewer. Posts a GO / NO-GO with reasons.
+# It does NOT merge — merge stays a human decision (see review-instructions.md).
+#
+# Requires: the Claude GitHub app installed on this repo and an
+# ANTHROPIC_API_KEY repository secret (one-time owner setup).
+#
+# NOTE: pin/confirm the action ref and input names against the current
+# anthropics/claude-code-action README before first run — the action's
+# inputs have changed across versions. This uses the v1 `prompt` form.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+# Least privilege: read the code, write review comments only.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Adversarial review
+    runs-on: ubuntu-latest
+    # Skip drafts and dependabot noise.
+    if: github.event.pull_request.draft == false && github.actor != 'dependabot[bot]'
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Claude review
+        uses: anthropics/claude-code-action@v1
+        with:
+          # Option A — Claude Pro/Max subscription. The token is generated with
+          # `claude setup-token` and stored as the CLAUDE_CODE_OAUTH_TOKEN
+          # secret; it draws on the subscription, so there is no metered API
+          # bill. The input is still named `anthropic_api_key` per the action's
+          # setup docs — it just reads the OAuth secret. (To switch to a metered
+          # API key later, point this at secrets.ANTHROPIC_API_KEY instead.)
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The reviewer's standing instructions live in the repo so they are
+          # versioned and reviewable. Keep the inline prompt a thin pointer.
+          prompt: |
+            You are the adversarial PR reviewer for AI Leak Guard.
+            Read and follow .github/claude/review-instructions.md exactly.
+            Review this pull request against every item in that checklist,
+            then post ONE review comment ending with a line that is exactly
+            "VERDICT: GO" or "VERDICT: NO-GO", followed by the reasons.
+            Do not approve, do not merge, do not push commits.
