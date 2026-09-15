@@ -10,13 +10,59 @@
 // submits). See `src/content/submit/self-test.ts` for the runner and
 // `docs`/the URL contract for the report payload.
 
+import { DetectorCategory } from '../detector/types'
+
 /**
- * Synthetic PHI used for the self-test. Fixed, obviously-fake values
- * (verified to trip the detector: healthcare_patient_id + identity).
- * NEVER real page content — the whole point is to exercise the path
- * without touching anything the user typed.
+ * One synthetic self-test case: a fixed, obviously-fake identifier and the
+ * detector category it must trip. Each is exercised INDEPENDENTLY (a single
+ * combined string could pass on one identifier while another silently broke),
+ * and a unit suite asserts each case fires exactly `expectedCategory` via the
+ * detector's own category output — not merely "a warning appeared".
+ *
+ * NEVER real page content — the whole point is to exercise the path without
+ * touching anything the user typed. Values chosen against the shipped rules:
+ * a bare "Jane Doe" is intentionally NOT detected (on-device NER is out of
+ * scope), so the name case uses an honorific+surname, which the name rule
+ * does catch.
  */
-export const SYNTHETIC_TEXT = 'Jane Doe, MRN 12345678, DOB 01/02/1980'
+export interface SelfTestCase {
+  /** Stable id for logs/reports (content-free). */
+  readonly id: string
+  /** Human-facing label for the identifier kind. */
+  readonly label: string
+  /** The synthetic identifier text injected into the composer. */
+  readonly text: string
+  /** The detector category this case must produce. */
+  readonly expectedCategory: DetectorCategory
+}
+
+/** The independent self-test cases: name, MRN, and DOB (numeric + written month). */
+export const SELF_TEST_CASES: readonly SelfTestCase[] = [
+  {
+    id: 'name',
+    label: 'Name',
+    text: 'Mrs. Jane Doe',
+    expectedCategory: DetectorCategory.IDENTITY,
+  },
+  {
+    id: 'mrn',
+    label: 'MRN',
+    text: 'MRN 12345678',
+    expectedCategory: DetectorCategory.HEALTHCARE_PATIENT_ID,
+  },
+  {
+    id: 'dob-numeric',
+    label: 'Date of birth (numeric)',
+    text: 'DOB 01/02/1980',
+    expectedCategory: DetectorCategory.IDENTITY,
+  },
+  {
+    id: 'dob-written',
+    label: 'Date of birth (written month)',
+    text: 'DOB January 2, 1980',
+    expectedCategory: DetectorCategory.IDENTITY,
+  },
+] as const
 
 /** Popup-facing outcome. `fail`/`unsupported` reveal the "Report this" button. */
 export type SelfTestResultKind = 'confirmed' | 'fail' | 'unsupported'

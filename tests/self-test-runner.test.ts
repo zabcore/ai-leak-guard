@@ -8,7 +8,9 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { runSelfTest, type SelfTestRunnerDeps } from '../src/content/submit/self-test'
-import { SYNTHETIC_TEXT } from '../src/shared/self-test'
+import { SELF_TEST_CASES } from '../src/shared/self-test'
+
+const CASE_TEXTS = SELF_TEST_CASES.map((c) => c.text)
 
 function baseDeps(overrides: Partial<SelfTestRunnerDeps> = {}): {
   deps: SelfTestRunnerDeps
@@ -61,11 +63,12 @@ describe('runSelfTest', () => {
     const { deps, calls } = baseDeps()
     const report = await runSelfTest(deps)
     expect(report).toEqual({ result: 'confirmed', code: 'OK', composer: 1, intercept: 1, modal: 1 })
-    // Inserted exactly the synthetic text, then cleared it.
-    expect(calls.insert).toEqual([SYNTHETIC_TEXT])
+    // Ran EACH identifier case independently, inserting each in turn, then
+    // cleared each. (V1.3.3: no single combined string.)
+    expect(calls.insert).toEqual(CASE_TEXTS)
     expect(calls.cleared).toBeGreaterThanOrEqual(1)
-    // The ONLY modal interaction was a cancel — there is no resume seam.
-    expect(calls.cancelled).toBe(1)
+    // The ONLY modal interaction is a cancel per case — there is no resume seam.
+    expect(calls.cancelled).toBe(SELF_TEST_CASES.length)
     expect('resume' in deps).toBe(false)
     expect('proceed' in deps).toBe(false)
   })
@@ -122,6 +125,6 @@ describe('runSelfTest', () => {
     const { deps, calls } = baseDeps()
     await runSelfTest({ ...deps, ...({ resume } as unknown as object) } as SelfTestRunnerDeps)
     expect(resume).not.toHaveBeenCalled()
-    expect(calls.cancelled).toBe(1)
+    expect(calls.cancelled).toBe(SELF_TEST_CASES.length)
   })
 })
