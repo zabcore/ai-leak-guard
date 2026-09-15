@@ -157,3 +157,6 @@ vite.config.ts.timestamp-*
 monitor/test-results/
 monitor/playwright-report/
 monitor/.auth/
+# Per-route live status store — persisted across CI runs via cache/artifact,
+# never committed (it is run state, not source).
+monitor/status/

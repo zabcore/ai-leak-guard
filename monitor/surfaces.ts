@@ -75,43 +75,100 @@ export function navigationUrl(origins: readonly string[]): string {
 }
 
 /**
- * A surface the live-noauth drift monitor can exercise WITHOUT a login — the
- * exact states that have leaked (logged-out ChatGPT, Perplexity, and the
- * pre-hydration composers). Unlike the fixtures, these `data-monitor` hooks do
- * not exist on the real site, so we key on the real composer selectors the
- * shipped adapters match (kept in sync with `src/content/adapters/*`); the
- * first that appears is driven. Surfaces that require a login (Gemini, Copilot)
- * are intentionally absent — they belong to the future authenticated mode.
+ * A live-noauth ROUTE — a surface × state the drift monitor exercises WITHOUT a
+ * login. Unlike the fixtures, these `data-monitor` hooks do not exist on the
+ * real site, so we key on the real composer selectors the shipped adapters
+ * match (kept in sync with `src/content/adapters/*`); the first that appears is
+ * driven. Surfaces that require a login (Gemini, Copilot) are absent — they
+ * belong to the future authenticated mode.
+ *
+ * `kind`:
+ *   • 'required' — must PASS live; its status counts as live-pass evidence.
+ *   • 'gap'      — a known state we cannot deterministically exercise live
+ *                  (the Claude pre-hydration flash behind a login). Recorded as
+ *                  a GAP, NEVER asserted as a PASS, and covered offline by a
+ *                  dry regression fixture instead.
  */
-export interface LiveNoauthSurface {
-  readonly id: string
+export type LiveNoauthKind = 'required' | 'gap'
+
+export interface LiveNoauthRoute {
+  /** Stable per-route key for the status store (surface × state). */
+  readonly routeKey: string
+  readonly surface: string
   /** Real logged-out URL to navigate. */
   readonly url: string
   /** Real composer selectors to try in order; the first present is driven. */
   readonly composerSelectors: readonly string[]
+  readonly kind: LiveNoauthKind
+  readonly note?: string
 }
 
-export const LIVE_NOAUTH_SURFACES: readonly LiveNoauthSurface[] = [
+export const LIVE_NOAUTH_ROUTES: readonly LiveNoauthRoute[] = [
   {
-    id: 'chatgpt',
+    routeKey: 'chatgpt:live-noauth',
+    surface: 'chatgpt',
     url: 'https://chatgpt.com/',
     // The logged-out fallback <textarea name="prompt-textarea"> is the state
-    // that leaked (v1.3.2); the ProseMirror #prompt-textarea appears once
-    // hydrated.
+    // that leaked (v1.3.2); the ProseMirror #prompt-textarea appears once hydrated.
     composerSelectors: ['textarea[name="prompt-textarea"]', '#prompt-textarea'],
+    kind: 'required',
   },
   {
-    id: 'perplexity',
+    routeKey: 'perplexity:live-noauth',
+    surface: 'perplexity',
     url: 'https://www.perplexity.ai/',
     composerSelectors: ['textarea[placeholder*="Ask"]', '#ask-input'],
+    kind: 'required',
   },
   {
-    id: 'claude',
+    routeKey: 'claude:pre-hydration',
+    surface: 'claude',
     url: 'https://claude.ai/',
-    // The pre-hydration static composer (v1.3.2) precedes the TipTap editor.
-    composerSelectors: [
-      'textarea#static-composer-input',
-      '[contenteditable="true"][role="textbox"]',
-    ],
+    // Pre-hydration static composer only. It is a brief flash behind a login,
+    // not reliably reachable live → recorded as a GAP, covered offline by the
+    // claude-static.html dry fixture.
+    composerSelectors: ['textarea#static-composer-input'],
+    kind: 'gap',
+    note: 'pre-hydration flash behind login; covered offline by fixtures/claude-static.html',
   },
 ]
+
+/** Route keys that must PASS live to count as release evidence. */
+export const REQUIRED_LIVE_ROUTES: readonly string[] = LIVE_NOAUTH_ROUTES.filter(
+  (r) => r.kind === 'required',
+).map((r) => r.routeKey)
+
+/**
+ * A leaked-composer DRY regression: reproduce the exact DOM that leaked so the
+ * loaded extension's handling is covered deterministically offline (the live
+ * states are not reliably reproducible in CI).
+ */
+export interface LeakedComposerFixture {
+  readonly id: string
+  /** Origin glob to serve the fixture at (dry-run interception). */
+  readonly origin: string
+  /** Fixture file relative to `monitor/`. */
+  readonly fixtureFile: string
+  /** The real composer selector to paste into (must match a shipped adapter). */
+  readonly composerSelector: string
+}
+
+export const LEAKED_COMPOSER_FIXTURES: readonly LeakedComposerFixture[] = [
+  {
+    id: 'chatgpt-logged-out-fallback',
+    origin: 'https://chatgpt.com/*',
+    fixtureFile: 'fixtures/chatgpt-fallback.html',
+    composerSelector: 'textarea[name="prompt-textarea"]',
+  },
+  {
+    id: 'claude-pre-hydration-static',
+    origin: 'https://claude.ai/*',
+    fixtureFile: 'fixtures/claude-static.html',
+    composerSelector: 'textarea#static-composer-input',
+  },
+]
+
+/** Read any fixture file by its `monitor/`-relative path. */
+export function readFixtureFile(relPath: string): string {
+  return readFileSync(resolve(HERE, relPath), 'utf8')
+}

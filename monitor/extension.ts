@@ -110,18 +110,53 @@ export async function openSurface(context: BrowserContext, plan: SurfacePlan): P
   return page
 }
 
+export interface LiveNoauthPage {
+  readonly page: Page
+  /** True if the navigation itself errored (timeout, DNS, reset) — a real
+   *  environment signal, so a subsequent "no composer" is ENV, not UNCLASSIFIED. */
+  readonly navError: boolean
+}
+
 /**
  * Open a REAL logged-out URL for the live-noauth drift monitor — no request
  * interception, no credentials. A navigation error (timeout, DNS, an
- * interstitial that never settles) is swallowed here on purpose: the page is
- * returned regardless, and `probeLiveNoauth` classifies "no composer found"
- * as an ENVIRONMENT/AUTH failure rather than crashing the run with an opaque
- * stack. The run is still red — a non-PASS never reads green.
+ * interstitial that never settles) is captured and returned as `navError`
+ * rather than crashing the run with an opaque stack; the probe then classifies
+ * a no-composer with a nav error as ENVIRONMENT (real evidence) and without one
+ * as UNCLASSIFIED. The run is still red — a non-PASS never reads green.
  */
-export async function openLiveNoauthPage(context: BrowserContext, url: string): Promise<Page> {
+export async function openLiveNoauthPage(
+  context: BrowserContext,
+  url: string,
+): Promise<LiveNoauthPage> {
   const page = await context.newPage()
+  let navError = false
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {
-    /* classified downstream as ENV/AUTH when no composer appears */
+    navError = true
+    /* classified downstream: ENV with this nav error, else UNCLASSIFIED */
   })
+  return { page, navError }
+}
+
+/**
+ * Serve a specific fixture file at an origin (dry-run only) and open it — used
+ * by the leaked-composer regression tests (ChatGPT logged-out fallback textarea
+ * and the Claude pre-hydration static composer), which reproduce the exact DOM
+ * that leaked so the loaded extension's handling is covered deterministically
+ * offline. Throws in a non-dry mode (these must never hit the network).
+ */
+export async function openFixtureAt(
+  context: BrowserContext,
+  origin: string,
+  fixtureBody: string,
+): Promise<Page> {
+  if (MONITOR_MODE !== 'dry') {
+    throw new Error('openFixtureAt is a dry-run helper; it must not run in a live mode')
+  }
+  const page = await context.newPage()
+  await page.route(routeGlob(origin), (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: fixtureBody }),
+  )
+  await page.goto(origin.replace(/\*$/, ''), { waitUntil: 'domcontentloaded' })
   return page
 }

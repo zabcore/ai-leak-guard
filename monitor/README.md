@@ -104,12 +104,33 @@ run; open each job's log or download its `coverage-monitor-*-report` artifact.
 **Reading a result.** Every non-PASS is a **red run** — the monitor never reads
 green on a partial or skipped result. Classify from the failing test's message:
 
-| Outcome              | Meaning                                                                          | Action                                                                                                                          |
-| -------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| **PASS**             | Composer found and the extension mounted its modal host.                         | None.                                                                                                                           |
-| **PRODUCT_FAILURE**  | Composer found but **no modal** — the surface drifted; a real silent leak.       | Fix the adapter + add an `adapters.test.ts` regression, ship.                                                                   |
-| **ENV_AUTH_FAILURE** | No composer appeared — page didn't load, CAPTCHA, interstitial, or a login wall. | Not a product bug. Re-run; if it persists, the site is blocking the runner (needs the authenticated mode / a different egress). |
-| **NOT-RUN**          | A scheduled run was skipped/delayed, or a job errored before probing.            | The heartbeat did **not** ping → the dead-man's switch alerts. Investigate the workflow run.                                    |
+| Outcome              | Meaning                                                                                                                     | Action                                                                                                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **PASS**             | Composer found and the extension mounted its modal host.                                                                    | None. Counts as live-pass evidence (if fresh).                                                                                             |
+| **PRODUCT_FAILURE**  | Composer found but **no modal** — the surface drifted; a real silent leak.                                                  | Fix the adapter + add an `adapters.test.ts` regression, ship.                                                                              |
+| **ENV_AUTH_FAILURE** | No composer AND real environment evidence — a nav/network error, or a detected challenge/CAPTCHA/interstitial/login marker. | Not a product bug. Re-run; if it persists, the site is blocking the runner (needs the authenticated mode / a different egress).            |
+| **UNCLASSIFIED**     | No composer and **no** environment evidence. Unexpected. **Must be diagnosed** — never auto-filed as environment.           | Investigate: is the selector stale (a silent drift dressed as "nothing there"), or is there a new interstitial to teach `detectEnvMarker`? |
+| **GAP**              | A known state we cannot exercise live (Claude pre-hydration). A distinct non-green, non-product outcome.                    | None — it is covered offline by a dry regression fixture. Never counts as live evidence.                                                   |
+| **NOT-RUN / stale**  | A scheduled run was skipped/delayed/errored, or a route's last PASS is > 36 h old.                                          | The heartbeat did **not** ping → the dead-man's switch alerts. A stale route reads non-green in the status store.                          |
+
+Only a **PASS within 36 h** counts as live-pass evidence. UNCLASSIFIED,
+ENV_AUTH_FAILURE, PRODUCT_FAILURE, GAP, skipped, and stale never count.
+
+**Per-route status store.** Each route (surface × state) keeps its own
+`lastAttemptAt` / `lastResult` / `lastSuccessAt` / `consecutivePasses` in
+`monitor/status/live-status.json`, uploaded as the `coverage-monitor-live-status`
+artifact and persisted across scheduled runs via the workflow cache (rolling
+`live-status-*` key). A run for one route never refreshes another's — a green
+ChatGPT run cannot make a stale/blocked Claude route read green. A route whose
+last PASS is older than **36 h** reads stale.
+
+**Release-candidate gate.** Dispatch _Run workflow_ with
+`release_candidate: true`. It runs the live routes once more, then
+`npm run verify:live-status` FAILS unless every **required** route
+(`chatgpt:live-noauth`, `perplexity:live-noauth`) is green: last result PASS,
+within 36 h, and **≥ 2 consecutive passes** (i.e. two consecutive successful
+scheduled executions recorded). A CI run of only skipped/blocked tests cannot
+pass this gate.
 
 **Dead-man's switch.** The `heartbeat` job pings `secrets.HEALTHCHECK_URL`
 **only** when both monitor jobs ran and passed on the schedule. GitHub sends no
@@ -126,6 +147,15 @@ skipped the ping (the switch is simply not armed yet).
 FAILURE …`), the run goes red, and — on a scheduled run — the heartbeat does not
 ping. This confirms a real failure would actually surface. Nothing else changes;
 it is a no-op without the input.
+
+**Prove staleness (absence never reads green).** Two independent guards:
+(1) the dead-man's switch — skip/miss a scheduled run and no ping is sent, so
+the external healthcheck alerts; (2) the 36 h per-route expiry — a route with no
+fresh PASS reads stale in the store and fails the release-candidate gate, even
+if an old PASS is on record. Both are unit-proven in
+`tests/monitor-route-status.test.ts` (stale, missing, and non-PASS results are
+never green) and observable by dispatching the release-candidate gate against a
+store with no recent passes (it fails).
 
 **Renewing credentials (future authenticated mode).** When logged-in surfaces
 (Gemini, Copilot) are added, a Playwright `storageState` is captured from a

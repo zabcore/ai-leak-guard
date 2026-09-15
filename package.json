@@ -18,6 +18,7 @@
     "typecheck:monitor": "tsc -p monitor/tsconfig.json",
     "verify:sw": "node scripts/verify-sw.mjs",
     "verify:no-network": "node scripts/verify-no-network.mjs",
+    "verify:live-status": "node scripts/verify-live-status.mjs",
     "monitor": "playwright test -c monitor/playwright.config.ts"
   },
   "devDependencies": {
