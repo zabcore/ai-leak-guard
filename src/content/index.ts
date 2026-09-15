@@ -28,7 +28,8 @@ import { installClaudeSubmitProtection } from './submit/install-claude'
 import { installGeminiSubmitProtection } from './submit/install-gemini'
 import { installCopilotSubmitProtection } from './submit/install-copilot-submit'
 import type { InstallSubmitOptions, InstalledSubmit } from './submit/install-submit'
-import { runSelfTest } from './submit/self-test'
+import { runSelfTest, installUnloadGuard } from './submit/self-test'
+import { dispatchSelfTestSend } from './submit/self-test-send'
 import { showSelfTestBanner } from './submit/self-test-banner'
 import { openSelfTestReport } from './submit/self-test-report-open'
 import { getSelfTestSignal, clearSelfTestSignal, setSelfTestResult } from '../shared/storage'
@@ -516,24 +517,52 @@ async function maybeRunSelfTest(installed: InstalledSubmit): Promise<void> {
   if (Date.now() - signal.ts > SELF_TEST_STALE_MS) return
 
   const submitAdapter = installed.adapter
-  const report = await runSelfTest({
-    getComposer: () => submitAdapter.resolveComposer(),
-    readText: (el) => el.textContent ?? '',
-    insert: (el, text) => {
-      adapter.insertText(el, text)
-    },
-    clear: (el) => {
+
+  // Track the live composer + what is currently injected, so a page unload
+  // mid-run can edit-guard-clear exactly the synthetic text (and never the
+  // user's own edits). Removed as soon as the run resolves.
+  const runState: { el: HTMLElement | null; injected: string | null } = {
+    el: null,
+    injected: null,
+  }
+  const guardOps = {
+    readText: (el: HTMLElement) => el.textContent ?? '',
+    clear: (el: HTMLElement) => {
       adapter.replaceContents(el, '')
     },
-    dispatchSend: (el) => dispatchSelfTestEnter(el),
-    isModalOpen: () => isDocumentModalOpen(),
-    cancelModal: () => cancelSelfTestModal(),
-    now: () => Date.now(),
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-    composerTimeoutMs: 8000,
-    modalTimeoutMs: 3000,
-    pollMs: 50,
-  })
+  }
+  const removeUnloadGuard = installUnloadGuard(window, () => runState, guardOps)
+
+  let report
+  try {
+    report = await runSelfTest({
+      getComposer: () => {
+        const el = submitAdapter.resolveComposer()
+        if (el !== null) runState.el = el
+        return el
+      },
+      readText: guardOps.readText,
+      insert: (el, text) => {
+        adapter.insertText(el, text)
+      },
+      clear: guardOps.clear,
+      // The send runs behind the absolute safety net — it can never submit,
+      // even if interception fails. We only learn whether the adapter took it.
+      dispatchSend: (el) => dispatchSelfTestSend(el).intercepted,
+      isModalOpen: () => isDocumentModalOpen(),
+      cancelModal: () => cancelSelfTestModal(),
+      now: () => Date.now(),
+      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      composerTimeoutMs: 8000,
+      modalTimeoutMs: 3000,
+      pollMs: 50,
+      onInjection: (text) => {
+        runState.injected = text
+      },
+    })
+  } finally {
+    removeUnloadGuard()
+  }
 
   const record: SelfTestResultRecord = {
     nonce: signal.nonce,
@@ -565,24 +594,6 @@ async function maybeRunSelfTest(installed: InstalledSubmit): Promise<void> {
   } catch (err) {
     console.warn('[AI Leak Guard] self-test banner failed:', err)
   }
-}
-
-/** Dispatch the same Enter keydown the submit adapter intercepts; return whether it was taken. */
-function dispatchSelfTestEnter(el: HTMLElement): boolean {
-  try {
-    el.focus?.()
-  } catch {
-    // best-effort
-  }
-  const event = new KeyboardEvent('keydown', {
-    key: 'Enter',
-    code: 'Enter',
-    bubbles: true,
-    cancelable: true,
-    composed: true,
-  })
-  el.dispatchEvent(event)
-  return event.defaultPrevented
 }
 
 /** Cancel the open warning modal (return-to-edit) via a real Escape keydown. */

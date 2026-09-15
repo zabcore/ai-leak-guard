@@ -12,7 +12,7 @@ import { openSubmitDecision } from '../src/content/submit/submit-ui'
 import { isDocumentModalOpen, __resetDocumentModalForTests } from '../src/content/document-modal'
 import { __resetDocumentGateForTests } from '../src/content/submit/document-gate'
 import { runSelfTest, type SelfTestRunnerDeps } from '../src/content/submit/self-test'
-import { SYNTHETIC_TEXT } from '../src/shared/self-test'
+import { SELF_TEST_CASES } from '../src/shared/self-test'
 
 function build(): { composer: HTMLElement; button: HTMLButtonElement } {
   document.body.innerHTML = ''
@@ -125,7 +125,7 @@ describe('self-test integration (real adapter + core + modal)', () => {
     // The user's draft is byte-for-byte intact, and NOTHING synthetic
     // was inserted or sent.
     expect(composer.textContent).toContain('My real question about patient care planning')
-    expect(composer.textContent).not.toContain(SYNTHETIC_TEXT)
+    for (const c of SELF_TEST_CASES) expect(composer.textContent).not.toContain(c.text)
     expect(resumeSpy).not.toHaveBeenCalled()
     expect(isDocumentModalOpen()).toBe(false)
   })
