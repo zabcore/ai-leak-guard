@@ -52,7 +52,11 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Page } from '@playwright/test'
 
-const STATUS_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'status', 'live-status.json')
+// The CI live-noauth job points this at a CI-scoped store so it can NEVER feed
+// the release-gate's real-environment store (see the workflow + README).
+const STATUS_PATH =
+  process.env.MONITOR_STATUS_PATH ??
+  resolve(dirname(fileURLToPath(import.meta.url)), 'status', 'live-status.json')
 
 /** Persist one route's outcome to the cross-run status store (live mode only). */
 function persistRoute(routeKey: string, result: RouteResult): void {
@@ -88,10 +92,12 @@ if (MONITOR_MODE === 'live-noauth') {
       const induceThis = nextInduce()
       test(`${route.routeKey} [${route.kind}]`, async ({ context }) => {
         if (induceThis) expect(false, INDUCED_MESSAGE).toBe(true)
-        const { page, navError } = await openLiveNoauthPage(context, route.url)
+        const { page, navError, status, cfMitigated } = await openLiveNoauthPage(context, route.url)
         try {
           const { result, detail } = await probeLiveNoauth(page, route.composerSelectors, {
             navError,
+            status,
+            cfMitigated,
           })
 
           if (route.kind === 'gap') {
