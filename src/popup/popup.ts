@@ -441,6 +441,15 @@ function openSelfTestReport(record: SelfTestResultRecord): void {
   })
 }
 
+/**
+ * Run the guided self-test from the popup. This is the DOCUMENTED BACKSTOP for
+ * the website's "See it work": the site cannot start the test itself (the
+ * extension exposes no external messaging and adds no permission for it), so
+ * "See it work" directs users to this in-popup "Test protection" button. It is
+ * self-contained — it sets the one-shot signal and opens a fresh supported-site
+ * tab (`${origin}#alg-selftest`); on any failure it reports "couldn't start"
+ * with a report option. The handoff is never "done" on a website link alone.
+ */
 export async function startSelfTest(): Promise<void> {
   const btn = document.getElementById('selftest-btn')
   const resultEl = document.getElementById('selftest-result')

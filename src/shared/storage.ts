@@ -6,6 +6,7 @@ import {
   type SelfTestSignal,
   type SelfTestResultRecord,
 } from './self-test'
+import { recordDismissal, type PromptDismissal, type PromptMemory } from './prompt-memory'
 
 export interface Counters {
   total: number
@@ -47,6 +48,32 @@ export async function getPrefs(): Promise<Prefs> {
 export async function setPrefs(prefs: Partial<Prefs>): Promise<void> {
   const current = await getPrefs()
   await chrome.storage.local.set({ prefs: { ...current, ...prefs } })
+}
+
+// ─── V1.3.3 Onboarding — dismissible in-popup nudge memory (local only) ──
+//
+// Metadata only (a prompt id, a choice, a timestamp). Read by the popup to
+// decide whether to show a future registration/update nudge; NEVER interrupts
+// an in-page sensitive-data warning (nudges are popup-only), and enrolls the
+// user in nothing. The decision logic lives in `prompt-memory.ts`.
+const PROMPT_MEMORY_KEY = 'promptMemory'
+
+export async function getPromptMemory(): Promise<PromptMemory> {
+  const stored = await chrome.storage.local.get(PROMPT_MEMORY_KEY)
+  const memory = stored[PROMPT_MEMORY_KEY] as PromptMemory | undefined
+  return memory !== undefined && memory !== null ? memory : {}
+}
+
+/** Remember the user's "Not now" (`later`) / "Don't ask again" (`never`) choice. */
+export async function setPromptDismissal(
+  id: string,
+  kind: PromptDismissal,
+  at: number = Date.now(),
+): Promise<void> {
+  const memory = await getPromptMemory()
+  await chrome.storage.local.set({
+    [PROMPT_MEMORY_KEY]: recordDismissal(memory, id, kind, at),
+  })
 }
 
 // ─── V1.3 M1 submit-protection session kill switch ──────────────────
