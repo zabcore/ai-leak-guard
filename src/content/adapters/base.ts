@@ -14,6 +14,16 @@ export interface SiteAdapter {
   isPromptInput(el: Element): boolean
 
   /**
+   * Resolve THIS surface's composer in `root` (default `document`) right now,
+   * or null if none is present. This is LIVE adapter readiness — the source of
+   * truth for the availability indicator: the extension is only "active here"
+   * when a composer actually resolves, never from the hostname alone. Uses the
+   * surface's stable/primary composer selectors (the same ones the paste and
+   * submit paths key on), not the generic contenteditable fallback.
+   */
+  resolveComposer(root?: ParentNode): HTMLElement | null
+
+  /**
    * Insert `text` at the current cursor position inside `el`, replacing any
    * current selection. Should fire input/change events so the site's framework
    * state updates correctly.

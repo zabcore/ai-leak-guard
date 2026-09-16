@@ -30,6 +30,22 @@ export function genericIsPromptInput(el: Element): boolean {
   return isTextField(el) || isContentEditableElement(el)
 }
 
+/**
+ * Resolve the first present element matching any of `selectors` under `root`.
+ * Shared helper for each adapter's `resolveComposer` — the live-readiness query
+ * the availability indicator uses.
+ */
+export function resolveBySelectors(
+  root: ParentNode,
+  selectors: readonly string[],
+): HTMLElement | null {
+  for (const selector of selectors) {
+    const el = root.querySelector<HTMLElement>(selector)
+    if (el !== null) return el
+  }
+  return null
+}
+
 export function insertText(el: Element, text: string): boolean {
   if (isTextField(el)) {
     const field = el
@@ -81,6 +97,9 @@ const fallbackAdapter: SiteAdapter = {
   domains: [],
   id: 'fallback',
   isPromptInput: genericIsPromptInput,
+  // An unknown host has no known composer shape — the indicator never renders
+  // here (readiness is never claimed on an unrecognised surface).
+  resolveComposer: () => null,
   insertText,
   replaceContents,
 }

@@ -15,6 +15,7 @@ function adapterWith(insertResult: boolean): SiteAdapter {
     domains: [],
     id: 'fake',
     isPromptInput: () => true,
+    resolveComposer: () => null,
     insertText: () => insertResult,
     replaceContents: () => true,
   }

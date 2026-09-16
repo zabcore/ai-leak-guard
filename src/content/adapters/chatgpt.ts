@@ -1,5 +1,19 @@
 import type { SiteAdapter } from './base'
-import { insertText, replaceContents, isContentEditableElement } from './fallback'
+import {
+  insertText,
+  replaceContents,
+  isContentEditableElement,
+  resolveBySelectors,
+} from './fallback'
+
+// Stable/primary composer selectors — the ProseMirror div, the logged-out
+// fallback textarea (v1.3.2), and the generic role=textbox editor.
+const COMPOSER_SELECTORS = [
+  '#prompt-textarea',
+  'textarea[name="prompt-textarea"]',
+  'textarea[data-testid="prompt-textarea"]',
+  '[contenteditable="true"][role="textbox"]',
+]
 
 // ChatGPT's composer is a contenteditable div (id="prompt-textarea",
 // role="textbox"); older builds exposed data-id="root".
@@ -20,6 +34,7 @@ const chatgpt: SiteAdapter = {
   domains: ['chatgpt.com', 'chat.openai.com'],
   id: 'chatgpt',
   isPromptInput,
+  resolveComposer: (root = document) => resolveBySelectors(root, COMPOSER_SELECTORS),
   insertText,
   replaceContents,
 }
