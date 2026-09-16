@@ -19,15 +19,46 @@ describe('classifyNoComposer', () => {
     expect(out.detail).toContain('cloudflare-challenge')
   })
 
-  it('no composer AND no evidence → UNCLASSIFIED, never environment', () => {
-    const out = classifyNoComposer({ navError: false, envMarker: null })
+  it('a Turnstile challenge marker → ENV_AUTH_FAILURE', () => {
+    const out = classifyNoComposer({ navError: false, envMarker: 'turnstile' })
+    expect(out.result).toBe('ENV_AUTH_FAILURE')
+    expect(out.detail).toContain('turnstile')
+  })
+
+  it('a bot-mitigation HTTP status (403 / 429) → ENV_AUTH_FAILURE', () => {
+    for (const status of [403, 429] as const) {
+      const out = classifyNoComposer({ navError: false, status, envMarker: null })
+      expect(out.result).toBe('ENV_AUTH_FAILURE')
+      expect(out.detail).toContain(String(status))
+    }
+  })
+
+  it('a cf-mitigated response header → ENV_AUTH_FAILURE', () => {
+    const out = classifyNoComposer({ navError: false, cfMitigated: true, envMarker: null })
+    expect(out.result).toBe('ENV_AUTH_FAILURE')
+    expect(out.detail).toMatch(/cf-mitigated/i)
+  })
+
+  it('reached + no block + no composer → UNCLASSIFIED, never environment', () => {
+    // status 200, no cf-mitigated, no marker, no nav error — genuinely unexplained.
+    const out = classifyNoComposer({
+      navError: false,
+      status: 200,
+      cfMitigated: false,
+      envMarker: null,
+    })
     expect(out.result).toBe('UNCLASSIFIED')
     expect(out.detail).toMatch(/must be diagnosed/i)
-    // The whole point: it is NOT filed as environment.
     expect(out.result).not.toBe('ENV_AUTH_FAILURE')
   })
 
   it('a nav error dominates even if no marker was found', () => {
     expect(classifyNoComposer({ navError: true, envMarker: null }).result).toBe('ENV_AUTH_FAILURE')
+  })
+
+  it('a normal status (200) with no other signal is NOT environment', () => {
+    expect(classifyNoComposer({ navError: false, status: 200, envMarker: null }).result).toBe(
+      'UNCLASSIFIED',
+    )
   })
 })

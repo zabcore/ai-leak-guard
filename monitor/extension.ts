@@ -115,15 +115,20 @@ export interface LiveNoauthPage {
   /** True if the navigation itself errored (timeout, DNS, reset) — a real
    *  environment signal, so a subsequent "no composer" is ENV, not UNCLASSIFIED. */
   readonly navError: boolean
+  /** Main-response HTTP status, or null if unavailable — 403/429 signal a block. */
+  readonly status: number | null
+  /** True if the main response carried a `cf-mitigated` header (bot mitigation). */
+  readonly cfMitigated: boolean
 }
 
 /**
  * Open a REAL logged-out URL for the live-noauth drift monitor — no request
  * interception, no credentials. A navigation error (timeout, DNS, an
- * interstitial that never settles) is captured and returned as `navError`
- * rather than crashing the run with an opaque stack; the probe then classifies
- * a no-composer with a nav error as ENVIRONMENT (real evidence) and without one
- * as UNCLASSIFIED. The run is still red — a non-PASS never reads green.
+ * interstitial that never settles) is captured as `navError`; the main
+ * response's status and `cf-mitigated` header are captured too. The probe then
+ * classifies a no-composer with any of these as ENVIRONMENT (real evidence) and
+ * without any as UNCLASSIFIED. The run is still red — a non-PASS never reads
+ * green — but on the (non-blocking) live job it does not fail the workflow.
  */
 export async function openLiveNoauthPage(
   context: BrowserContext,
@@ -131,11 +136,21 @@ export async function openLiveNoauthPage(
 ): Promise<LiveNoauthPage> {
   const page = await context.newPage()
   let navError = false
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {
-    navError = true
-    /* classified downstream: ENV with this nav error, else UNCLASSIFIED */
-  })
-  return { page, navError }
+  let status: number | null = null
+  let cfMitigated = false
+  const response = await page
+    .goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    .catch(() => {
+      navError = true
+      /* classified downstream: ENV with this nav error, else UNCLASSIFIED */
+      return null
+    })
+  if (response !== null) {
+    status = response.status()
+    // Cloudflare stamps `cf-mitigated` on challenged/blocked responses.
+    cfMitigated = (response.headers()['cf-mitigated'] ?? '') !== ''
+  }
+  return { page, navError, status, cfMitigated }
 }
 
 /**

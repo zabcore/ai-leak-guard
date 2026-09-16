@@ -220,16 +220,26 @@ export interface LiveNoauthOutcome {
 
 /**
  * Classify a "no composer appeared" outcome. Environment is claimed ONLY on
- * real evidence — a navigation/network error or a detected env marker.
- * Otherwise the failure is UNCLASSIFIED (unexpected; must be diagnosed), never
- * silently filed as environment. Pure, so it is unit-tested without a browser.
+ * real evidence — a navigation/network error, a bot-mitigation HTTP status
+ * (403/429), a `cf-mitigated` response header, or a detected challenge/
+ * interstitial/login marker. Otherwise the failure is UNCLASSIFIED (genuinely
+ * unexplained; must be diagnosed), never silently filed as environment. Pure,
+ * so it is unit-tested without a browser.
  */
 export function classifyNoComposer(input: {
   readonly navError: boolean
+  readonly status?: number | null
+  readonly cfMitigated?: boolean
   readonly envMarker: string | null
 }): LiveNoauthOutcome {
   if (input.navError) {
     return { result: 'ENV_AUTH_FAILURE', detail: 'navigation/network error before the page loaded' }
+  }
+  if (input.status === 403 || input.status === 429) {
+    return { result: 'ENV_AUTH_FAILURE', detail: `bot-mitigation HTTP ${input.status}` }
+  }
+  if (input.cfMitigated === true) {
+    return { result: 'ENV_AUTH_FAILURE', detail: 'cf-mitigated response header (bot mitigation)' }
   }
   if (input.envMarker !== null) {
     return { result: 'ENV_AUTH_FAILURE', detail: `environment signal: ${input.envMarker}` }
@@ -237,7 +247,7 @@ export function classifyNoComposer(input: {
   return {
     result: 'UNCLASSIFIED',
     detail:
-      'no composer and NO environment signal (no challenge/interstitial/login/network error) — must be diagnosed, not auto-filed as environment',
+      'reached the page, no bot-mitigation signal, and still no composer — must be diagnosed, not auto-filed as environment',
   }
 }
 
@@ -251,6 +261,7 @@ export async function detectEnvMarker(page: Page): Promise<string | null> {
   const markerSelectors: Array<[marker: string, selector: string]> = [
     ['cloudflare-challenge', '#challenge-running, #challenge-form, #cf-challenge-running'],
     ['captcha-iframe', 'iframe[src*="captcha" i], iframe[src*="challenges.cloudflare.com" i]'],
+    ['turnstile', 'iframe[src*="turnstile" i], .cf-turnstile'],
     ['recaptcha', 'iframe[src*="recaptcha" i], .g-recaptcha'],
     ['hcaptcha', 'iframe[src*="hcaptcha" i], .h-captcha'],
   ]
@@ -302,15 +313,29 @@ async function firstPresentSelector(
 export async function probeLiveNoauth(
   page: Page,
   selectors: readonly string[],
-  opts: { navError?: boolean } = {},
+  opts: { navError?: boolean; status?: number | null; cfMitigated?: boolean } = {},
 ): Promise<LiveNoauthOutcome> {
-  const sel = await firstPresentSelector(page, selectors, 15_000)
+  // Absorb transient renders before concluding "no composer": wait for the
+  // network to settle (bounded), then look for the composer with a couple of
+  // backed-off retries. This reduces false UNCLASSIFIED from a slow SPA paint.
+  await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
+  let sel = await firstPresentSelector(page, selectors, 12_000)
+  const backoffsMs = [1_000, 2_000]
+  for (let i = 0; sel === null && i < backoffsMs.length; i += 1) {
+    await page.waitForTimeout(backoffsMs[i])
+    sel = await firstPresentSelector(page, selectors, 5_000)
+  }
   if (sel === null) {
-    // No composer. Only call it ENVIRONMENT with real evidence (a nav/network
-    // error or a detected challenge/interstitial/login marker); otherwise it
-    // is UNCLASSIFIED and must be diagnosed — never auto-filed as env.
+    // No composer. Claim ENVIRONMENT only on real evidence — a nav/network
+    // error, a bot-mitigation status (403/429) or `cf-mitigated` header, or a
+    // detected challenge/interstitial/login marker; otherwise UNCLASSIFIED.
     const envMarker = await detectEnvMarker(page)
-    return classifyNoComposer({ navError: opts.navError ?? false, envMarker })
+    return classifyNoComposer({
+      navError: opts.navError ?? false,
+      status: opts.status ?? null,
+      cfMitigated: opts.cfMitigated ?? false,
+      envMarker,
+    })
   }
 
   // Type through the real DOM, then trigger the paste path the extension hooks.

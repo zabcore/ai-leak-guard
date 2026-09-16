@@ -78,8 +78,14 @@ jobs:
           retention-days: 14
 
   monitor-live-noauth:
-    name: Live no-auth drift monitor
+    name: Live no-auth drift monitor (non-blocking)
     runs-on: ubuntu-latest
+    # NON-BLOCKING: these public sites bot-mitigate automated/datacenter
+    # clients, so a live run may legitimately return UNCLASSIFIED/ENV without
+    # any product regression. It records per-route status + uploads an artifact
+    # as a best-effort drift signal, but a third-party bot policy must never
+    # red-gate the release. The required gate is `monitor-dry`.
+    continue-on-error: true
     # Only on the schedule / manual run — a live hit on every PR is wasteful
     # and flaky. PRs are covered by the dry-run job above.
     if: github.event_name != 'pull_request'
@@ -94,30 +100,33 @@ jobs:
       - run: npm run build
       - name: Install Chromium for Playwright
         run: npx playwright install --with-deps chromium
-      # Restore the per-route status from the most recent prior run so the 36 h
-      # expiry and consecutive-pass streak span runs. Rolling key: read the
-      # newest via the prefix, write a fresh cache entry keyed by this run.
-      - name: Restore per-route live status
+      # Restore the CI-scoped store from the most recent prior CI run so the
+      # 36 h expiry / streak span runs. This store is CI-ONLY (key + filename):
+      # it is never read by the release-gate, so a bot-blocked CI live run can
+      # neither satisfy nor fail the gate on recorded real-environment evidence.
+      - name: Restore CI live status
         uses: actions/cache/restore@v4
         with:
           path: monitor/status
-          key: live-status-${{ github.run_id }}
+          key: ci-live-status-${{ github.run_id }}
           restore-keys: |
-            live-status-
+            ci-live-status-
       - name: Run the coverage monitor (live, no credentials)
         run: npm run monitor
         env:
           CI: 'true'
           MONITOR_MODE: live-noauth
-      - name: Save per-route live status
+          # CI-scoped store — deliberately NOT the release-gate's store.
+          MONITOR_STATUS_PATH: monitor/status/ci-live-status.json
+      - name: Save CI live status
         # Persist even on failure — a red/blocked run must still record that the
         # route did NOT pass (so it reads stale/blocked next time, never green).
         if: ${{ !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: monitor/status
-          key: live-status-${{ github.run_id }}
-      - name: Upload per-route status artifact
+          key: ci-live-status-${{ github.run_id }}
+      - name: Upload CI live status artifact
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
@@ -132,14 +141,20 @@ jobs:
           path: monitor/playwright-report/
           retention-days: 14
 
-  # Release-candidate gate: dispatch with release_candidate=true. Runs the live
-  # routes once more (via needs), then FAILS unless every required route is
-  # green in the recorded store — last result PASS, within 36 h, ≥ 2 consecutive
-  # passes. A run of only skipped/blocked/stale routes cannot pass this.
+  # Release-candidate gate: dispatch with release_candidate=true. It reads the
+  # REAL-ENVIRONMENT live store (cache namespace `real-live-status-*`) and FAILS
+  # unless every required route is green — last result PASS, within 36 h, ≥ 2
+  # consecutive passes.
+  #
+  # It is deliberately DECOUPLED from `monitor-live-noauth` (no `needs`) and
+  # reads a DIFFERENT cache namespace, so a bot-blocked CI live run can neither
+  # satisfy nor fail it. The `real-live-status-*` cache is populated out-of-band
+  # from a REAL machine (see README "Operating Gate C"); the authoritative live
+  # proof is the guided self-test run by a person in a real browser. With no
+  # real evidence recorded, this gate fails closed (correct — not release-ready).
   release-gate:
-    name: Release-candidate gate (required live routes green)
+    name: Release-candidate gate (real-environment live evidence)
     runs-on: ubuntu-latest
-    needs: [monitor-live-noauth]
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_candidate }}
     steps:
       - uses: actions/checkout@v4
@@ -148,25 +163,25 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      - name: Restore per-route live status
+      - name: Restore REAL-environment live status (never written by CI live)
         uses: actions/cache/restore@v4
         with:
           path: monitor/status
-          key: live-status-${{ github.run_id }}
+          key: real-live-status-${{ github.run_id }}
           restore-keys: |
-            live-status-
-      - name: Verify required live routes are green
+            real-live-status-
+      - name: Verify required live routes are green (real-environment evidence)
         run: npm run verify:live-status
 
-  # Dead-man's switch: pings the healthcheck ONLY when both monitor jobs ran
-  # and passed. If a scheduled run is skipped, delayed, or a job fails, no
-  # ping is sent and the external healthcheck service alerts the owner. This
-  # is what makes "runner outage / CAPTCHA / never-ran must never read green"
-  # true — GitHub sends no email when a scheduled run simply never happens.
+  # Dead-man's switch: tied to the DRY path only, so alerting never depends on
+  # live-site reachability. Pings the healthcheck ONLY when the required dry job
+  # succeeded on the schedule. If a scheduled run is skipped/delayed or the dry
+  # job fails, no ping is sent and the external healthcheck service alerts the
+  # owner — GitHub sends no email when a scheduled run simply never happens.
   heartbeat:
     name: Signal healthy run
     runs-on: ubuntu-latest
-    needs: [monitor-dry, monitor-live-noauth]
+    needs: [monitor-dry]
     if: ${{ github.event_name == 'schedule' && success() }}
     steps:
       - name: Ping dead-man's switch

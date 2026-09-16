@@ -51,10 +51,15 @@ gate — so coverage and the monitor can't drift.
 - **Live no-auth** (`MONITOR_MODE=live-noauth`): navigates the **real
   logged-out** origins (chatgpt.com, perplexity.ai, and the pre-hydration
   composer states — the exact states that leaked) and asserts the packaged
-  extension still recognises the composer and mounts its modal host. This is
-  the **drift detector**. **No credentials.** Each surface is classified
-  `PASS` / `PRODUCT_FAILURE` / `ENV_AUTH_FAILURE` (see **Operating Gate C**);
-  any non-PASS is a red run.
+  extension still recognises the composer and mounts its modal host. Each
+  surface is classified `PASS` / `PRODUCT_FAILURE` / `ENV_AUTH_FAILURE` /
+  `UNCLASSIFIED` / `GAP` (see **Operating Gate C**). It is a **best-effort
+  drift signal**: these sites bot-mitigate automated/datacenter clients, so a
+  run from CI may legitimately return `UNCLASSIFIED`/`ENV_AUTH_FAILURE` with no
+  product regression. **In CI this job is non-blocking** (`continue-on-error`)
+  — it never red-gates the release. The dependable live proof is the guided
+  self-test in a real browser (below); run `live-noauth` from a **real
+  machine** to get a trustworthy drift signal.
 - **Live (authenticated)** (`MONITOR_MODE=live`): reserved for once test
   accounts exist — same as live-noauth but with a `storageState` for
   logged-in surfaces (Gemini, Copilot). Not wired into CI yet.
@@ -90,10 +95,15 @@ dry-run job also on PRs that touch the monitor, the adapters, or the coverage
 file). It installs Chromium with `npx playwright install --with-deps chromium`,
 so it does not depend on any pre-provisioned browser. Three jobs:
 
-- **monitor-dry** — the fixture matrix; runs on PRs and on the schedule.
+- **monitor-dry** — the fixture matrix; the **required gate** (runs on PRs and
+  on the schedule). A dry-run failure fails the workflow.
 - **monitor-live-noauth** — the real logged-out drift check; schedule/manual
-  only (a live hit on every PR would be wasteful and flaky).
-- **heartbeat** — the dead-man's switch (see below).
+  only, and **non-blocking** (`continue-on-error`). UNCLASSIFIED/ENV from
+  bot-mitigation is expected and never fails the workflow.
+- **heartbeat** — the dead-man's switch, tied to the **dry** job only, so
+  alerting never depends on live-site reachability (see below).
+- **release-gate** — dispatch-only; reads a **real-environment** store that CI
+  live runs never write (see _Release evidence_).
 
 ## Operating Gate C
 
@@ -101,39 +111,61 @@ so it does not depend on any pre-provisioned browser. Three jobs:
 workflow_. Leave `induce_failure` off for a normal run. The two monitor jobs
 run; open each job's log or download its `coverage-monitor-*-report` artifact.
 
-**Reading a result.** Every non-PASS is a **red run** — the monitor never reads
-green on a partial or skipped result. Classify from the failing test's message:
+**Reading a result.** In the **dry** job every non-PASS is a failure (the
+required gate). In the **live-noauth** job every non-PASS is recorded and
+surfaces in the log/artifact, but the job is non-blocking, so a bot-mitigated
+`UNCLASSIFIED`/`ENV_AUTH_FAILURE` does not fail the workflow. Classify from the
+test's message:
 
-| Outcome              | Meaning                                                                                                                     | Action                                                                                                                                     |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| **PASS**             | Composer found and the extension mounted its modal host.                                                                    | None. Counts as live-pass evidence (if fresh).                                                                                             |
-| **PRODUCT_FAILURE**  | Composer found but **no modal** — the surface drifted; a real silent leak.                                                  | Fix the adapter + add an `adapters.test.ts` regression, ship.                                                                              |
-| **ENV_AUTH_FAILURE** | No composer AND real environment evidence — a nav/network error, or a detected challenge/CAPTCHA/interstitial/login marker. | Not a product bug. Re-run; if it persists, the site is blocking the runner (needs the authenticated mode / a different egress).            |
-| **UNCLASSIFIED**     | No composer and **no** environment evidence. Unexpected. **Must be diagnosed** — never auto-filed as environment.           | Investigate: is the selector stale (a silent drift dressed as "nothing there"), or is there a new interstitial to teach `detectEnvMarker`? |
-| **GAP**              | A known state we cannot exercise live (Claude pre-hydration). A distinct non-green, non-product outcome.                    | None — it is covered offline by a dry regression fixture. Never counts as live evidence.                                                   |
-| **NOT-RUN / stale**  | A scheduled run was skipped/delayed/errored, or a route's last PASS is > 36 h old.                                          | The heartbeat did **not** ping → the dead-man's switch alerts. A stale route reads non-green in the status store.                          |
+| Outcome              | Meaning                                                                                                                                                                                            | Action                                                                                                                                         |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **PASS**             | Composer found and the extension mounted its modal host.                                                                                                                                           | None. Counts as live-pass evidence (if fresh).                                                                                                 |
+| **PRODUCT_FAILURE**  | Composer found but **no modal** — the surface drifted; a real silent leak.                                                                                                                         | Fix the adapter + add an `adapters.test.ts` regression, ship.                                                                                  |
+| **ENV_AUTH_FAILURE** | No composer AND real environment evidence — a nav/network error, a bot-mitigation status (403/429), a `cf-mitigated` header, or a detected Cloudflare/Turnstile/CAPTCHA/interstitial/login marker. | Not a product bug. Expected from a datacenter/CI runner these sites bot-mitigate. Re-run from a real machine, or rely on the guided self-test. |
+| **UNCLASSIFIED**     | Reached the page, no bot-mitigation signal, and still no composer. Unexpected. **Must be diagnosed** — never auto-filed as environment.                                                            | Investigate: is the selector stale (a silent drift dressed as "nothing there"), or is there a new block marker to teach `detectEnvMarker`?     |
+| **GAP**              | A known state we cannot exercise live (Claude pre-hydration). A distinct non-green, non-product outcome.                                                                                           | None — it is covered offline by a dry regression fixture. Never counts as live evidence.                                                       |
+| **NOT-RUN / stale**  | A scheduled run was skipped/delayed/errored, or a route's last PASS is > 36 h old.                                                                                                                 | The heartbeat did **not** ping → the dead-man's switch alerts. A stale route reads non-green in the status store.                              |
 
 Only a **PASS within 36 h** counts as live-pass evidence. UNCLASSIFIED,
 ENV_AUTH_FAILURE, PRODUCT_FAILURE, GAP, skipped, and stale never count.
 
 **Per-route status store.** Each route (surface × state) keeps its own
-`lastAttemptAt` / `lastResult` / `lastSuccessAt` / `consecutivePasses` in
-`monitor/status/live-status.json`, uploaded as the `coverage-monitor-live-status`
-artifact and persisted across scheduled runs via the workflow cache (rolling
-`live-status-*` key). A run for one route never refreshes another's — a green
-ChatGPT run cannot make a stale/blocked Claude route read green. A route whose
-last PASS is older than **36 h** reads stale.
+`lastAttemptAt` / `lastResult` / `lastSuccessAt` / `consecutivePasses` in a
+JSON store (`monitor/status/`), uploaded as an artifact. A run for one route
+never refreshes another's — a green ChatGPT run cannot make a stale/blocked
+Claude route read green. A route whose last PASS is older than **36 h** reads
+stale. There are **two separate stores**, by design:
 
-**Release-candidate gate.** Dispatch _Run workflow_ with
-`release_candidate: true`. It runs the live routes once more, then
-`npm run verify:live-status` FAILS unless every **required** route
-(`chatgpt:live-noauth`, `perplexity:live-noauth`) is green: last result PASS,
-within 36 h, and **≥ 2 consecutive passes** (i.e. two consecutive successful
-scheduled executions recorded). A CI run of only skipped/blocked tests cannot
-pass this gate.
+- **CI-scoped** (`ci-live-status.json`, cache `ci-live-status-*`) — written by
+  the non-blocking `monitor-live-noauth` job. Best-effort drift signal only.
+- **Real-environment** (`live-status.json`, cache `real-live-status-*`) — read
+  by the release-gate; **never written by CI live runs**, so a bot-blocked CI
+  run can neither satisfy nor fail the gate. Populated out-of-band from a real
+  machine (below).
+
+**Release evidence.** The release gate is: **(1)** the required CI **dry-run**
+green, **plus (2)** the **guided self-test** `confirmed` on each live site, run
+by a person in a real browser (a real composer + a real warning — the
+dependable live proof). The optional `release-candidate` dispatch runs
+`npm run verify:live-status` against the **real-environment** store and FAILS
+unless every required route (`chatgpt:live-noauth`, `perplexity:live-noauth`)
+is green — last result PASS, within 36 h, **≥ 2 consecutive passes**. It reads
+only the real store, so CI live runs cannot satisfy or fail it; with no real
+evidence recorded it fails closed.
+
+**Running live-noauth from a real machine.** A datacenter/CI IP is bot-mitigated
+by these sites, so automated live from CI cannot be relied on. From a real
+residential machine you can get a trustworthy drift signal:
+
+```bash
+npm run build
+MONITOR_MODE=live-noauth MONITOR_STATUS_PATH=monitor/status/live-status.json npm run monitor
+npm run verify:live-status   # checks the real-environment store you just wrote
+```
 
 **Dead-man's switch.** The `heartbeat` job pings `secrets.HEALTHCHECK_URL`
-**only** when both monitor jobs ran and passed on the schedule. GitHub sends no
+**only** when the required **dry** job succeeded on the schedule (it is tied to
+the dry path, not live reachability). GitHub sends no
 email when a scheduled run simply never happens, so a missing ping — not a red
 ✗ — is what an outage looks like. Register a check at an external
 healthcheck service (e.g. healthchecks.io), set its period to ~1 day with a
