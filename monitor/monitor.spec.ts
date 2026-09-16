@@ -21,9 +21,21 @@
 // forced to fail, so dispatching the workflow with induce_failure:true proves
 // the alert path fires end-to-end. It is a no-op without the env var.
 
-import { test, expect, openSurface, openLiveNoauthPage, MONITOR_MODE } from './extension'
+import {
+  test,
+  expect,
+  openSurface,
+  openLiveNoauthPage,
+  openFixtureAt,
+  MONITOR_MODE,
+} from './extension'
 import { buildMonitorPlan, type ProbeRoute } from './coverage-plan'
-import { hasFixture, LIVE_NOAUTH_SURFACES } from './surfaces'
+import {
+  hasFixture,
+  LIVE_NOAUTH_ROUTES,
+  LEAKED_COMPOSER_FIXTURES,
+  readFixtureFile,
+} from './surfaces'
 import {
   ensureExtensionReady,
   probePaste,
@@ -31,9 +43,24 @@ import {
   probeSendButton,
   probeDocument,
   probeLiveNoauth,
+  probeLeakedComposer,
   type ProbeResult,
 } from './probes'
+import { recordResult, type RouteResult } from './route-status'
+import { loadStatus, saveStatus } from './route-status-io'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Page } from '@playwright/test'
+
+const STATUS_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'status', 'live-status.json')
+
+/** Persist one route's outcome to the cross-run status store (live mode only). */
+function persistRoute(routeKey: string, result: RouteResult): void {
+  saveStatus(
+    STATUS_PATH,
+    recordResult(loadStatus(STATUS_PATH), routeKey, result, new Date().toISOString()),
+  )
+}
 
 // ── induced-failure hook ────────────────────────────────────────────────────
 //
@@ -57,16 +84,36 @@ function nextInduce(): boolean {
 if (MONITOR_MODE === 'live-noauth') {
   // ── live-noauth drift monitor ──────────────────────────────────────────────
   test.describe('§C live-noauth drift monitor', () => {
-    for (const surface of LIVE_NOAUTH_SURFACES) {
+    for (const route of LIVE_NOAUTH_ROUTES) {
       const induceThis = nextInduce()
-      test(`${surface.id}: real logged-out composer still recognised`, async ({ context }) => {
+      test(`${route.routeKey} [${route.kind}]`, async ({ context }) => {
         if (induceThis) expect(false, INDUCED_MESSAGE).toBe(true)
-        const page = await openLiveNoauthPage(context, surface.url)
+        const { page, navError } = await openLiveNoauthPage(context, route.url)
         try {
-          const { result, detail } = await probeLiveNoauth(page, surface.composerSelectors)
-          // Any non-PASS is a failure; the message carries the classification
-          // (PRODUCT_FAILURE = drift/leak, ENV_AUTH_FAILURE = environment).
-          expect(result, `${surface.id} [${result}] — ${detail}`).toBe('PASS')
+          const { result, detail } = await probeLiveNoauth(page, route.composerSelectors, {
+            navError,
+          })
+
+          if (route.kind === 'gap') {
+            // A known-not-live-exercisable state (Claude pre-hydration). NEVER
+            // assert PASS. A real drift (composer present but no modal) still
+            // fails; "not reachable" (env/unclassified) is recorded as a GAP so
+            // the JOB can stay green (heartbeat + required evidence) while the
+            // route's STATUS is non-green.
+            if (result === 'PRODUCT_FAILURE') {
+              persistRoute(route.routeKey, 'PRODUCT_FAILURE')
+              expect(
+                result,
+                `${route.routeKey}: pre-hydration composer present but no modal — real drift`,
+              ).not.toBe('PRODUCT_FAILURE')
+            } else {
+              persistRoute(route.routeKey, result === 'PASS' ? 'PASS' : 'GAP')
+            }
+          } else {
+            // Required route: must PASS live; record whatever happened.
+            persistRoute(route.routeKey, result)
+            expect(result, `${route.routeKey} [${result}] — ${detail}`).toBe('PASS')
+          }
         } finally {
           await page.close()
         }
@@ -150,6 +197,32 @@ if (MONITOR_MODE === 'live-noauth') {
               await page.close()
             }
           })
+        }
+      })
+    }
+  })
+
+  // Leaked-composer regressions: reproduce the EXACT DOM that leaked (ChatGPT
+  // logged-out fallback textarea, Claude pre-hydration static composer) and
+  // confirm the loaded extension still intervenes — the offline guarantee for
+  // states that are not reliably reproducible live (the v1.3.2 fix holds here).
+  test.describe('§C leaked-composer regressions (dry)', () => {
+    for (const fx of LEAKED_COMPOSER_FIXTURES) {
+      test(`${fx.id}: loaded extension intercepts "${fx.composerSelector}"`, async ({
+        context,
+      }) => {
+        const page = await openFixtureAt(context, fx.origin, readFixtureFile(fx.fixtureFile))
+        try {
+          const result = await probeLeakedComposer(page, fx.composerSelector)
+          expect(
+            result.intercepted,
+            `${fx.id}: paste on the leaked composer was NOT intercepted (v1.3.2 fix regressed?)`,
+          ).toBe(true)
+          expect(result.modalAppeared, `${fx.id}: no preview modal on the leaked composer`).toBe(
+            true,
+          )
+        } finally {
+          await page.close()
         }
       })
     }

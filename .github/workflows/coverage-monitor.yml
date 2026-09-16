@@ -28,6 +28,10 @@ on:
         description: 'Deliberately fail one probe, to test that alerting fires'
         type: boolean
         default: false
+      release_candidate:
+        description: 'Gate on recorded live evidence (fails unless required routes are green)'
+        type: boolean
+        default: false
   schedule:
     # Daily 06:00 UTC. A missed/late cron run is caught by the dead-man's
     # switch below, so a silent non-run cannot read as green.
@@ -90,11 +94,36 @@ jobs:
       - run: npm run build
       - name: Install Chromium for Playwright
         run: npx playwright install --with-deps chromium
+      # Restore the per-route status from the most recent prior run so the 36 h
+      # expiry and consecutive-pass streak span runs. Rolling key: read the
+      # newest via the prefix, write a fresh cache entry keyed by this run.
+      - name: Restore per-route live status
+        uses: actions/cache/restore@v4
+        with:
+          path: monitor/status
+          key: live-status-${{ github.run_id }}
+          restore-keys: |
+            live-status-
       - name: Run the coverage monitor (live, no credentials)
         run: npm run monitor
         env:
           CI: 'true'
           MONITOR_MODE: live-noauth
+      - name: Save per-route live status
+        # Persist even on failure — a red/blocked run must still record that the
+        # route did NOT pass (so it reads stale/blocked next time, never green).
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: monitor/status
+          key: live-status-${{ github.run_id }}
+      - name: Upload per-route status artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-monitor-live-status
+          path: monitor/status/
+          retention-days: 30
       - name: Upload live report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -102,6 +131,32 @@ jobs:
           name: coverage-monitor-live-report
           path: monitor/playwright-report/
           retention-days: 14
+
+  # Release-candidate gate: dispatch with release_candidate=true. Runs the live
+  # routes once more (via needs), then FAILS unless every required route is
+  # green in the recorded store — last result PASS, within 36 h, ≥ 2 consecutive
+  # passes. A run of only skipped/blocked/stale routes cannot pass this.
+  release-gate:
+    name: Release-candidate gate (required live routes green)
+    runs-on: ubuntu-latest
+    needs: [monitor-live-noauth]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_candidate }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Restore per-route live status
+        uses: actions/cache/restore@v4
+        with:
+          path: monitor/status
+          key: live-status-${{ github.run_id }}
+          restore-keys: |
+            live-status-
+      - name: Verify required live routes are green
+        run: npm run verify:live-status
 
   # Dead-man's switch: pings the healthcheck ONLY when both monitor jobs ran
   # and passed. If a scheduled run is skipped, delayed, or a job fails, no

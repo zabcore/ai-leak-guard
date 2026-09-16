@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Claude</title>
+<!--
+  §C leaked-composer regression fixture — Claude PRE-HYDRATION static composer.
+  This is a real <textarea id="static-composer-input">, shown briefly before the
+  TipTap editor mounts — the exact state that leaked before v1.3.2. It is not
+  deterministically exercisable in live-noauth (a pre-hydration flash behind a
+  login), so it is covered HERE offline. Served (dry-run) at https://claude.ai/*.
+  If v1.3.2's adapter fix regresses, the paste here is not intercepted and this
+  test fails.
+-->
+<main>
+  <textarea id="static-composer-input" placeholder="How can I help you today?"></textarea>
+</main>
