@@ -30,8 +30,14 @@ describe('service-worker — onInstalled welcome tab (M6)', () => {
     expect(url).toContain('src=chrome_web_store')
     expect(url).toContain('utm_source=chrome_web_store')
     expect(url).toContain('utm_medium=extension')
-    expect(url).toContain('utm_campaign=install_v1_2')
-    expect(url).toContain('v=1.2')
+    // V1.3.3: campaign/version refreshed for the release.
+    expect(url).toContain('utm_campaign=install_v1_3_3')
+    expect(url).toContain('v=1.3.3')
+    // …and the content-free source label so the future website can attribute
+    // the welcome-tab entry point.
+    expect(url).toContain('alg_src=welcome')
+    // Stale v1.2 params must be gone (a silent non-bump should fail here).
+    expect(url).not.toContain('install_v1_2')
   })
 
   it('does nothing on update — no welcome-tab spam per release', () => {

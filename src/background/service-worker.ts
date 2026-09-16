@@ -29,6 +29,7 @@ import {
   type AlgEvent,
 } from '../shared/event-log-schema'
 import { setSubmitKillSwitch } from '../shared/storage'
+import { withLinkSource } from '../shared/link-source'
 
 console.log('[AI Leak Guard] service worker started')
 
@@ -130,8 +131,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 // Best-effort: a rejected `tabs.create` (e.g., in some corporate
 // managed contexts) logs a warning and moves on — the extension
 // itself works whether or not the welcome tab opens.
-export const WELCOME_URL =
-  'https://zabcore.com/welcome?src=chrome_web_store&utm_source=chrome_web_store&utm_medium=extension&utm_campaign=install_v1_2&v=1.2'
+// V1.3.3: campaign/version refreshed for the release, and stamped with the
+// content-free `alg_src=welcome` source label (see `link-source.ts`) so the
+// future website can attribute the welcome-tab entry point. Still a
+// `chrome.tabs.create` NAVIGATION on install — never a fetch — and protection
+// stays ungated on it.
+const WELCOME_BASE =
+  'https://zabcore.com/welcome?src=chrome_web_store&utm_source=chrome_web_store&utm_medium=extension&utm_campaign=install_v1_3_3&v=1.3.3'
+export const WELCOME_URL = withLinkSource(WELCOME_BASE, 'welcome')
 
 /**
  * Extracted so tests can drive the handler without depending on
