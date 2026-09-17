@@ -32,8 +32,21 @@ import { runSelfTest, installUnloadGuard } from './submit/self-test'
 import { dispatchSelfTestSend } from './submit/self-test-send'
 import { showSelfTestBanner } from './submit/self-test-banner'
 import { openSelfTestReport } from './submit/self-test-report-open'
-import { getSelfTestSignal, clearSelfTestSignal, setSelfTestResult } from '../shared/storage'
+import {
+  getSelfTestSignal,
+  clearSelfTestSignal,
+  setSelfTestResult,
+  getSelfTestResult,
+} from '../shared/storage'
 import type { SelfTestResultRecord } from '../shared/self-test'
+import { getSurfaceCoverage } from '../shared/coverage'
+import { createAvailabilityIndicator } from './availability-indicator'
+import {
+  computeAvailability,
+  coverageSurfaceId,
+  selfTestSignal,
+  type SelfTestSignalInfo,
+} from './availability'
 
 const MIN_TEXT_LENGTH = 8
 
@@ -606,4 +619,82 @@ function cancelSelfTestModal(): void {
     composed: true,
   })
   document.dispatchEvent(event)
+}
+
+// ─── V1.3.3 — compact in-page AVAILABILITY indicator ────────────────
+//
+// Renders a small, non-interactive pill ONLY on a recognised, covered
+// surface where a composer resolves LIVE right now. It states availability
+// (never "protected"), keeps the signals separate, and is removed the moment
+// the composer is gone — so a prior self-test pass can never leave a
+// stale-green indicator up. Additive: it touches none of the paste/submit/
+// document flows above.
+const availabilitySurfaceId = coverageSurfaceId(adapter.id)
+if (adapter.id !== 'fallback' && getSurfaceCoverage(availabilitySurfaceId) !== undefined) {
+  // The last self-test result is one SEPARATE, historical signal — it never
+  // gates `activeHere` (which is composer-live + enabled only).
+  let lastSelfTest: SelfTestSignalInfo | null = null
+
+  const indicator = createAvailabilityIndicator({
+    getAvailability: () =>
+      computeAvailability({
+        surfaceId: availabilitySurfaceId,
+        enabled: enabledState.isEnabled(),
+        // LIVE adapter readiness — resolve the composer right now, never the
+        // hostname alone.
+        composerPresent: adapter.resolveComposer() !== null,
+        lastSelfTest,
+      }),
+  })
+
+  const hydrateSelfTest = async (): Promise<void> => {
+    try {
+      const record = await getSelfTestResult()
+      lastSelfTest =
+        record === null ? null : selfTestSignal(record.result, Date.parse(record.ts), Date.now())
+    } catch {
+      lastSelfTest = null
+    }
+    indicator.refresh()
+  }
+  void hydrateSelfTest()
+
+  // Coalesce bursts of DOM mutations into one refresh per frame.
+  let refreshQueued = false
+  const scheduleRefresh = (): void => {
+    if (refreshQueued) return
+    refreshQueued = true
+    const raf =
+      typeof globalThis.requestAnimationFrame === 'function'
+        ? globalThis.requestAnimationFrame
+        : (cb: FrameRequestCallback) => globalThis.setTimeout(() => cb(0), 16)
+    raf(() => {
+      refreshQueued = false
+      indicator.refresh()
+    })
+  }
+
+  const observer = new MutationObserver(scheduleRefresh)
+  const startIndicator = (): void => {
+    const target = document.body ?? document.documentElement
+    if (target !== null) observer.observe(target, { childList: true, subtree: true })
+    indicator.refresh()
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startIndicator, { once: true })
+  } else {
+    startIndicator()
+  }
+  // SPA composer swaps / route changes can mutate outside the observed subtree;
+  // a light periodic refresh (composer resolve is a single querySelector) keeps
+  // availability honest without depending on any one signal.
+  globalThis.setInterval(() => indicator.refresh(), 2000)
+
+  // Re-hydrate the self-test signal + refresh when the toggle or the recorded
+  // result changes (metadata only).
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return
+    if ('prefs' in changes) indicator.refresh()
+    if ('algSelfTestResult' in changes) void hydrateSelfTest()
+  })
 }

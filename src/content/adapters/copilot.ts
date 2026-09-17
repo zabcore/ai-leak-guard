@@ -1,5 +1,18 @@
 import type { SiteAdapter } from './base'
-import { insertText, replaceContents, isContentEditableElement } from './fallback'
+import {
+  insertText,
+  replaceContents,
+  isContentEditableElement,
+  resolveBySelectors,
+} from './fallback'
+
+// The Lexical contenteditable composer (the migrated copilot.cloud.microsoft
+// surface). The legacy <textarea> is intentionally excluded — too broad to
+// resolve as "the composer" for the availability indicator.
+const COMPOSER_SELECTORS = [
+  '#m365-chat-editor-target-element',
+  '[contenteditable="true"][role="textbox"]',
+]
 
 // V1.3.1: Copilot migrated. `copilot.microsoft.com` now redirects both
 // personal and work accounts to `copilot.cloud.microsoft/chat`, whose
@@ -20,6 +33,7 @@ const copilot: SiteAdapter = {
   domains: ['copilot.cloud.microsoft', 'copilot.microsoft.com'],
   id: 'copilot',
   isPromptInput,
+  resolveComposer: (root = document) => resolveBySelectors(root, COMPOSER_SELECTORS),
   insertText,
   replaceContents,
 }

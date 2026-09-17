@@ -1,5 +1,14 @@
 import type { SiteAdapter } from './base'
-import { insertText, replaceContents, isContentEditableElement, isTextField } from './fallback'
+import {
+  insertText,
+  replaceContents,
+  isContentEditableElement,
+  isTextField,
+  resolveBySelectors,
+} from './fallback'
+
+// The "Ask..." <textarea> composer.
+const COMPOSER_SELECTORS = ['textarea[placeholder*="Ask"]']
 
 // Perplexity's main composer is a <textarea> with an "Ask..." placeholder.
 function isPromptInput(el: Element): boolean {
@@ -11,6 +20,7 @@ const perplexity: SiteAdapter = {
   domains: ['www.perplexity.ai', 'perplexity.ai'],
   id: 'perplexity',
   isPromptInput,
+  resolveComposer: (root = document) => resolveBySelectors(root, COMPOSER_SELECTORS),
   insertText,
   replaceContents,
 }

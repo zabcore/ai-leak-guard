@@ -1,5 +1,16 @@
 import type { SiteAdapter } from './base'
-import { insertText, replaceContents, isContentEditableElement } from './fallback'
+import {
+  insertText,
+  replaceContents,
+  isContentEditableElement,
+  resolveBySelectors,
+} from './fallback'
+
+// ProseMirror editor + the pre-hydration static composer (v1.3.2).
+const COMPOSER_SELECTORS = [
+  '[contenteditable="true"][role="textbox"]',
+  'textarea#static-composer-input',
+]
 
 // Claude uses a ProseMirror editor exposed as [contenteditable][role="textbox"].
 function isPromptInput(el: Element): boolean {
@@ -16,6 +27,7 @@ const claude: SiteAdapter = {
   domains: ['claude.ai'],
   id: 'claude',
   isPromptInput,
+  resolveComposer: (root = document) => resolveBySelectors(root, COMPOSER_SELECTORS),
   insertText,
   replaceContents,
 }
