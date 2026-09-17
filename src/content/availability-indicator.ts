@@ -12,11 +12,10 @@
 // once the composer is gone.
 //
 // It cannot announce its OWN total absence (if the content script never loads,
-// nothing renders) — the copy says so and points at the toolbar self-test and
-// Gate C as the backstops.
+// nothing renders) — the footer copy says so plainly and points at the toolbar
+// "Test protection" action as the way to confirm it's working here.
 
 import type { Availability, SignalState, SelfTestSignalInfo } from './availability'
-import type { SendMode } from '../shared/coverage'
 
 const HOST_ATTR = 'data-ai-leak-guard-availability'
 
@@ -57,14 +56,12 @@ const STYLE = `
   .alg-ind__note { color: #5b6472; margin-top: 6px; border-top: 1px solid #eceef2; padding-top: 6px; }
 `
 
-function signalValue(state: SignalState, sendMode?: SendMode): string {
-  if (state === 'ready') {
-    if (sendMode === 'no-resume-two-press') return 'on (press Send again)'
-    if (sendMode === 'resume') return 'on'
-    return 'on'
-  }
-  if (state === 'unvalidated') return 'unverified here'
-  return 'not on this surface'
+// Plain-language values. "On" when the check runs on this surface; otherwise a
+// clear, jargon-free state (never a composite "you're protected").
+function signalValue(state: SignalState): string {
+  if (state === 'ready') return 'On'
+  if (state === 'unvalidated') return 'Not confirmed'
+  return 'Not available'
 }
 
 function selfTestValue(info: SelfTestSignalInfo | null): string {
@@ -110,21 +107,21 @@ export function createAvailabilityIndicator(
     shadow.innerHTML =
       `<style>${STYLE}</style>` +
       `<div class="alg-ind" role="status" aria-live="off">` +
-      `<div class="alg-ind__header"><span class="alg-ind__dot"></span>AI Leak Guard · active here</div>` +
-      `<div class="alg-ind__sub">Availability, not a guarantee</div>` +
+      `<div class="alg-ind__header"><span class="alg-ind__dot"></span>AI Leak Guard is on here</div>` +
+      `<div class="alg-ind__sub">What it's checking on this page</div>` +
       `<div class="alg-ind__signals">` +
-      signal('composer', 'Composer detected', a.composerPresent ? 'yes' : 'no', a.composerPresent) +
-      signal('paste', 'Paste scanning', signalValue(a.paste), a.paste === 'ready') +
-      signal('send', 'Send-time check', signalValue(a.send, a.sendMode), a.send === 'ready') +
-      signal('file', 'File scanning', signalValue(a.fileScanning), a.fileScanning === 'ready') +
+      signal('active', 'Active on this page', a.composerPresent ? 'Yes' : 'No', a.composerPresent) +
+      signal('paste', 'Paste', signalValue(a.paste), a.paste === 'ready') +
+      signal('send', 'Before you send', signalValue(a.send), a.send === 'ready') +
+      signal('file', 'Attached files', signalValue(a.fileScanning), a.fileScanning === 'ready') +
       signal(
         'selftest',
-        'Last self-test',
+        'Last check',
         selfTestValue(a.lastSelfTest),
         a.lastSelfTest?.result === 'confirmed' && a.lastSelfTest.stale === false,
       ) +
       `</div>` +
-      `<div class="alg-ind__note">Can't confirm every surface — run “Test protection” from the toolbar; Gate C watches for drift.</div>` +
+      `<div class="alg-ind__note">Sites change often — tap Test protection to confirm it's working here.</div>` +
       `</div>`
   }
 
