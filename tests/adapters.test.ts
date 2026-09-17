@@ -277,6 +277,33 @@ describe('site adapter isPromptInput', () => {
     expect(chatgpt.isPromptInput(el)).toBe(true)
   })
 
+  it('chatgpt matches the current logged-out FORM composer (textarea#mobile-composer-prompt) — V1.3.3 RELEASE BLOCKER regression', () => {
+    const el = document.createElement('textarea')
+    el.id = 'mobile-composer-prompt'
+    el.setAttribute('name', 'prompt')
+    el.setAttribute('placeholder', 'Ask ChatGPT')
+    expect(chatgpt.isPromptInput(el)).toBe(true)
+    // resolveComposer (live adapter readiness for the indicator) finds it too.
+    const form = document.createElement('form')
+    form.appendChild(el)
+    document.body.appendChild(form)
+    expect(chatgpt.resolveComposer(document)).toBe(el)
+    document.body.innerHTML = ''
+  })
+
+  it('chatgpt matches a defensive <textarea name="prompt"> with an "Ask…" placeholder', () => {
+    const el = document.createElement('textarea')
+    el.setAttribute('name', 'prompt')
+    el.setAttribute('placeholder', 'Ask anything')
+    expect(chatgpt.isPromptInput(el)).toBe(true)
+    // …but not a random unrelated <textarea name="prompt"> with no such hint.
+    const other = document.createElement('textarea')
+    other.setAttribute('name', 'prompt')
+    other.setAttribute('placeholder', 'Comment')
+    // (still contenteditable-fallback false for a plain textarea)
+    expect(chatgpt.isPromptInput(other)).toBe(false)
+  })
+
   it('claude matches a contenteditable textbox', () => {
     const el = document.createElement('div')
     el.setAttribute('contenteditable', 'true')

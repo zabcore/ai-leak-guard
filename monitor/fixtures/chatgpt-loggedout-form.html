@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>ChatGPT</title>
+<!--
+  §C leaked-composer regression fixture — ChatGPT LOGGED-OUT FORM composer
+  (V1.3.3 RELEASE BLOCKER). Confirmed live on chatgpt.com (logged out),
+  17 Sep 2026: the composer is a plain <textarea id="mobile-composer-prompt"
+  name="prompt"> inside a <form>, sent via a type=submit button / form
+  submission — NO contenteditable. Served (dry-run) at https://chatgpt.com/* so
+  the loaded extension's handling of this composer is covered deterministically
+  offline. If the paste adapter or the form-submit interception regresses, the
+  paste here is not intercepted and this test fails.
+-->
+<main>
+  <form>
+    <textarea id="mobile-composer-prompt" name="prompt" placeholder="Ask ChatGPT"></textarea>
+    <button aria-label="Send message" type="submit">Send</button>
+  </form>
+</main>

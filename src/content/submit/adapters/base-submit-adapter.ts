@@ -57,6 +57,16 @@ export interface SiteSubmitConfig {
    * contenteditable from a naive `.matches`.
    */
   readonly matchesComposer?: (el: Element) => boolean
+  /**
+   * V1.3.3: also intercept the composer's `<form>` `submit` event (capture
+   * phase), for surfaces whose send is a real FORM SUBMISSION rather than a
+   * contenteditable + Enter/button model — logged-out ChatGPT renders the
+   * composer as a `<textarea name="prompt">` inside a `<form>` with a
+   * `type="submit"` button, so paste/send there is otherwise unprotected.
+   * Off by default; the contenteditable surfaces are unaffected. Resume then
+   * re-submits the composer's form (guarded by the `resuming` flag).
+   */
+  readonly interceptFormSubmit?: boolean
 }
 
 export interface SubmitAdapterOptions {
@@ -119,12 +129,19 @@ export class BaseSubmitAdapter implements SubmitAdapter {
     // registration-order ties on the same node.
     window.addEventListener('keydown', this.onKeydown, true)
     window.addEventListener('click', this.onClick, true)
+    // V1.3.3: form-submission surfaces (logged-out ChatGPT). The submit event
+    // is the catch-all — it fires for any real form submission the keydown /
+    // click paths didn't already cancel.
+    if (this.config.interceptFormSubmit === true) {
+      window.addEventListener('submit', this.onSubmit, true)
+    }
   }
 
   /** Test-only: undo `attach` so a jsdom test doesn't leak listeners. */
   detach(): void {
     window.removeEventListener('keydown', this.onKeydown, true)
     window.removeEventListener('click', this.onClick, true)
+    window.removeEventListener('submit', this.onSubmit, true)
     this.core = null
     this.pendingComposer = null
     this.pendingOpener = null
@@ -178,6 +195,26 @@ export class BaseSubmitAdapter implements SubmitAdapter {
         this.resuming = false
       }
       return this.postCheck(el, before, /* attempted */ true)
+    }
+
+    // Form-submission surfaces (logged-out ChatGPT): re-submit the composer's
+    // form. `resuming` makes our own capture-phase `submit` listener ignore
+    // this re-submit, so the site's native submission proceeds. `requestSubmit`
+    // fires the submit event (validation + the site's handler); `submit()` is
+    // the last resort. Preferred over the Enter fallback here because Enter in
+    // a `<textarea>` is a newline, not a send.
+    if (this.config.interceptFormSubmit === true && el !== null) {
+      const form = el.closest('form')
+      if (form !== null) {
+        this.resuming = true
+        try {
+          if (typeof form.requestSubmit === 'function') form.requestSubmit()
+          else form.submit()
+        } finally {
+          this.resuming = false
+        }
+        return this.postCheck(el, before, /* attempted */ true)
+      }
     }
 
     // Fallback: re-dispatch an Enter keydown on the composer. M0
@@ -234,6 +271,23 @@ export class BaseSubmitAdapter implements SubmitAdapter {
     // The button and its composer share a send container, so walking up
     // from the button finds the RIGHT draft to scan and resume.
     const composer = this.resolveComposerForButton(button) ?? this.resolveComposerFrom(event)
+    if (composer === null) return
+    this.intercept(event, composer)
+  }
+
+  /**
+   * V1.3.3 — form-submission interception (opt-in via `interceptFormSubmit`).
+   * The catch-all for surfaces where the send is a real form submit (logged-out
+   * ChatGPT). Only intercepts a form that actually holds THIS adapter's
+   * composer; `intercept` then `preventDefault`s the submission (holding the
+   * send) and hands it to the core. A resume re-submits the form with the
+   * `resuming` guard set, so this listener ignores our own re-submit.
+   */
+  private readonly onSubmit = (event: Event): void => {
+    if (!this.shouldIntercept()) return
+    const form = event.target
+    if (!(form instanceof HTMLFormElement)) return
+    const composer = form.querySelector<HTMLElement>(this.config.composerSelector)
     if (composer === null) return
     this.intercept(event, composer)
   }
