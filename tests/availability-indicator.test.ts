@@ -19,7 +19,7 @@ afterEach(() => {
 })
 
 describe('availability indicator', () => {
-  it('renders a ready pill (availability, not "protected") when active, with separate signals', () => {
+  it('renders plain-language copy when active, with separate signals', () => {
     const current: Availability | null = computeAvailability({
       surfaceId: 'chatgpt',
       enabled: true,
@@ -31,15 +31,36 @@ describe('availability indicator', () => {
     const el = host()
     expect(el).not.toBeNull()
     const shadow = (el as HTMLElement).shadowRoot!
-    // Availability wording, never a protection guarantee.
-    expect(shadow.textContent).toContain('active here')
-    expect(shadow.textContent?.toLowerCase()).not.toContain('protected')
+    const text = shadow.textContent ?? ''
+    // Plain-language header + subtitle + labels + footer.
+    expect(text).toContain('AI Leak Guard is on here')
+    expect(text).toContain("What it's checking on this page")
+    expect(text).toContain('Active on this page')
+    expect(text).toContain('Before you send')
+    expect(text).toContain('Attached files')
+    expect(text).toContain('Last check')
+    expect(text).toContain('Sites change often')
+    expect(text).toContain('Test protection')
+    // Never a composite "you're protected" claim.
+    expect(text.toLowerCase()).not.toContain('protected')
     // Signals are exposed SEPARATELY (distinct elements), not one status.
-    for (const id of ['composer', 'paste', 'send', 'file', 'selftest']) {
+    for (const id of ['active', 'paste', 'send', 'file', 'selftest']) {
       expect(shadow.querySelector(`[data-signal="${id}"]`), `signal ${id}`).not.toBeNull()
     }
-    // Backstop copy — it can't confirm its own total absence.
-    expect(shadow.textContent).toContain('Test protection')
+    ind.destroy()
+  })
+
+  it('drops internal jargon — no "Gate C", "drift", "composer", or "guarantee" anywhere in the rendered popup', () => {
+    const ind = createAvailabilityIndicator({
+      getAvailability: () =>
+        computeAvailability({ surfaceId: 'chatgpt', enabled: true, composerPresent: true }),
+    })
+    ind.refresh()
+    // Check the WHOLE rendered shadow DOM (text + attributes), lower-cased.
+    const rendered = ((host() as HTMLElement).shadowRoot!.innerHTML ?? '').toLowerCase()
+    for (const banned of ['gate c', 'drift', 'composer', 'guarantee']) {
+      expect(rendered, `must not render "${banned}"`).not.toContain(banned)
+    }
     ind.destroy()
   })
 
@@ -95,9 +116,9 @@ describe('availability indicator', () => {
     })
     ind.refresh()
     const shadow = (host() as HTMLElement).shadowRoot!
-    expect(shadow.querySelector('[data-signal="send"]')?.textContent).toContain(
-      'not on this surface',
-    )
+    // Perplexity send is unsupported — its own signal stays honest, plainly.
+    expect(shadow.querySelector('[data-signal="send"]')?.textContent).toContain('Not available')
+    expect(shadow.querySelector('[data-signal="send"]')?.textContent).not.toContain('On')
     ind.destroy()
   })
 })
