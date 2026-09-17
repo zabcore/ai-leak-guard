@@ -110,7 +110,14 @@ export const LIVE_NOAUTH_ROUTES: readonly LiveNoauthRoute[] = [
     url: 'https://chatgpt.com/',
     // The logged-out fallback <textarea name="prompt-textarea"> is the state
     // that leaked (v1.3.2); the ProseMirror #prompt-textarea appears once hydrated.
-    composerSelectors: ['textarea[name="prompt-textarea"]', '#prompt-textarea'],
+    // V1.3.3: the current logged-out FORM composer first (the drift that was
+    // reading UNCLASSIFIED), then the v1.3.2 fallback textarea + hydrated div.
+    composerSelectors: [
+      'textarea#mobile-composer-prompt',
+      'textarea[name="prompt"]',
+      'textarea[name="prompt-textarea"]',
+      '#prompt-textarea',
+    ],
     kind: 'required',
   },
   {
@@ -159,6 +166,13 @@ export const LEAKED_COMPOSER_FIXTURES: readonly LeakedComposerFixture[] = [
     origin: 'https://chatgpt.com/*',
     fixtureFile: 'fixtures/chatgpt-fallback.html',
     composerSelector: 'textarea[name="prompt-textarea"]',
+  },
+  {
+    // V1.3.3 RELEASE BLOCKER: the current logged-out FORM composer.
+    id: 'chatgpt-logged-out-form',
+    origin: 'https://chatgpt.com/*',
+    fixtureFile: 'fixtures/chatgpt-loggedout-form.html',
+    composerSelector: 'textarea#mobile-composer-prompt',
   },
   {
     id: 'claude-pre-hydration-static',
