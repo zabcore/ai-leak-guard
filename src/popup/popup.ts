@@ -6,7 +6,12 @@ import {
   setSelfTestSignal,
   getSelfTestResult,
   clearSelfTestResult,
+  getIndicatorDismissed,
+  setIndicatorDismissed,
 } from '../shared/storage'
+import { getAdapterForHost } from '../content/adapters'
+import { coverageSurfaceId } from '../content/availability'
+import { getSurfaceCoverage } from '../shared/coverage'
 import { localDateKey } from '../shared/counter'
 import { getEvents, summariseEvents, type AlgEvent } from '../shared/event-log'
 import {
@@ -301,6 +306,90 @@ async function resolveDefaultSelfTestSite(): Promise<SelfTestSiteChoice> {
   return { id: fallback.id as SelfTestSiteId, origin: fallback.origin }
 }
 
+// ── V1.3.4 — "Show on this page" per-site chip visibility ──
+
+export interface ChipSiteInfo {
+  /** The active tab's real URL origin — the key the content script uses. */
+  readonly origin: string
+  /** True when the chip can appear here (a covered, non-fallback surface). */
+  readonly supported: boolean
+}
+
+/**
+ * From an active tab URL, derive the chip's storage origin and whether the chip
+ * can show there — mirroring the content script's own gate: a non-fallback
+ * adapter whose surface has coverage. Uses `new URL(url).origin` so it matches
+ * the content script's `location.origin` key exactly (canonical self-test
+ * origins can differ from the real host). Pure — exported for tests.
+ */
+export function chipSiteForUrl(url: string | undefined | null): ChipSiteInfo {
+  if (typeof url !== 'string' || url.length === 0) return { origin: '', supported: false }
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return { origin: '', supported: false }
+  }
+  const adapter = getAdapterForHost(parsed.hostname)
+  const supported =
+    adapter.id !== 'fallback' && getSurfaceCoverage(coverageSurfaceId(adapter.id)) !== undefined
+  return { origin: parsed.origin, supported }
+}
+
+/** The active tab's URL (best-effort; readable for supported hosts via existing
+ *  host_permissions — no `tabs` permission needed). */
+async function resolveActiveTabUrl(): Promise<string> {
+  try {
+    const tabsApi = (globalThis as unknown as { chrome?: typeof chrome }).chrome?.tabs
+    if (tabsApi && typeof tabsApi.query === 'function') {
+      const activeTabs = await tabsApi.query({ active: true, currentWindow: true })
+      return activeTabs[0]?.url ?? ''
+    }
+  } catch {
+    // fall through
+  }
+  return ''
+}
+
+/**
+ * Wire the "Show AI Leak Guard on this page" toggle to the per-origin chip
+ * flag. On a supported active tab it reflects `getIndicatorDismissed(origin)`
+ * (checked = shown) and flips it either way via `setIndicatorDismissed`; the
+ * content script's `storage.onChanged` listener makes the chip appear/disappear
+ * live. On a non-supported tab the toggle is hidden and a short hint shows
+ * instead. Best-effort — never throws into `init`.
+ */
+export async function setupChipVisibilityToggle(activeTabUrl: string): Promise<void> {
+  const control = document.getElementById('chip-visibility')
+  const hint = document.getElementById('chip-visibility-hint')
+  const input = document.getElementById('chip-toggle')
+  if (!(control instanceof HTMLElement) || !(input instanceof HTMLInputElement)) return
+
+  const { origin, supported } = chipSiteForUrl(activeTabUrl)
+  if (!supported) {
+    control.hidden = true
+    if (hint instanceof HTMLElement) hint.hidden = false
+    return
+  }
+  if (hint instanceof HTMLElement) hint.hidden = true
+
+  // Reflect the stored state BEFORE wiring the change listener so the
+  // programmatic checked assignment can't be seen as a user change.
+  let dismissed = false
+  try {
+    dismissed = await getIndicatorDismissed(origin)
+  } catch {
+    dismissed = false
+  }
+  input.checked = !dismissed
+  control.hidden = false
+
+  input.addEventListener('change', () => {
+    // checked → show (remove the flag); unchecked → hide (set the flag).
+    void setIndicatorDismissed(origin, !input.checked)
+  })
+}
+
 /** Read the site the user selected in the chooser (defaults to ChatGPT). */
 export function selectedSelfTestSite(): SelfTestSiteChoice {
   const select = document.getElementById('selftest-site')
@@ -542,6 +631,14 @@ async function init(): Promise<void> {
     selfTestBtn.addEventListener('click', () => {
       void startSelfTest()
     })
+  }
+
+  // V1.3.4 — "Show on this page" toggle for the on-page chip (current site).
+  try {
+    const activeTabUrl = await resolveActiveTabUrl()
+    await setupChipVisibilityToggle(activeTabUrl)
+  } catch (err) {
+    console.warn('[AI Leak Guard] chip visibility toggle setup failed:', err)
   }
   // Preselect the chooser to the active supported tab's site so the
   // obvious "Test protection" click tests where the user actually is.

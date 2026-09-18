@@ -103,6 +103,17 @@ body {
   font-weight: 500;
 }
 
+/* V1.3.4 — the per-site chip toggle sits tight under the main Enabled toggle. */
+.toggle--chip {
+  margin: 0 0 8px;
+}
+
+.popup__hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
 .popup__footer {
   font-size: 11px;
   color: #9ca3af;
