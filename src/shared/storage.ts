@@ -76,6 +76,38 @@ export async function setPromptDismissal(
   })
 }
 
+// ─── V1.3.4 — per-origin dismissal of the in-page availability chip ──
+//
+// The compact availability chip carries a "×" that hides it for THIS origin.
+// Metadata only: a single boolean under `algIndicatorDismissed:<origin>`.
+// Default is SHOWN (a missing key => not dismissed). Recovery for now is
+// removing/re-adding the extension (or clearing site data); a popup-driven
+// "show again" can come later. Every access is best-effort (try/catch at the
+// call site) so storage hiccups never break the page.
+const INDICATOR_DISMISSED_PREFIX = 'algIndicatorDismissed:'
+
+/** Storage key for an origin's availability-chip dismissal flag. */
+export function indicatorDismissedKey(origin: string): string {
+  return `${INDICATOR_DISMISSED_PREFIX}${origin}`
+}
+
+/** True when the availability chip was dismissed for `origin` (default false). */
+export async function getIndicatorDismissed(origin: string): Promise<boolean> {
+  const key = indicatorDismissedKey(origin)
+  const stored = await chrome.storage.local.get(key)
+  return stored[key] === true
+}
+
+/** Persist the availability-chip dismissal for `origin`. */
+export async function setIndicatorDismissed(origin: string, dismissed = true): Promise<void> {
+  const key = indicatorDismissedKey(origin)
+  if (dismissed) {
+    await chrome.storage.local.set({ [key]: true })
+    return
+  }
+  await chrome.storage.local.remove(key)
+}
+
 // ─── V1.3 M1 submit-protection session kill switch ──────────────────
 //
 // Written by `SubmitCore` when an adapter's `resume()` fails

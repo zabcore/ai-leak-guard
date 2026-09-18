@@ -38,6 +38,8 @@ import {
   clearSelfTestSignal,
   setSelfTestResult,
   getSelfTestResult,
+  getIndicatorDismissed,
+  setIndicatorDismissed,
 } from '../shared/storage'
 import { makeNonce, type SelfTestResultRecord } from '../shared/self-test'
 import { getSurfaceCoverage } from '../shared/coverage'
@@ -698,6 +700,13 @@ if (adapter.id !== 'fallback' && getSurfaceCoverage(availabilitySurfaceId) !== u
   // gates `activeHere` (which is composer-live + enabled only).
   let lastSelfTest: SelfTestSignalInfo | null = null
 
+  // V1.3.4 — per-origin dismissal of the chip. Default SHOWN; the persisted
+  // flag is read once at startup (best-effort). Recovery for now: remove/re-add
+  // the extension or clear the site's data (a popup "show again" can come
+  // later). `indicatorOrigin` keys the flag.
+  const indicatorOrigin = location.origin
+  let indicatorDismissed = false
+
   const indicator = createAvailabilityIndicator({
     getAvailability: () =>
       computeAvailability({
@@ -708,7 +717,22 @@ if (adapter.id !== 'fallback' && getSurfaceCoverage(availabilitySurfaceId) !== u
         composerPresent: adapter.resolveComposer() !== null,
         lastSelfTest,
       }),
+    isDismissed: () => indicatorDismissed,
+    onDismiss: () => {
+      indicatorDismissed = true
+      void setIndicatorDismissed(indicatorOrigin)
+    },
   })
+
+  const hydrateDismissed = async (): Promise<void> => {
+    try {
+      indicatorDismissed = await getIndicatorDismissed(indicatorOrigin)
+    } catch {
+      indicatorDismissed = false
+    }
+    indicator.refresh()
+  }
+  void hydrateDismissed()
 
   const hydrateSelfTest = async (): Promise<void> => {
     try {
@@ -759,5 +783,8 @@ if (adapter.id !== 'fallback' && getSurfaceCoverage(availabilitySurfaceId) !== u
     if (areaName !== 'local') return
     if ('prefs' in changes) indicator.refresh()
     if ('algSelfTestResult' in changes) void hydrateSelfTest()
+    // A dismissal toggled elsewhere (another tab on this origin, or a future
+    // popup "show again") re-hydrates so this tab reflects it.
+    if (`algIndicatorDismissed:${indicatorOrigin}` in changes) void hydrateDismissed()
   })
 }
