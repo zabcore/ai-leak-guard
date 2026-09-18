@@ -31,6 +31,22 @@
       </label>
 
       <!--
+        V1.3.4 — per-site visibility for the on-page availability chip. Reflects
+        the SAME per-origin flag the on-page "×" sets
+        (`algIndicatorDismissed:<origin>`), keyed by the active tab's real URL
+        origin. Shown only when the active tab is a supported AI site; otherwise
+        the hint below replaces it. Metadata only; no new permissions.
+      -->
+      <label class="toggle toggle--chip" id="chip-visibility" hidden>
+        <input type="checkbox" id="chip-toggle" checked />
+        <span class="toggle__track"><span class="toggle__thumb"></span></span>
+        <span class="toggle__label">Show AI Leak Guard on this page</span>
+      </label>
+      <p class="popup__hint" hidden id="chip-visibility-hint">
+        Open a supported AI site to show the on-page indicator.
+      </p>
+
+      <!--
         V1.3 M1 — send-protection session kill switch notice. Shown
         ONLY when `submitKillSwitch` is set in storage (an adapter's
         resume failed repeatedly and was disabled for the session so
