@@ -38,6 +38,13 @@ export interface AvailabilityIndicatorDeps {
   readonly isDismissed?: () => boolean
   /** Called when the user clicks the chip's "×" (persist the dismissal). */
   readonly onDismiss?: () => void
+  /**
+   * The composer's live viewport rect (e.g. `resolveComposer()?.getBoundingClientRect()`),
+   * used to anchor the chip just above the chat box so it stays close to where
+   * the user types and never sits over the site's composer controls. `null`
+   * falls back to a bottom-left corner offset.
+   */
+  readonly getAnchorRect?: () => { top: number; left: number; width: number } | null
 }
 
 export interface AvailabilityIndicator {
@@ -154,8 +161,73 @@ export function createAvailabilityIndicator(
   let panel: HTMLElement | null = null
   let expanded = false
   let dismissed = false
+  let repositionQueued = false
+  let listening = false
+
+  // Anchor the chip just above the composer's TOP edge, aligned to the chat
+  // box's left edge — so it sits close to where the user types and never over
+  // the site's in-composer controls (attach / send / voice / scroll-to-bottom),
+  // which live inside the box below this point. `position: fixed`, so the values
+  // are viewport coordinates. Falls back to a bottom-left corner if the composer
+  // can't be measured (shouldn't happen — the chip only shows when it resolves).
+  const GAP_ABOVE = 8
+  const EDGE_MARGIN = 8
+  const CHIP_MAX_WIDTH = 210
+  const positionToAnchor = (): void => {
+    if (root === null) return
+    let rect: { top: number; left: number; width: number } | null = null
+    try {
+      rect = deps.getAnchorRect?.() ?? null
+    } catch {
+      rect = null
+    }
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    if (rect === null || rect.top <= 0) {
+      // Fallback: bottom-left corner, clear of the very bottom edge.
+      root.style.left = `${EDGE_MARGIN}px`
+      root.style.bottom = `${EDGE_MARGIN}px`
+      return
+    }
+    const left = Math.min(Math.max(rect.left, EDGE_MARGIN), vw - CHIP_MAX_WIDTH - EDGE_MARGIN)
+    // `bottom` anchoring keeps the column growing UPWARD when expanded, with the
+    // chip's bottom edge sitting GAP_ABOVE px above the composer's top.
+    const bottom = Math.max(vh - rect.top + GAP_ABOVE, EDGE_MARGIN)
+    root.style.left = `${Math.round(left)}px`
+    root.style.bottom = `${Math.round(bottom)}px`
+  }
+
+  const queueReposition = (): void => {
+    if (repositionQueued) return
+    repositionQueued = true
+    const raf =
+      typeof globalThis.requestAnimationFrame === 'function'
+        ? globalThis.requestAnimationFrame
+        : (cb: FrameRequestCallback): number => globalThis.setTimeout(() => cb(0), 16) as unknown as number
+    raf(() => {
+      repositionQueued = false
+      positionToAnchor()
+    })
+  }
+
+  const startListening = (): void => {
+    if (listening) return
+    listening = true
+    // Capture scroll so nested scroll containers (message list) also reposition;
+    // passive — we never preventDefault.
+    window.addEventListener('scroll', queueReposition, { capture: true, passive: true })
+    window.addEventListener('resize', queueReposition, { passive: true })
+  }
+
+  const stopListening = (): void => {
+    if (!listening) return
+    listening = false
+    window.removeEventListener('scroll', queueReposition, { capture: true } as EventListenerOptions)
+    window.removeEventListener('resize', queueReposition)
+  }
 
   const removeHost = (): void => {
+    stopListening()
     host?.remove()
     host = null
     root = null
@@ -250,6 +322,11 @@ export function createAvailabilityIndicator(
     shadow.appendChild(root)
     ;(mountPoint as ParentNode & { appendChild: (n: Node) => void }).appendChild(host)
 
+    // Anchor to the chat box now, and keep it anchored as the page scrolls,
+    // resizes, or the composer grows (repositioned again on every refresh).
+    positionToAnchor()
+    startListening()
+
     // Expand on hover / focus of anywhere in the pill; collapse on leave / blur.
     // Listening on the wrapper means moving the pointer chip → panel does not
     // collapse it.
@@ -317,8 +394,10 @@ export function createAvailabilityIndicator(
     }
     if (host === null) build()
     if (host === null) return // mount not ready yet
-    // Keep an open panel's values fresh without rebuilding the chip (so a
-    // periodic refresh never collapses it or drops focus).
+    // Re-anchor to the chat box (it moves as the conversation grows / the
+    // composer expands) and keep an open panel's values fresh without rebuilding
+    // the chip (so a periodic refresh never collapses it or drops focus).
+    positionToAnchor()
     if (expanded) syncPanel(a)
   }
 

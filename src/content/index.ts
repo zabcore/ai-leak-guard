@@ -722,6 +722,14 @@ if (adapter.id !== 'fallback' && getSurfaceCoverage(availabilitySurfaceId) !== u
       indicatorDismissed = true
       void setIndicatorDismissed(indicatorOrigin)
     },
+    // Anchor the chip to the live chat box so it sits close to the composer and
+    // never over the site's in-composer controls.
+    getAnchorRect: () => {
+      const el = adapter.resolveComposer()
+      if (el === null) return null
+      const r = el.getBoundingClientRect()
+      return { top: r.top, left: r.left, width: r.width }
+    },
   })
 
   const hydrateDismissed = async (): Promise<void> => {

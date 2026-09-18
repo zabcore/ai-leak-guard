@@ -234,3 +234,50 @@ describe('dismissal (per-origin "×")', () => {
     expect(host()).toBeNull()
   })
 })
+
+describe('anchoring to the composer', () => {
+  it('anchors left/bottom from the composer rect (not the corner default)', () => {
+    // Chat box near the middle of the viewport: the chip floats just above its
+    // top edge, aligned to its left edge.
+    const rect = { top: 500, left: 300, width: 400 }
+    const ind = createAvailabilityIndicator({
+      getAvailability: () => active(),
+      getAnchorRect: () => rect,
+    })
+    ind.refresh()
+
+    const style = rootEl().style
+    // Left tracks the chat box's left edge (within viewport bounds).
+    expect(style.left).toBe('300px')
+    // Bottom is measured from the composer's TOP edge (grows upward), so it is
+    // well above the 8px corner fallback.
+    expect(style.bottom).not.toBe('8px')
+    expect(parseFloat(style.bottom)).toBeGreaterThan(8)
+    ind.destroy()
+  })
+
+  it('falls back to the bottom-left corner when the rect cannot be measured', () => {
+    // No getAnchorRect (jsdom rects are all-zero anyway) → corner fallback.
+    const ind = createAvailabilityIndicator({ getAvailability: () => active() })
+    ind.refresh()
+    const style = rootEl().style
+    expect(style.left).toBe('8px')
+    expect(style.bottom).toBe('8px')
+    ind.destroy()
+  })
+
+  it('destroy() tears down the scroll/resize listeners', () => {
+    const removeSpy = vi.spyOn(window, 'removeEventListener')
+    const ind = createAvailabilityIndicator({
+      getAvailability: () => active(),
+      getAnchorRect: () => ({ top: 400, left: 100, width: 300 }),
+    })
+    ind.refresh()
+    ind.destroy()
+
+    const types = removeSpy.mock.calls.map((c) => c[0])
+    expect(types).toContain('scroll')
+    expect(types).toContain('resize')
+    removeSpy.mockRestore()
+  })
+})
