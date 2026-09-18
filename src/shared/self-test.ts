@@ -103,5 +103,16 @@ export interface SelfTestResultRecord {
 export const SELF_TEST_SIGNAL_KEY = 'algSelfTest'
 export const SELF_TEST_RESULT_KEY = 'algSelfTestResult'
 
+/**
+ * A fresh, content-free nonce that ties a run to its result record. Shared by
+ * the popup (signal path) and the content script (V1.3.4 `#alg-selftest` hash
+ * path) so both mint it identically.
+ */
+export function makeNonce(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+  return `st-${Date.now()}-${Math.floor(Math.random() * 1e9)}`
+}
+
 /** How long the popup waits for a result before reporting "couldn't start". */
 export const SELF_TEST_POPUP_TIMEOUT_MS = 15000
