@@ -12,6 +12,7 @@ import { getEvents, summariseEvents, type AlgEvent } from '../shared/event-log'
 import {
   SELF_TEST_RESULT_KEY,
   SELF_TEST_POPUP_TIMEOUT_MS,
+  makeNonce,
   type SelfTestResultKind,
   type SelfTestCode,
   type SelfTestResultRecord,
@@ -275,12 +276,6 @@ export function selfTestResultCopy(result: SelfTestResultKind, code: SelfTestCod
     return 'Couldn’t start the test — refresh the page and try again.'
   }
   return 'Couldn’t complete the test — refresh the page and try again.'
-}
-
-function makeNonce(): string {
-  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
-  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
-  return `st-${Date.now()}-${Math.floor(Math.random() * 1e9)}`
 }
 
 /**

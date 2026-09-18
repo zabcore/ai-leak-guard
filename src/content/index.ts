@@ -32,13 +32,14 @@ import { runSelfTest, installUnloadGuard } from './submit/self-test'
 import { dispatchSelfTestSend } from './submit/self-test-send'
 import { showSelfTestBanner } from './submit/self-test-banner'
 import { openSelfTestReport } from './submit/self-test-report-open'
+import { createHashSelfTestTrigger } from './submit/self-test-hash'
 import {
   getSelfTestSignal,
   clearSelfTestSignal,
   setSelfTestResult,
   getSelfTestResult,
 } from '../shared/storage'
-import type { SelfTestResultRecord } from '../shared/self-test'
+import { makeNonce, type SelfTestResultRecord } from '../shared/self-test'
 import { getSurfaceCoverage } from '../shared/coverage'
 import { createAvailabilityIndicator } from './availability-indicator'
 import {
@@ -470,6 +471,15 @@ const SUBMIT_INSTALLERS: Record<string, (opts: InstallSubmitOptions) => Installe
   claude: installClaudeSubmitProtection,
   gemini: installGeminiSubmitProtection,
 }
+
+// Module-level run-once guard shared by BOTH self-test entry points (popup
+// signal + `#alg-selftest` hash). Declared ABOVE the install block below,
+// which can call `runGuidedSelfTest` synchronously via the hash trigger — so
+// this must already be initialized (no temporal-dead-zone read). Set the
+// instant a run begins, so a re-render, a repeated `hashchange`, or a
+// signal-and-hash collision can never start the synthetic test twice in a tab.
+let selfTestStarted = false
+
 if (isSubmitProtectionEnabled()) {
   const submitOpts: InstallSubmitOptions = {
     isMasterEnabled: () => enabledState.isEnabled(),
@@ -494,7 +504,41 @@ if (isSubmitProtectionEnabled()) {
         // in this (fresh) tab. Only when submit protection is actually
         // installed (flag on) — so in the shipped flag-OFF build the popup
         // button reports "not supported here" and this never runs.
-        void maybeRunSelfTest(installed)
+        // V1.3.4: a page can ALSO start the guided self-test via the
+        // `#alg-selftest` URL hash — the same runGuidedSelfTest path with all
+        // safety intact (a second way in, not a replacement for the popup
+        // signal). The trigger's run-once guard keeps a re-render / repeated
+        // hashchange from starting it twice.
+        const hashTrigger = createHashSelfTestTrigger({
+          getHash: () => location.hash,
+          stripHash: () => {
+            history.replaceState(null, '', location.pathname + location.search)
+          },
+          run: () => {
+            void runGuidedSelfTest(installed, makeNonce())
+          },
+          isTopFrame: () => globalThis.top === globalThis.self,
+        })
+        // Give the popup-signal path its turn FIRST, then do the initial hash
+        // check. This matters because the popup opens its fresh tab WITH the
+        // `#alg-selftest` hash AND writes a signal: letting the signal path go
+        // first means it starts the run with the popup's nonce (so the result
+        // write-back the popup waits on is preserved) and the hash check then
+        // no-ops via the shared run-once guard. With no signal present, this is
+        // where a plain `#alg-selftest` page link starts the test.
+        void (async () => {
+          try {
+            await maybeRunSelfTest(installed)
+          } catch (err) {
+            console.error('[AI Leak Guard] self-test (signal path) failed:', err)
+          } finally {
+            hashTrigger.check()
+          }
+        })()
+        // Later SPA navigations to the hash (no full reload) also start it.
+        window.addEventListener('hashchange', () => {
+          hashTrigger.check()
+        })
       } catch (err) {
         console.error('[AI Leak Guard] submit protection install failed:', err)
       }
@@ -508,26 +552,17 @@ if (isSubmitProtectionEnabled()) {
 // AUTO-CANCELS (never submits), and writes a metadata-only result back
 // for the popup. The signal is deleted immediately so it never re-runs.
 const SELF_TEST_STALE_MS = 60_000
-async function maybeRunSelfTest(installed: InstalledSubmit): Promise<void> {
-  // Top frame only: a sub-frame without a composer must not consume the
-  // one-shot signal out from under the real composer's frame.
-  if (globalThis.top !== globalThis.self) return
-  let signal: Awaited<ReturnType<typeof getSelfTestSignal>> = null
-  try {
-    signal = await getSelfTestSignal()
-  } catch {
-    signal = null
-  }
-  if (signal === null) return
-  // Consume the one-shot signal up front so it can never re-run, even
-  // if the run below throws or the tab reloads.
-  try {
-    await clearSelfTestSignal()
-  } catch {
-    // best-effort
-  }
-  // Ignore a stale signal from an unrelated earlier session.
-  if (Date.now() - signal.ts > SELF_TEST_STALE_MS) return
+
+/**
+ * Drive the guided self-test end to end: synthetic injection → real intercept
+ * + scan + modal → AUTO-CANCEL → metadata-only result record → in-tab banner.
+ * Shared by the popup-signal path and the `#alg-selftest` hash path; the only
+ * difference is where the `nonce` comes from (a waiting popup vs. a fresh one).
+ * The module-level `selfTestStarted` guard makes it a strict once-per-tab.
+ */
+async function runGuidedSelfTest(installed: InstalledSubmit, nonce: string): Promise<void> {
+  if (selfTestStarted) return
+  selfTestStarted = true
 
   const submitAdapter = installed.adapter
 
@@ -578,7 +613,7 @@ async function maybeRunSelfTest(installed: InstalledSubmit): Promise<void> {
   }
 
   const record: SelfTestResultRecord = {
-    nonce: signal.nonce,
+    nonce,
     result: report.result,
     code: report.code,
     site: adapter.id,
@@ -607,6 +642,34 @@ async function maybeRunSelfTest(installed: InstalledSubmit): Promise<void> {
   } catch (err) {
     console.warn('[AI Leak Guard] self-test banner failed:', err)
   }
+}
+
+/**
+ * Popup-signal entry point (unchanged contract): consume the one-shot signal
+ * the popup wrote and, if fresh, run the guided self-test with the popup's
+ * nonce so its result write-back reaches the waiting popup.
+ */
+async function maybeRunSelfTest(installed: InstalledSubmit): Promise<void> {
+  // Top frame only: a sub-frame without a composer must not consume the
+  // one-shot signal out from under the real composer's frame.
+  if (globalThis.top !== globalThis.self) return
+  let signal: Awaited<ReturnType<typeof getSelfTestSignal>> = null
+  try {
+    signal = await getSelfTestSignal()
+  } catch {
+    signal = null
+  }
+  if (signal === null) return
+  // Consume the one-shot signal up front so it can never re-run, even
+  // if the run below throws or the tab reloads.
+  try {
+    await clearSelfTestSignal()
+  } catch {
+    // best-effort
+  }
+  // Ignore a stale signal from an unrelated earlier session.
+  if (Date.now() - signal.ts > SELF_TEST_STALE_MS) return
+  await runGuidedSelfTest(installed, signal.nonce)
 }
 
 /** Cancel the open warning modal (return-to-edit) via a real Escape keydown. */
