@@ -10,14 +10,23 @@
 // `isComposing` / `keyCode 229`, so the base IME double-guard covers
 // CJK entry.
 //
-// CONFIRMED SELECTORS (live, logged-in, 5 Sep 2026 — use as-is):
-//   • composer: `rich-textarea [contenteditable="true"]`. The composer
-//     is a contenteditable INSIDE the `<rich-textarea>` custom element
-//     (light DOM, per the A0 spike). `matchesComposer` below also
-//     resolves the `<rich-textarea>` host / anything inside it, so the
-//     composed-path walk still finds the composer even if the
-//     custom-element boundary hides the inner contenteditable from a
-//     naive `.matches`.
+// CONFIRMED SELECTORS (live, logged-in, 28 Sep 2026):
+//   • composer: `rich-textarea .ql-editor[contenteditable="true"]`. The
+//     composer is now a QUILL editor — a contenteditable `.ql-editor`
+//     INSIDE the `<rich-textarea>` custom element (light DOM). The older
+//     bare selector `rich-textarea [contenteditable="true"]` now matches
+//     TWO nodes — `.ql-editor` AND Quill's hidden `.ql-clipboard` — so it
+//     is tightened to `.ql-editor` here to always land on the real editor.
+//     `matchesComposer` below still resolves the `<rich-textarea>` host so
+//     the composed-path walk finds the composer even when the
+//     custom-element boundary hides the inner editor, and it explicitly
+//     EXCLUDES `.ql-clipboard`.
+//
+// V1.3.5 interception note: Gemini installs its own earliest capture-phase
+// Enter handler in the PAGE world that `stopImmediatePropagation`s, so the
+// isolated `keydown` listener never sees Enter. Enter-to-send is reclaimed by
+// the MAIN-world `send-capture.ts` shim, bridged to `handleExternalSendIntent`.
+// The button-click path below is unaffected.
 //   • send button: `gem-icon-button.send-button button` — CONFIRMED the
 //     ONLY match (exactly 1) once the composer has text, and it IS the
 //     same element as `button[aria-label="Send message"]`. It is a
@@ -58,23 +67,22 @@ import { BaseSubmitAdapter, type SubmitAdapterOptions } from './base-submit-adap
 
 const GEMINI_CONFIG = {
   id: 'gemini',
-  composerSelector: 'rich-textarea [contenteditable="true"]',
+  composerSelector: 'rich-textarea .ql-editor[contenteditable="true"]',
   sendButtonSelector: 'gem-icon-button.send-button button, button[aria-label="Send message"]',
   composerKey: 'gemini-composer',
-  // The `<rich-textarea>` custom-element boundary can keep the inner
-  // contenteditable out of a naive `.matches` on a composed-path node
-  // (the node may be the host, or a wrapper). Accept: the inner
-  // contenteditable, or the `<rich-textarea>` host itself. The base
-  // then NORMALIZES a host match down to the inner contenteditable for
-  // reading + resume. `role="textbox"` is deliberately NOT a match
-  // condition — only a real `contenteditable` element (or the host) is
-  // the editor; a bare `role="textbox"` node could be a non-editable
-  // widget.
+  // The `<rich-textarea>` custom-element boundary can keep the inner editor out
+  // of a naive `.matches` on a composed-path node (the node may be the host).
+  // Accept: the Quill `.ql-editor`, the `<rich-textarea>` host, or any other
+  // contenteditable inside the host EXCEPT Quill's hidden `.ql-clipboard`. The
+  // base then NORMALIZES a host match down to the inner `.ql-editor` for reading
+  // + resume. `role="textbox"` is deliberately NOT a match condition — only a
+  // real `contenteditable` element (or the host) is the editor.
   matchesComposer: (el: Element): boolean => {
-    if (el.matches('rich-textarea [contenteditable="true"]')) return true
+    if (el.matches('rich-textarea .ql-editor[contenteditable="true"]')) return true
     if (el.matches('rich-textarea')) return true
     const host = el.closest('rich-textarea')
     if (host === null) return false
+    if (el.matches('.ql-clipboard')) return false
     return el.getAttribute('contenteditable') === 'true'
   },
 } as const

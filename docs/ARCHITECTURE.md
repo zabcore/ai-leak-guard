@@ -1394,7 +1394,7 @@ behind the flag.
 | Site   | Composer                                   | Send button                                                                                                                                                                |
 | ------ | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude | `[contenteditable="true"][role="textbox"]` | `button[data-testid="chat-input-send"]` (+ `aria-label="Send message"` fallback)                                                                                           |
-| Gemini | `rich-textarea [contenteditable="true"]`   | `gem-icon-button.send-button button` (locale-independent; + `aria-label="Send message"` English fallback; Material icon button; the ONLY match once the composer has text) |
+| Gemini | `rich-textarea .ql-editor[contenteditable="true"]` (V1.3.5 — Quill editor; the bare `rich-textarea [contenteditable]` now also matches Quill's hidden `.ql-clipboard`) | `gem-icon-button.send-button button` (locale-independent; + `aria-label="Send message"` English fallback; Material icon button; the ONLY match once the composer has text) |
 
 Gemini's composer lives inside the `<rich-textarea>` custom element,
 so its config supplies a `matchesComposer` that also resolves the
@@ -1425,7 +1425,23 @@ future store-copy coverage claim must exclude them:
 
 Each list is also recorded at the top of the site's adapter file.
 
-**Gemini locale independence (gap closed, confirmed live 5 Sep 2026).** The send `<button>`'s parent is a `<gem-icon-button class="send-button … submit">` custom element — the `send-button`/`submit` classes live on that wrapper, not on the `<button>` (which is why an earlier `button.send-button` guess matched 0). The primary selector `gem-icon-button.send-button button` keys on that wrapper class, a **locale-independent** handle, so a _button-click_ send is intercepted in **every** locale; `button[aria-label="Send message"]` is retained only as an English fallback (resolves the same node). `button:has(mat-icon[data-mat-icon-name="arrow_upward"])` is a documented alternative but is broader (could drift onto other arrow-icon buttons), so it is not used as primary. Enter-to-send was already locale-safe in every build (it keys off the composer, not the button, and resume falls back to a re-dispatched Enter).
+**Gemini locale independence (gap closed, confirmed live 5 Sep 2026).** The send `<button>`'s parent is a `<gem-icon-button class="send-button … submit">` custom element — the `send-button`/`submit` classes live on that wrapper, not on the `<button>` (which is why an earlier `button.send-button` guess matched 0). The primary selector `gem-icon-button.send-button button` keys on that wrapper class, a **locale-independent** handle, so a _button-click_ send is intercepted in **every** locale; `button[aria-label="Send message"]` is retained only as an English fallback (resolves the same node). `button:has(mat-icon[data-mat-icon-name="arrow_upward"])` is a documented alternative but is broader (could drift onto other arrow-icon buttons), so it is not used as primary.
+
+### V1.3.5 — Gemini Enter-reclaim via a MAIN-world shim
+
+**Regression (proven live 2026-09-28).** Gemini now installs its OWN earliest capture-phase `keydown` handler in the PAGE's world that calls `stopImmediatePropagation()` for Enter. Because `stopImmediatePropagation` halts every remaining listener on the target across BOTH worlds, the isolated submit adapter's `window` capture listener never ran for Enter — send-time protection failed open (self-test: `NO_INTERCEPT`, composer detected, interception 0). Element- or document-level capture cannot help: window capture is earliest and Gemini stops immediate propagation there. Enter-to-send is therefore NOT locale/DOM-safe from the isolated world any more.
+
+**Fix — reclaim the earliest slot in the page's own world.** A MAIN-world `content_scripts` entry (`src/content/main-world/send-capture.ts`, `world: "MAIN"`, `run_at: "document_start"`, matched to Gemini only) registers the FIRST window-capture `keydown` listener before Gemini's bundle runs, blocks the native send (`preventDefault` + `stopImmediatePropagation`), and bridges the intent to the isolated world (`src/content/submit/send-bridge.ts` → `BaseSubmitAdapter.handleExternalSendIntent`), which runs the SAME scan → warning-modal → resume flow. Resume still clicks the send button (untrusted click submits per M0), so no main-world resume is needed. Button-click sends stay on the isolated `click` path, unchanged.
+
+- **Fail-open by arming:** the shim stays dormant until the isolated bridge posts `ready`; a disabled/absent extension never posts it, so the shim never blocks. If the extension is _not protecting_ a send at intent time (flag/master off, kill-switch), `handleExternalSendIntent` passes the send THROUGH (clicks the button) instead of dropping it, so a blocked Enter is never left stranded.
+- **IME / Shift+Enter preserved:** the shim applies the same doubled IME guard (`isComposing` OR `keyCode === 229`) and the Shift+Enter newline exclusion as the isolated keydown path.
+- **Scope:** ChatGPT/Claude keep the isolated keydown path (they do not swallow Enter today). The shim generalizes to them by adding the manifest match + selector if they ever adopt the same earliest-capture swallow.
+
+**Selector note:** the composer is now a Quill editor — `rich-textarea .ql-editor[contenteditable="true"]`. The old bare `rich-textarea [contenteditable="true"]` matches TWO nodes (`.ql-editor` AND Quill's hidden `.ql-clipboard`), so selectors + `matchesComposer` are tightened to `.ql-editor` and `normalizeComposer` prefers it.
+
+### Release ritual — manual logged-in self-test per surface
+
+The automated live-noauth monitor cannot reach authenticated surfaces, so logged-in send-interception drift (like this one) is invisible to CI. **Before shipping a release, run the one-click "Test protection" self-test while logged in on each send-protected surface — ChatGPT, Claude, Gemini — and confirm `Result: confirmed`.** A `NO_INTERCEPT` with the composer detected is the signature of a page-world capture swallow; a `NO_COMPOSER`/selector miss is a composer-selector drift.
 
 ## V1.3 M4 — text/file coordination at send (one combined modal)
 

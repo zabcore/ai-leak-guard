@@ -21,19 +21,30 @@ import {
   type ScanOutcome,
 } from './helpers/submit-adapter-harness'
 
-// Gemini composer: contenteditable inside a <rich-textarea> custom
-// element (light DOM). Send button: Material icon button with
-// aria-label="Send message" and no data-testid.
+// Gemini composer (V1.3.5): a QUILL editor — the `.ql-editor` contenteditable
+// inside a <rich-textarea> custom element, ALONGSIDE Quill's hidden
+// `.ql-clipboard` (also contenteditable). Send button: Material icon button with
+// aria-label="Send message" and no data-testid. The `.ql-clipboard` decoy is
+// included so the suite proves resolution lands on `.ql-editor`, never it.
 interface GeminiHarness extends Harness {
   host: HTMLElement // the <rich-textarea> host
+  clipboard: HTMLElement // Quill's hidden .ql-clipboard decoy
 }
 
 function buildGemini(opts: { buttonDisabled?: boolean } = {}): GeminiHarness {
   document.body.innerHTML = ''
   const host = document.createElement('rich-textarea')
+  // Quill's hidden clipboard element comes FIRST in the DOM (also contenteditable)
+  // — a naive "first contenteditable inside rich-textarea" would wrongly pick it.
+  const clipboard = document.createElement('div')
+  clipboard.className = 'ql-clipboard'
+  clipboard.setAttribute('contenteditable', 'true')
+  host.appendChild(clipboard)
   const composer = document.createElement('div')
+  composer.className = 'ql-editor'
   composer.setAttribute('contenteditable', 'true')
   composer.setAttribute('role', 'textbox')
+  composer.setAttribute('aria-label', 'Enter a prompt for Gemini')
   composer.innerHTML = '<p></p>'
   host.appendChild(composer)
   const button = document.createElement('button')
@@ -44,6 +55,7 @@ function buildGemini(opts: { buttonDisabled?: boolean } = {}): GeminiHarness {
   return {
     host,
     composer,
+    clipboard,
     button,
     setComposerHtml: (html) => {
       composer.innerHTML = html
@@ -355,7 +367,12 @@ describe('Gemini — locale-independent send button (no aria-label)', () => {
   function buildLocalizedGemini(): GeminiHarness {
     document.body.innerHTML = ''
     const host = document.createElement('rich-textarea')
+    const clipboard = document.createElement('div')
+    clipboard.className = 'ql-clipboard'
+    clipboard.setAttribute('contenteditable', 'true')
+    host.appendChild(clipboard)
     const composer = document.createElement('div')
+    composer.className = 'ql-editor'
     composer.setAttribute('contenteditable', 'true')
     composer.setAttribute('role', 'textbox')
     composer.innerHTML = '<p></p>'
@@ -370,6 +387,7 @@ describe('Gemini — locale-independent send button (no aria-label)', () => {
     return {
       host,
       composer,
+      clipboard,
       button,
       setComposerHtml: (html) => {
         composer.innerHTML = html
@@ -408,5 +426,91 @@ describe('Gemini — locale-independent send button (no aria-label)', () => {
     const result = adapter.resume()
     expect(clicked).toBe(true)
     expect(result).toBe('submitted')
+  })
+})
+
+describe('Gemini — Quill composer resolution (V1.3.5 selector tightening)', () => {
+  it('resolveComposer lands on .ql-editor, never Quill’s .ql-clipboard', () => {
+    harness = buildGemini()
+    adapter = new GeminiSubmitAdapter()
+    expect(adapter.resolveComposer()).toBe(harness.composer)
+    expect(adapter.resolveComposer()).not.toBe(harness.clipboard)
+    expect((adapter.resolveComposer() as HTMLElement).className).toContain('ql-editor')
+  })
+
+  it('readComposerText reads the .ql-editor, not the hidden clipboard', () => {
+    harness = buildGemini()
+    harness.setComposerHtml('<p>Patient SSN is 123-45-6789</p>')
+    harness.clipboard.textContent = 'CLIPBOARD-000-00-0000'
+    adapter = new GeminiSubmitAdapter()
+    const text = adapter.readComposerText()
+    expect(text).toContain('123-45-6789')
+    expect(text).not.toContain('CLIPBOARD-000-00-0000')
+  })
+})
+
+// V1.3.5 — Gemini swallows Enter in its own world, so the MAIN-world shim
+// bridges the intent here via handleExternalSendIntent(). These prove that
+// externally-triggered path drives the SAME scan/modal/resume flow, and that it
+// stays FAIL-OPEN (passes the send through) when the extension isn't protecting.
+describe('Gemini — MAIN-world Enter bridge (handleExternalSendIntent)', () => {
+  it('protecting + flagged text → modal shown, not sent until proceed → one click', async () => {
+    harness = buildGemini()
+    harness.setComposerHtml(`<p>${SSN_TEXT}</p>`)
+    let clicks = 0
+    harness.button.addEventListener('click', () => (clicks += 1))
+    const h = controllableDecide()
+    adapter = new GeminiSubmitAdapter()
+    adapter.attach(makeCore({ decide: h.decide }))
+    adapter.handleExternalSendIntent()
+    await flush()
+    expect(h.calls).toBe(1)
+    expect(clicks).toBe(0)
+    h.resolve('proceed')
+    await flush()
+    expect(clicks).toBe(1)
+  })
+
+  it('protecting + clean text → exactly one send-button click (pass)', async () => {
+    harness = buildGemini()
+    harness.setComposerHtml(`<p>${CLEAN_TEXT}</p>`)
+    let clicks = 0
+    harness.button.addEventListener('click', () => {
+      clicks += 1
+      harness!.setComposerHtml('<p></p>')
+    })
+    adapter = new GeminiSubmitAdapter()
+    adapter.attach(makeCore())
+    adapter.handleExternalSendIntent()
+    await flush()
+    expect(clicks).toBe(1)
+  })
+
+  it('flag OFF → FAIL-OPEN: send passes through (button clicked), no scan', async () => {
+    harness = buildGemini()
+    harness.setComposerHtml(`<p>${SSN_TEXT}</p>`)
+    let clicks = 0
+    harness.button.addEventListener('click', () => (clicks += 1))
+    const scan = vi.fn((t: string): ScanOutcome => detectDetailed(t))
+    adapter = new GeminiSubmitAdapter({ isFlagEnabled: () => false })
+    adapter.attach(makeCore({ scan }))
+    adapter.handleExternalSendIntent()
+    await flush()
+    expect(scan).not.toHaveBeenCalled()
+    expect(clicks).toBe(1)
+  })
+
+  it('master toggle OFF → FAIL-OPEN: send passes through, no scan', async () => {
+    harness = buildGemini()
+    harness.setComposerHtml(`<p>${SSN_TEXT}</p>`)
+    let clicks = 0
+    harness.button.addEventListener('click', () => (clicks += 1))
+    const scan = vi.fn((t: string): ScanOutcome => detectDetailed(t))
+    adapter = new GeminiSubmitAdapter({ isMasterEnabled: () => false })
+    adapter.attach(makeCore({ scan }))
+    adapter.handleExternalSendIntent()
+    await flush()
+    expect(scan).not.toHaveBeenCalled()
+    expect(clicks).toBe(1)
   })
 })

@@ -6,17 +6,31 @@
   https://gemini.google.com/*.
 
   Shipped contract (src/content/adapters/gemini.ts + submit/adapters/gemini.ts):
-    composer     rich-textarea [contenteditable="true"]      (custom element)
-    send button  gem-icon-button.send-button button          (locale-independent)
-  The custom elements <rich-textarea> / <gem-icon-button> are reproduced
-  verbatim so the composed-path + wrapper-class matching is exercised.
+    composer     rich-textarea .ql-editor[contenteditable="true"]   (Quill editor)
+    send button  gem-icon-button.send-button button                 (locale-independent)
+
+  The composer is now a QUILL editor: a `.ql-editor` contenteditable inside the
+  `<rich-textarea>` custom element, ALONGSIDE Quill's hidden `.ql-clipboard`
+  (also contenteditable). Both are reproduced so the fixture catches a selector
+  that drifts back to the bare `rich-textarea [contenteditable="true"]` (which
+  would now match two nodes). The `data-monitor="composer"` hook is on the real
+  `.ql-editor`, never the clipboard.
 -->
 <main>
   <rich-textarea>
-    <div contenteditable="true" role="textbox" data-monitor="composer"></div>
+    <div class="ql-clipboard" contenteditable="true" tabindex="-1"></div>
+    <div
+      class="ql-editor"
+      contenteditable="true"
+      role="textbox"
+      aria-label="Enter a prompt for Gemini"
+      data-monitor="composer"
+    ></div>
   </rich-textarea>
-  <gem-icon-button class="send-button submit">
-    <button aria-label="Send message" data-monitor="send">Send</button>
+  <gem-icon-button class="send-button submit has-input">
+    <button aria-label="Send message" data-monitor="send">
+      <mat-icon data-mat-icon-name="arrow_upward"></mat-icon>
+    </button>
   </gem-icon-button>
   <input type="file" data-monitor="file" />
 </main>

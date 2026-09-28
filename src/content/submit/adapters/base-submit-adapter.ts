@@ -319,14 +319,23 @@ export class BaseSubmitAdapter implements SubmitAdapter {
     event.preventDefault()
     event.stopImmediatePropagation()
     event.stopPropagation()
+    this.beginSendIntent(composer)
+  }
+
+  /**
+   * Hand a matched composer to the core as a send intent. Split out of
+   * `intercept` so the V1.3.5 MAIN-world Enter-reclaim bridge can drive the
+   * SAME flow (scan → modal → resume) without a DOM event to `preventDefault`
+   * — the shim already blocked the native send in the page's own world before
+   * this runs (see `handleExternalSendIntent`).
+   */
+  private beginSendIntent(composer: HTMLElement): void {
     // `composer` is the element the composed-path walk matched — which,
     // for a custom-element wrapper (Gemini's `<rich-textarea>`), can be
-    // the HOST rather than the inner editor. `eventTargetsComposer`
-    // above already validated against that matched element; from here
-    // on we operate on the NORMALIZED inner editable so
-    // `readComposerText` reads only the editor (not host chrome /
-    // placeholders) and the resume Enter fallback dispatches on the
-    // element the site's key binding actually listens on.
+    // the HOST rather than the inner editor. From here on we operate on
+    // the NORMALIZED inner editable so `readComposerText` reads only the
+    // editor (not host chrome / placeholders) and the resume Enter
+    // fallback dispatches on the element the site's key binding listens on.
     const editable = normalizeComposer(composer)
     this.pendingComposer = editable
     this.pendingOpener = editable
@@ -343,6 +352,58 @@ export class BaseSubmitAdapter implements SubmitAdapter {
         this.pendingComposer = null
         this.pendingOpener = null
       })
+  }
+
+  /**
+   * V1.3.5 — externally-triggered send intent, for surfaces where the page
+   * swallows the Enter keydown in its OWN world before our isolated-world
+   * capture listener can see it (Gemini installs an earliest capture-phase
+   * Enter handler that calls `stopImmediatePropagation`). A MAIN-world shim
+   * (`send-capture.ts`) wins that race, blocks the native send in the page's
+   * world, and bridges here.
+   *
+   * Critical difference from the keydown path: the shim ALREADY blocked the
+   * native send synchronously (it had to, to beat the page). So when the
+   * extension is NOT protecting this send — flag off, master toggle off, or the
+   * session kill-switch engaged — we must not simply drop it (that would leave
+   * the user's Enter swallowed with nothing sent). Instead we PASS THE SEND
+   * THROUGH (click the site's send button) so behaviour stays fail-open, exactly
+   * as if the shim had never intervened.
+   */
+  handleExternalSendIntent(): void {
+    // Ignore our own synthetic click during a resume/pass-through.
+    if (this.resuming) return
+    if (this.core === null) return
+    const protecting =
+      this.isFlagEnabled() && this.isMasterEnabled() && !this.core.isAdapterDisabled(this.id)
+    if (!protecting) {
+      // Not protecting → the shim blocked a send we don't want to hold. Send it.
+      this.passThroughSend()
+      return
+    }
+    // A warning modal owns the keys while it is up; drop this stray intent.
+    if (isAnyGuardModalOpen()) return
+    const composer = this.queryComposer()
+    if (composer === null) return
+    this.beginSendIntent(composer)
+  }
+
+  /**
+   * Fail-open completion for the MAIN-world path: the shim blocked the native
+   * send but we are not protecting it, so click the site's send button to let it
+   * through. `resuming` makes our own capture-phase click listener ignore this
+   * synthetic click. Enter is deliberately NOT used (it would re-trigger the
+   * shim); if no usable button resolves the user can still click send manually.
+   */
+  private passThroughSend(): void {
+    const button = this.resolveSendButton(this.queryComposer())
+    if (button === null || !isButtonUsable(button)) return
+    this.resuming = true
+    try {
+      button.click()
+    } finally {
+      this.resuming = false
+    }
   }
 
   // ── helpers (config-driven; per-instance) ──
@@ -517,6 +578,11 @@ function dispatchEnter(el: HTMLElement): boolean {
  */
 function normalizeComposer(el: HTMLElement): HTMLElement {
   if (el.matches('[contenteditable="true"]') || el.tagName === 'TEXTAREA') return el
+  // Gemini's `<rich-textarea>` host holds a Quill editor: prefer `.ql-editor`
+  // so a host match never normalizes to Quill's hidden `.ql-clipboard` (also
+  // contenteditable), which would read/resume the wrong element.
+  const quill = el.querySelector<HTMLElement>('.ql-editor[contenteditable="true"]')
+  if (quill !== null) return quill
   const inner = el.querySelector<HTMLElement>('[contenteditable="true"], textarea')
   return inner ?? el
 }
