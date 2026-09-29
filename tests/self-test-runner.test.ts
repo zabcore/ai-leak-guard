@@ -128,3 +128,71 @@ describe('runSelfTest', () => {
     expect(calls.cancelled).toBe(SELF_TEST_CASES.length)
   })
 })
+
+// V1.3.6 — the MAIN-world shim path: an optional preflight confirms an
+// interceptor the isolated safety-net can't observe, and dispatchSend may be
+// async. The preflight runs while the composer is still EMPTY (no send risk).
+describe('runSelfTest — verifyInterceptorReady (shim surface)', () => {
+  it('preflight FALSE → NO_INTERCEPT before any synthetic text is inserted', async () => {
+    const { deps, calls } = baseDeps({
+      verifyInterceptorReady: () => Promise.resolve(false),
+    })
+    const report = await runSelfTest(deps)
+    expect(report).toMatchObject({ result: 'unsupported', code: 'NO_INTERCEPT' })
+    // Never injected anything, never dispatched — bailed while empty.
+    expect(calls.insert).toEqual([])
+    expect(calls.dispatched).toBe(0)
+  })
+
+  it('preflight TRUE → proceeds and confirms (async dispatchSend awaited)', async () => {
+    let modalOpen = false
+    const { deps } = baseDeps({
+      verifyInterceptorReady: () => Promise.resolve(true),
+      dispatchSend: () => {
+        // async interception confirmation (the shim/bridge round-trip)
+        return Promise.resolve(true).then((v) => {
+          modalOpen = true
+          return v
+        })
+      },
+      isModalOpen: () => modalOpen,
+      cancelModal: () => {
+        modalOpen = false
+      },
+    })
+    const report = await runSelfTest(deps)
+    expect(report.result).toBe('confirmed')
+  })
+
+  it('preflight runs while the composer is EMPTY (before the first insert)', async () => {
+    let textAtProbe: string | null = null
+    let text = ''
+    const el = document.createElement('div')
+    const deps: SelfTestRunnerDeps = {
+      getComposer: () => el,
+      readText: () => text,
+      insert: (_e, t) => {
+        text = t
+      },
+      clear: () => {
+        text = ''
+      },
+      dispatchSend: () => {
+        return true
+      },
+      isModalOpen: () => true,
+      cancelModal: () => {},
+      verifyInterceptorReady: () => {
+        textAtProbe = text
+        return true
+      },
+      now: () => Date.now(),
+      sleep: () => Promise.resolve(),
+      composerTimeoutMs: 100,
+      modalTimeoutMs: 100,
+      pollMs: 1,
+    }
+    await runSelfTest(deps)
+    expect(textAtProbe).toBe('') // empty at probe time — safe
+  })
+})

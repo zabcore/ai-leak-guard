@@ -14,8 +14,10 @@
 import {
   SEND_MESSAGE_SOURCE,
   readyMessage,
+  selfTestProbeMessage,
   isSendHello,
   isSendIntent,
+  isSelfTestProbeResult,
 } from '../main-world/send-messages'
 
 export interface SendBridgeDeps {
@@ -65,6 +67,55 @@ export function installSendBridge(deps: SendBridgeDeps): () => void {
   postReady()
 
   return () => target.removeEventListener('message', onMessage)
+}
+
+export interface ProbeShimDeps {
+  readonly target?: Window
+  readonly origin?: string
+  /** How long to wait for the shim's probe reply before giving up. */
+  readonly timeoutMs?: number
+}
+
+/**
+ * V1.3.6 — ask the MAIN-world shim to prove it is installed AND wins the Enter
+ * capture race, by dispatching a synthetic Enter on the EMPTY composer in the
+ * page's own world and reporting whether it blocked it first. Resolves `true`
+ * only on a `blocked: true` reply; resolves `false` on `blocked: false` or if no
+ * reply arrives (shim absent / disabled) — so a disabled shim reads as NOT
+ * confirmed, never a false green. Safe: the probe runs on an empty composer, so
+ * a fall-through cannot send.
+ */
+export function probeShimInterception(deps: ProbeShimDeps = {}): Promise<boolean> {
+  const target = deps.target ?? window
+  const origin = deps.origin ?? location.origin
+  const timeoutMs = deps.timeoutMs ?? 800
+  return new Promise((resolve) => {
+    let settled = false
+    const cleanup = (): void => {
+      target.removeEventListener('message', onMessage)
+      clearTimeout(timer)
+    }
+    const onMessage = (event: MessageEvent): void => {
+      if (event.source !== target) return
+      if (!isSelfTestProbeResult(event.data)) return
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(event.data.blocked === true)
+    }
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(false)
+    }, timeoutMs)
+    target.addEventListener('message', onMessage)
+    try {
+      target.postMessage(selfTestProbeMessage, origin)
+    } catch {
+      // If posting fails there is no shim to answer — resolve false on timeout.
+    }
+  })
 }
 
 // Referenced so the shared source constant is part of this module's contract

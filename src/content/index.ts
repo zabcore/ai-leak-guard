@@ -33,6 +33,7 @@ import { dispatchSelfTestSend } from './submit/self-test-send'
 import { showSelfTestBanner } from './submit/self-test-banner'
 import { openSelfTestReport } from './submit/self-test-report-open'
 import { createHashSelfTestTrigger } from './submit/self-test-hash'
+import { probeShimInterception } from './submit/send-bridge'
 import {
   getSelfTestSignal,
   clearSelfTestSignal,
@@ -583,6 +584,16 @@ async function runGuidedSelfTest(installed: InstalledSubmit, nonce: string): Pro
   }
   const removeUnloadGuard = installUnloadGuard(window, () => runState, guardOps)
 
+  // V1.3.6 — Gemini's send-time interception lives in the MAIN-world shim, which
+  // the isolated safety-net's synthetic Enter can't reach; measuring it that way
+  // gives a false NO_INTERCEPT. For the shim surface we instead (a) preflight
+  // the shim on the EMPTY composer (proves it wins the Enter race, no send risk)
+  // and (b) drive the real scan → modal flow via `handleExternalSendIntent`
+  // (no page-visible Enter), behind an absolute send-button net so a broken
+  // detector still cannot submit. Other surfaces keep the isolated model.
+  const usesMainWorldShim = adapter.id === 'gemini'
+  const removeSendNet = usesMainWorldShim ? installSelfTestSendNet() : (): void => {}
+
   let report
   try {
     report = await runSelfTest({
@@ -596,9 +607,22 @@ async function runGuidedSelfTest(installed: InstalledSubmit, nonce: string): Pro
         adapter.insertText(el, text)
       },
       clear: guardOps.clear,
-      // The send runs behind the absolute safety net — it can never submit,
-      // even if interception fails. We only learn whether the adapter took it.
-      dispatchSend: (el) => dispatchSelfTestSend(el).intercepted,
+      // Shim surface: confirm the interceptor over the bridge while the composer
+      // is still empty (no send possible). Absent → runner reports NO_INTERCEPT.
+      verifyInterceptorReady: usesMainWorldShim
+        ? () => probeShimInterception({ timeoutMs: 1500 })
+        : undefined,
+      dispatchSend: usesMainWorldShim
+        ? () => {
+            // Interception was proven by the preflight; drive the SAME real
+            // scan → warning-modal flow the shim triggers, without a
+            // page-visible Enter. The send-button net makes this unsubmittable.
+            submitAdapter.handleExternalSendIntent()
+            return true
+          }
+        : // Isolated model: the send runs behind the absolute safety net — it
+          // can never submit, even if interception fails.
+          (el) => dispatchSelfTestSend(el).intercepted,
       isModalOpen: () => isDocumentModalOpen(),
       cancelModal: () => cancelSelfTestModal(),
       now: () => Date.now(),
@@ -612,6 +636,7 @@ async function runGuidedSelfTest(installed: InstalledSubmit, nonce: string): Pro
     })
   } finally {
     removeUnloadGuard()
+    removeSendNet()
   }
 
   const record: SelfTestResultRecord = {
@@ -672,6 +697,30 @@ async function maybeRunSelfTest(installed: InstalledSubmit): Promise<void> {
   // Ignore a stale signal from an unrelated earlier session.
   if (Date.now() - signal.ts > SELF_TEST_STALE_MS) return
   await runGuidedSelfTest(installed, signal.nonce)
+}
+
+// V1.3.6 — absolute send-button net for the shim self-test. The shim path drives
+// the real scan → modal flow via `handleExternalSendIntent`; if a case somehow
+// scanned CLEAN (a broken detector), the core would resume by clicking the send
+// button. This capture-phase net blocks any click on the Gemini send button for
+// the duration of the self-test, so the run can NEVER submit synthetic data —
+// the same guarantee `self-test-send.ts` gives the isolated Enter path.
+const GEMINI_SEND_BUTTON_SELECTOR =
+  'gem-icon-button.send-button button, button[aria-label="Send message"]'
+function installSelfTestSendNet(): () => void {
+  const net = (event: Event): void => {
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+    for (const node of path) {
+      if (node instanceof Element && node.matches(GEMINI_SEND_BUTTON_SELECTOR)) {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        event.stopPropagation()
+        return
+      }
+    }
+  }
+  window.addEventListener('click', net, true)
+  return () => window.removeEventListener('click', net, true)
 }
 
 /** Cancel the open warning modal (return-to-edit) via a real Escape keydown. */
