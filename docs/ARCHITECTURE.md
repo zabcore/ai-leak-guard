@@ -1439,6 +1439,16 @@ Each list is also recorded at the top of the site's adapter file.
 
 **Selector note:** the composer is now a Quill editor — `rich-textarea .ql-editor[contenteditable="true"]`. The old bare `rich-textarea [contenteditable="true"]` matches TWO nodes (`.ql-editor` AND Quill's hidden `.ql-clipboard`), so selectors + `matchesComposer` are tightened to `.ql-editor` and `normalizeComposer` prefers it.
 
+### V1.3.6 — self-test confirmation of the MAIN-world shim path
+
+The guided self-test's `dispatchSelfTestSend` fires a synthetic Enter from the ISOLATED world and measures `event.defaultPrevented`. A MAIN-world listener never sees an isolated `dispatchEvent`, so on Gemini the self-test reported a false `NO_INTERCEPT` even though live protection worked (a trust bug, not a protection bug). The self-test now uses a per-surface strategy:
+
+- **Preflight probe (empty composer):** the isolated runner asks the shim, over the bridge, to dispatch a synthetic Enter on the still-EMPTY composer in the page's own world and report whether IT blocked it first (`probeShimInterception` ↔ `self-test-probe`/`self-test-probe-result`). Empty composer ⇒ a fall-through can't send, so this proves "installed + first-capture" with zero send risk. A shim that is absent/disabled never replies → `NO_INTERCEPT` (no false green).
+- **Flow (real scan → modal):** with the probe passed, the runner drives `handleExternalSendIntent` (the same path the shim bridges) so the real detector + warning modal are exercised on synthetic PHI, then auto-cancels. No page-visible Enter is dispatched.
+- **Absolute no-send net:** for the shim surface the run installs a capture-phase click net that blocks the Gemini send button for its duration, so even a broken detector (a clean scan that would auto-resume) cannot submit — the same guarantee `self-test-send.ts` gives the isolated Enter path.
+- ChatGPT/Claude keep the isolated `dispatchSelfTestSend` model unchanged.
+- **Quill cleanup:** `guardedClear` compares whitespace-normalized text, so Quill's reflow of the injected text (extra `<p>`/`<br>`, nbsp) no longer leaves synthetic text behind while still preserving any real user edit.
+
 ### Release ritual — manual logged-in self-test per surface
 
 The automated live-noauth monitor cannot reach authenticated surfaces, so logged-in send-interception drift (like this one) is invisible to CI. **Before shipping a release, run the one-click "Test protection" self-test while logged in on each send-protected surface — ChatGPT, Claude, Gemini — and confirm `Result: confirmed`.** A `NO_INTERCEPT` with the composer detected is the signature of a page-world capture swallow; a `NO_COMPOSER`/selector miss is a composer-selector drift.

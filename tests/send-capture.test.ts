@@ -3,13 +3,20 @@
 // V1.3.5 — the MAIN-world Enter-reclaim shim (Gemini). Covers the pure send-Enter
 // classifier and the armed/dormant blocking + bridge behaviour.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   isComposerSendEnter,
   createSendCapture,
   GEMINI_COMPOSER_SELECTOR,
+  __resetSendCaptureForTests,
 } from '../src/content/main-world/send-capture'
-import { readyMessage, isSendIntent, isSendHello } from '../src/content/main-world/send-messages'
+import {
+  readyMessage,
+  selfTestProbeMessage,
+  isSendIntent,
+  isSendHello,
+  isSelfTestProbeResult,
+} from '../src/content/main-world/send-messages'
 
 function buildComposer(): { host: HTMLElement; editor: HTMLElement; outside: HTMLElement } {
   document.body.innerHTML = ''
@@ -50,6 +57,12 @@ function classify(el: HTMLElement, init: Partial<KeyboardEventInit & { keyCode: 
 function deliver(data: unknown): void {
   window.dispatchEvent(new MessageEvent('message', { data, source: window, origin: window.origin }))
 }
+
+beforeEach(() => {
+  // The module auto-installs a shim on import; tear it down so each case
+  // controls its own controller (jsdom has a real `window`).
+  __resetSendCaptureForTests()
+})
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -147,6 +160,52 @@ describe('createSendCapture', () => {
     expect(posted.some(isSendHello)).toBe(true)
     expect(posted.some(isSendIntent)).toBe(true)
 
+    window.removeEventListener('message', capture)
+    controller.destroy()
+  })
+
+  it('self-test-probe: arms, blocks a probe Enter on the composer, reports blocked=true', async () => {
+    buildComposer()
+    const posted: unknown[] = []
+    const capture = (e: MessageEvent): void => void posted.push(e.data)
+    window.addEventListener('message', capture)
+
+    const controller = createSendCapture({ win: window, origin: window.origin })
+    controller.install()
+    // The probe both arms the shim and dispatches a synthetic Enter in-world.
+    deliver(selfTestProbeMessage)
+    await new Promise((r) => setTimeout(r, 0))
+
+    const result = posted.find(isSelfTestProbeResult)
+    expect(result).toBeDefined()
+    expect(result && isSelfTestProbeResult(result) && result.blocked).toBe(true)
+    expect(controller.isArmed()).toBe(true)
+
+    window.removeEventListener('message', capture)
+    controller.destroy()
+  })
+
+  it('self-test-probe: reports blocked=false when another capture listener wins the race first', async () => {
+    buildComposer()
+    // A competitor registered BEFORE the shim (like Gemini) that swallows Enter.
+    const swallow = (e: Event): void => {
+      if ((e as KeyboardEvent).key === 'Enter') e.stopImmediatePropagation()
+    }
+    window.addEventListener('keydown', swallow, true)
+
+    const posted: unknown[] = []
+    const capture = (e: MessageEvent): void => void posted.push(e.data)
+    window.addEventListener('message', capture)
+
+    const controller = createSendCapture({ win: window, origin: window.origin })
+    controller.install()
+    deliver(selfTestProbeMessage)
+    await new Promise((r) => setTimeout(r, 0))
+
+    const result = posted.find(isSelfTestProbeResult)
+    expect(result && isSelfTestProbeResult(result) && result.blocked).toBe(false)
+
+    window.removeEventListener('keydown', swallow, true)
     window.removeEventListener('message', capture)
     controller.destroy()
   })

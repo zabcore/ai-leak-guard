@@ -43,9 +43,21 @@ export interface SelfTestRunnerDeps {
   readonly clear: (el: HTMLElement) => void
   /**
    * Fire the REAL send intent behind the safety net (see `self-test-send.ts`).
-   * Returns whether the ADAPTER intercepted — never a fall-through send.
+   * Returns whether the ADAPTER intercepted — never a fall-through send. May be
+   * async for surfaces whose interception is confirmed over the MAIN-world
+   * bridge (Gemini): there `dispatchSend` triggers the real scan → modal flow
+   * and reports interception without dispatching a page-visible Enter.
    */
-  readonly dispatchSend: (el: HTMLElement) => boolean
+  readonly dispatchSend: (el: HTMLElement) => boolean | Promise<boolean>
+  /**
+   * V1.3.6 — optional one-time preflight that confirms an interceptor that the
+   * isolated safety-net model cannot observe (the Gemini MAIN-world shim). Runs
+   * ONCE after the empty-draft check, while the composer is still EMPTY, so it
+   * can prove first-capture with no send risk. `false` → the surface is
+   * unsupported here (reported `NO_INTERCEPT`) before any synthetic text is
+   * injected. Absent → the surface uses the isolated `dispatchSend` model.
+   */
+  readonly verifyInterceptorReady?: (composer: HTMLElement) => boolean | Promise<boolean>
   /** Is the guard warning modal on screen? (reuse the real open predicate) */
   readonly isModalOpen: () => boolean
   /** Cancel the modal → return-to-edit. NEVER proceed. */
@@ -102,11 +114,22 @@ export interface GuardedClearOps {
  * cleared. Used on EVERY exit path (success, cancel, timeout, navigation).
  */
 export function guardedClear(el: HTMLElement, injected: string, ops: GuardedClearOps): boolean {
-  if (ops.readText(el).trim() === injected.trim()) {
+  // Whitespace-normalized compare: a rich editor (Gemini's Quill) reflows the
+  // injected text into its own DOM (extra <p>/<br>, a trailing newline, an
+  // nbsp), so a raw `textContent` compare misses and the synthetic text is left
+  // behind. Collapsing whitespace runs still preserves the "exactly the
+  // synthetic text, untouched" guarantee — any real user edit changes
+  // non-whitespace, so their work is never erased.
+  if (normalizeForCompare(ops.readText(el)) === normalizeForCompare(injected)) {
     ops.clear(el)
     return true
   }
   return false
+}
+
+/** Collapse all whitespace (incl. nbsp, newlines) to single spaces and trim. */
+function normalizeForCompare(s: string): string {
+  return s.replace(/\s+/g, ' ').trim()
 }
 
 /**
@@ -143,6 +166,19 @@ export async function runSelfTest(deps: SelfTestRunnerDeps): Promise<SelfTestRun
     return report('fail', 'DRAFT_PRESENT', 1, 0, 0)
   }
 
+  // 1b. Optional preflight (Gemini): confirm the MAIN-world shim wins the Enter
+  // capture race while the composer is still EMPTY (no send possible). A shim
+  // that is absent/disabled fails here → honest NO_INTERCEPT, no false green.
+  if (deps.verifyInterceptorReady !== undefined) {
+    let ready = false
+    try {
+      ready = await deps.verifyInterceptorReady(composer)
+    } catch {
+      ready = false
+    }
+    if (!ready) return report('unsupported', 'NO_INTERCEPT', 1, 0, 0)
+  }
+
   // 2. Exercise EACH identifier case independently (name / MRN / DOB …).
   for (const testCase of SELF_TEST_CASES) {
     deps.insert(composer, testCase.text)
@@ -151,7 +187,7 @@ export async function runSelfTest(deps: SelfTestRunnerDeps): Promise<SelfTestRun
     // 3. Fire the REAL send (behind the safety net) and confirm interception.
     let prevented = false
     try {
-      prevented = deps.dispatchSend(composer)
+      prevented = await deps.dispatchSend(composer)
     } catch {
       prevented = false
     }

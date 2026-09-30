@@ -29,11 +29,30 @@
 
 export const SEND_MESSAGE_SOURCE = 'alg-send'
 
-export type SendBridgeKind = 'hello' | 'ready' | 'send-intent'
+// `self-test-probe` / `self-test-probe-result` (V1.3.6): the guided self-test's
+// synthetic Enter is dispatched from the ISOLATED world, which the page-world
+// shim never sees — so the self-test cannot observe a main-world interception.
+// The probe is a self-report handshake: the isolated self-test asks the shim to
+// dispatch a synthetic Enter on the (guaranteed EMPTY) composer in its own world
+// and report whether IT blocked it first. Empty composer → a fall-through can
+// never send, so this proves "installed + first-capture" without any send risk.
+export type SendBridgeKind =
+  | 'hello'
+  | 'ready'
+  | 'send-intent'
+  | 'self-test-probe'
+  | 'self-test-probe-result'
 
 export interface SendBridgeMessage {
   readonly source: typeof SEND_MESSAGE_SOURCE
   readonly kind: SendBridgeKind
+}
+
+/** Shim → isolated: the probe outcome. `blocked` = the shim's own capture
+ *  handler ran FIRST and prevented the synthetic Enter (first-capture proof). */
+export interface SelfTestProbeResult extends SendBridgeMessage {
+  readonly kind: 'self-test-probe-result'
+  readonly blocked: boolean
 }
 
 function isSendBridgeMessage(data: unknown, kind: SendBridgeKind): data is SendBridgeMessage {
@@ -48,6 +67,11 @@ export const isSendReady = (data: unknown): data is SendBridgeMessage =>
   isSendBridgeMessage(data, 'ready')
 export const isSendIntent = (data: unknown): data is SendBridgeMessage =>
   isSendBridgeMessage(data, 'send-intent')
+export const isSelfTestProbe = (data: unknown): data is SendBridgeMessage =>
+  isSendBridgeMessage(data, 'self-test-probe')
+export const isSelfTestProbeResult = (data: unknown): data is SelfTestProbeResult =>
+  isSendBridgeMessage(data, 'self-test-probe-result') &&
+  typeof (data as { blocked?: unknown }).blocked === 'boolean'
 
 export const helloMessage: SendBridgeMessage = { source: SEND_MESSAGE_SOURCE, kind: 'hello' }
 export const readyMessage: SendBridgeMessage = { source: SEND_MESSAGE_SOURCE, kind: 'ready' }
@@ -55,3 +79,12 @@ export const sendIntentMessage: SendBridgeMessage = {
   source: SEND_MESSAGE_SOURCE,
   kind: 'send-intent',
 }
+export const selfTestProbeMessage: SendBridgeMessage = {
+  source: SEND_MESSAGE_SOURCE,
+  kind: 'self-test-probe',
+}
+export const selfTestProbeResult = (blocked: boolean): SelfTestProbeResult => ({
+  source: SEND_MESSAGE_SOURCE,
+  kind: 'self-test-probe-result',
+  blocked,
+})

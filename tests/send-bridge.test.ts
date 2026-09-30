@@ -5,10 +5,12 @@
 // for a send-intent — but ignores unrelated/foreign messages.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { installSendBridge } from '../src/content/submit/send-bridge'
+import { installSendBridge, probeShimInterception } from '../src/content/submit/send-bridge'
 import {
   helloMessage,
   sendIntentMessage,
+  selfTestProbeResult,
+  isSelfTestProbe,
   isSendReady,
 } from '../src/content/main-world/send-messages'
 
@@ -91,5 +93,49 @@ describe('installSendBridge', () => {
     }).not.toThrow()
     await tick()
     expect(onSendIntent).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('probeShimInterception', () => {
+  it('posts a probe and resolves TRUE on a blocked:true reply', async () => {
+    // Stand in for the shim: on a probe, reply blocked:true.
+    const shim = (e: MessageEvent): void => {
+      if (isSelfTestProbe(e.data)) {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: selfTestProbeResult(true),
+            source: window,
+            origin: window.origin,
+          }),
+        )
+      }
+    }
+    window.addEventListener('message', shim)
+    const result = await probeShimInterception({ origin: window.origin, timeoutMs: 500 })
+    expect(result).toBe(true)
+    window.removeEventListener('message', shim)
+  })
+
+  it('resolves FALSE on a blocked:false reply (shim lost the race)', async () => {
+    const shim = (e: MessageEvent): void => {
+      if (isSelfTestProbe(e.data)) {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: selfTestProbeResult(false),
+            source: window,
+            origin: window.origin,
+          }),
+        )
+      }
+    }
+    window.addEventListener('message', shim)
+    const result = await probeShimInterception({ origin: window.origin, timeoutMs: 500 })
+    expect(result).toBe(false)
+    window.removeEventListener('message', shim)
+  })
+
+  it('resolves FALSE on timeout when no shim answers (disabled/absent → not confirmed)', async () => {
+    const result = await probeShimInterception({ origin: window.origin, timeoutMs: 30 })
+    expect(result).toBe(false)
   })
 })

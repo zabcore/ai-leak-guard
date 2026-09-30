@@ -152,4 +152,24 @@ describe('self-test edit-guard — never erases user work', () => {
     expect(guardedClear(el, 'MRN 12345678', ops)).toBe(false)
     expect(el.textContent).toBe('MRN 12345678 and my own note')
   })
+
+  it('guardedClear: clears despite whitespace-only reflow (Gemini/Quill) but preserves real edits', () => {
+    const el = document.createElement('div')
+    const ops = {
+      readText: (e: HTMLElement) => e.textContent ?? '',
+      clear: (e: HTMLElement) => {
+        e.textContent = ''
+      },
+    }
+    // Quill reflows the injected text: a leading/trailing newline, a doubled
+    // space, and an nbsp — all whitespace. The synthetic text is still "ours".
+    el.textContent = '\n  Mrs. Jane Doe  \n'
+    expect(guardedClear(el, 'Mrs. Jane Doe', ops)).toBe(true)
+    expect(el.textContent).toBe('')
+
+    // A genuine user edit (non-whitespace) is still preserved.
+    el.textContent = 'Mrs. Jane Doe — actually my real question'
+    expect(guardedClear(el, 'Mrs. Jane Doe', ops)).toBe(false)
+    expect(el.textContent).toBe('Mrs. Jane Doe — actually my real question')
+  })
 })

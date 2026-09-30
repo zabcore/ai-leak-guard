@@ -26,7 +26,14 @@
 // `keyCode === 229`) and Shift+Enter are never treated as a send, exactly like
 // the isolated keydown path.
 
-import { helloMessage, sendIntentMessage, isSendReady, isSendHello } from './send-messages'
+import {
+  helloMessage,
+  sendIntentMessage,
+  selfTestProbeResult,
+  isSendReady,
+  isSendHello,
+  isSelfTestProbe,
+} from './send-messages'
 
 /**
  * Composer handles for Gemini's Quill editor, locale-independent. The live
@@ -79,12 +86,24 @@ export function createSendCapture(deps: SendCaptureDeps): SendCaptureController 
   const { win, origin } = deps
   const selector = deps.selector ?? GEMINI_COMPOSER_SELECTOR
   let armed = false
+  // While a self-test probe Enter is in flight, block it (to measure that WE
+  // are the first-capture handler) but do NOT bridge a send-intent — the probe
+  // runs on an EMPTY composer purely to prove ordering, never to send.
+  let probing = false
 
   const onMessage = (event: MessageEvent): void => {
     // Same-window, same-origin only.
     if (event.source !== win) return
     if (isSendReady(event.data)) {
       armed = true
+      return
+    }
+    if (isSelfTestProbe(event.data)) {
+      // A probe can only come from the isolated bridge, which exists only when
+      // protection is installed — so arm now too, removing any ready/probe
+      // ordering race that could otherwise misreport a real interceptor.
+      armed = true
+      runSelfTestProbe()
     }
   }
 
@@ -98,10 +117,45 @@ export function createSendCapture(deps: SendCaptureDeps): SendCaptureController 
     event.preventDefault()
     event.stopImmediatePropagation()
     event.stopPropagation()
+    // Probe mode: prove first-capture only; never bridge (no scan, no send).
+    if (probing) return
     try {
       win.postMessage(sendIntentMessage, origin)
     } catch {
       // Best-effort; never throw into the page's event dispatch.
+    }
+  }
+
+  // Self-test probe: dispatch a synthetic Enter on the (empty) composer in the
+  // PAGE's own world so our own capture listener can see it, and report whether
+  // WE blocked it first. Empty composer → a fall-through cannot send.
+  const runSelfTestProbe = (): void => {
+    let blocked = false
+    try {
+      const doc = win.document
+      const target =
+        doc.querySelector<HTMLElement>('rich-textarea .ql-editor[contenteditable="true"]') ??
+        doc.querySelector<HTMLElement>(selector)
+      if (target !== null) {
+        probing = true
+        const probe = new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        })
+        target.dispatchEvent(probe)
+        blocked = probe.defaultPrevented
+      }
+    } catch {
+      blocked = false
+    } finally {
+      probing = false
+    }
+    try {
+      win.postMessage(selfTestProbeResult(blocked), origin)
+    } catch {
+      // best-effort
     }
   }
 
@@ -128,16 +182,29 @@ export function createSendCapture(deps: SendCaptureDeps): SendCaptureController 
 
 // Auto-install on load. A MAIN-world `content_scripts` entry at document_start
 // runs before the page's own scripts, so this registers the first window
-// capture keydown listener. No-op under Vitest (no `window`), so importing the
-// module for unit tests does not touch test globals. `isSendHello` is
-// referenced so a page-first bridge handshake stays symmetric; the isolated
-// side answers hello with ready.
+// capture keydown listener. `isSendHello` is referenced so a page-first bridge
+// handshake stays symmetric; the isolated side answers hello with ready.
 void isSendHello
+
+let autoController: SendCaptureController | null = null
 ;(() => {
   if (typeof window === 'undefined') return
+  // Skip the load-time install under Vitest: jsdom has a real `window`, so an
+  // auto-installed window listener would leak across test files. Unit tests
+  // construct their own controller explicitly.
+  if (typeof process !== 'undefined' && process.env !== undefined && process.env.VITEST) return
   try {
-    createSendCapture({ win: window, origin: window.location.origin }).install()
+    autoController = createSendCapture({ win: window, origin: window.location.origin })
+    autoController.install()
   } catch {
     // Never break the page; the shim is best-effort.
   }
 })()
+
+/** Test seam: tear down the auto-installed shim so a unit test controls its own
+ *  (jsdom has a `window`, so the module's load-time install would otherwise leak
+ *  a window listener across cases). No-op in production. */
+export function __resetSendCaptureForTests(): void {
+  autoController?.destroy()
+  autoController = null
+}
