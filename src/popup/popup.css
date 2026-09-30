@@ -456,67 +456,154 @@ body {
 
 /* Teams Lite (#78) — enrollment section. */
 .teams {
-  margin: 16px 0 4px;
+  margin: 14px 0 2px;
   padding-top: 12px;
   border-top: 1px solid #e5e7eb;
   text-align: left;
 }
+/* Collapsed-by-default row: a quiet status + an Activate affordance. Free users
+   never see a code field until they choose to activate. */
+.teams__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.teams__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #eef4f2;
+  color: #087d66;
+}
+.teams__meta {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .teams__heading {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #6b7280;
-  margin: 0 0 6px;
+  color: #0b1324;
+  margin: 0;
 }
 .teams__status {
-  font-size: 13px;
-  color: #0b1324;
-  margin: 0 0 8px;
-}
-.teams__label {
-  display: block;
-  font-size: 11px;
+  font-size: 12px;
   color: #6b7280;
-  margin: 6px 0 2px;
+  margin: 1px 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.teams__status--managed {
+  color: #087152;
+  font-weight: 500;
+}
+.teams__status--revoked {
+  color: #92500b;
+}
+.teams__activate {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  background: #fff;
+  color: #087d66;
+  border: 1px solid #cfe3dd;
+}
+.teams__activate:hover {
+  background: #f1f8f6;
+}
+.teams__remove {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  background: #fff;
+  color: #6b7280;
+  border: 1px solid #e5e7eb;
+}
+.teams__remove:hover {
+  color: #b91c1c;
+  border-color: #f0d2d2;
+}
+/* Progressive-disclosure panel, shown only after Activate. */
+.teams__enroll {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 9px;
+  background: #fafafa;
+}
+.teams__hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: #6b7280;
+  margin: 0 0 9px;
 }
 .teams__input {
   width: 100%;
   box-sizing: border-box;
   font-size: 13px;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border: 1px solid #d1d5db;
-  border-radius: 6px;
+  border-radius: 7px;
+  background: #fff;
+}
+.teams__input + .teams__input {
+  margin-top: 7px;
+}
+.teams__input--secondary {
+  font-size: 12px;
 }
 .teams__input:focus-visible {
-  outline: 2px solid #2563eb;
+  outline: 2px solid #087d66;
   outline-offset: 1px;
+  border-color: #087d66;
 }
-.teams__btn,
-.teams__unenroll {
-  margin-top: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  padding: 7px 12px;
-  border-radius: 6px;
-  cursor: pointer;
+.teams__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
 }
 .teams__btn {
-  background: #2563eb;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 7px;
+  cursor: pointer;
+  background: #087d66;
   color: #fff;
-  border: 1px solid #2563eb;
+  border: 1px solid #087d66;
+}
+.teams__btn:hover {
+  background: #086a59;
 }
 .teams__btn:disabled {
   opacity: 0.6;
   cursor: default;
 }
-.teams__unenroll {
-  background: #fff;
-  color: #b91c1c;
-  border: 1px solid #e5e7eb;
+.teams__cancel {
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  background: none;
+  color: #6b7280;
+  border: 0;
+}
+.teams__cancel:hover {
+  color: #0b1324;
 }
 .teams__error {
   font-size: 12px;
   color: #b91c1c;
-  margin: 8px 0 0;
+  margin: 9px 0 0;
 }

@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 //
 // Teams Lite (#78) — popup enrollment UI: each error code maps to the right
-// user message, and the DOM flow shows the correct status / affordances.
+// user message, and the DOM flow shows the correct status / affordances. The
+// section is collapsed by default (progressive disclosure): a Free user sees a
+// quiet status + an "Activate" button, and the code field appears only after
+// Activate is clicked.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enrollErrorMessage, setupTeamsSection } from '../src/popup/teams-ui'
@@ -10,19 +13,29 @@ import type { EnrollErrorCode } from '../src/shared/teams-contract'
 
 function mountDom(): void {
   document.body.innerHTML = `
-    <div id="teams-status"></div>
-    <div id="teams-enroll-form">
-      <input id="teams-code" />
-      <input id="teams-label" />
-      <button id="teams-enroll-btn">Enroll</button>
-      <p id="teams-error" hidden></p>
-    </div>
-    <button id="teams-unenroll-btn" hidden></button>`
+    <section id="teams-section">
+      <div class="teams__bar">
+        <span id="teams-icon"></span>
+        <p id="teams-status"></p>
+        <button id="teams-activate-btn">Activate</button>
+        <button id="teams-unenroll-btn" hidden></button>
+      </div>
+      <div id="teams-enroll-form" hidden>
+        <input id="teams-code" />
+        <input id="teams-label" />
+        <div>
+          <button id="teams-enroll-btn">Activate</button>
+          <button id="teams-cancel-btn">Cancel</button>
+        </div>
+        <p id="teams-error" hidden></p>
+      </div>
+    </section>`
 }
 
 const status = () => document.getElementById('teams-status')?.textContent ?? ''
 const form = () => document.getElementById('teams-enroll-form') as HTMLElement
 const unenroll = () => document.getElementById('teams-unenroll-btn') as HTMLElement
+const activate = () => document.getElementById('teams-activate-btn') as HTMLButtonElement
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -45,7 +58,6 @@ describe('enrollErrorMessage', () => {
       expect(msg).toContain(fragment)
       seen.add(msg)
     }
-    // invalid/already/expired/revoked/not_configured/network → at least 6 distinct.
     expect(seen.size).toBeGreaterThanOrEqual(6)
   })
 })
@@ -55,14 +67,23 @@ describe('setupTeamsSection — status rendering', () => {
     mountDom()
   })
 
-  it('not enrolled → shows the form, "Not enrolled", hides Unenroll', async () => {
+  it('not set up → collapsed: status "Not set up", form hidden, Activate shown, Remove hidden', async () => {
     await setupTeamsSection()
-    expect(status()).toBe('Not enrolled')
-    expect(form().hidden).toBe(false)
+    expect(status()).toBe('Not set up')
+    expect(form().hidden).toBe(true)
+    expect(activate().hidden).toBe(false)
     expect(unenroll().hidden).toBe(true)
   })
 
-  it('enrolled → shows "Enrolled to <org>" + Unenroll, hides the form', async () => {
+  it('clicking Activate reveals the enrollment form', async () => {
+    await setupTeamsSection()
+    activate().click()
+    await Promise.resolve()
+    expect(form().hidden).toBe(false)
+    expect(activate().hidden).toBe(true)
+  })
+
+  it('enrolled → "Managed by <org>" + Remove, form + Activate hidden', async () => {
     await setEnrollment({
       install_id: 'i',
       install_credential: 'c',
@@ -71,20 +92,24 @@ describe('setupTeamsSection — status rendering', () => {
       base_url: 'http://127.0.0.1:54321',
     })
     await setupTeamsSection()
-    expect(status()).toContain('Enrolled to Harbor')
+    expect(status()).toContain('Managed by Harbor')
     expect(form().hidden).toBe(true)
+    expect(activate().hidden).toBe(true)
     expect(unenroll().hidden).toBe(false)
   })
 
-  it('revoked (not enrolled) → shows the revoked status', async () => {
+  it('revoked (not enrolled) → shows a removed status and offers Activate again', async () => {
     await setRevokedNotice(true)
     await setupTeamsSection()
-    expect(status().toLowerCase()).toContain('revoked')
-    expect(form().hidden).toBe(false)
+    expect(status().toLowerCase()).toContain('removed')
+    expect(form().hidden).toBe(true)
+    expect(activate().textContent).toContain('Activate again')
   })
 
-  it('clicking Enroll with an empty code shows an inline error and does not proceed', async () => {
+  it('Activate → empty code shows an inline error and does not proceed', async () => {
     await setupTeamsSection()
+    activate().click()
+    await Promise.resolve()
     ;(document.getElementById('teams-enroll-btn') as HTMLButtonElement).click()
     await Promise.resolve()
     const err = document.getElementById('teams-error') as HTMLElement

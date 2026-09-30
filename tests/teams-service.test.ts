@@ -112,7 +112,10 @@ describe('runEnroll', () => {
   })
 
   it('an unconfigured build returns not_configured WITHOUT loading the client', async () => {
-    vi.unstubAllEnvs()
+    // Force an unconfigured build explicitly — stubbing empty strings (not just
+    // unstubbing) so a developer's local `.env.local` can't make this a false pass.
+    vi.stubEnv('VITE_TEAMS_BASE_URL', '')
+    vi.stubEnv('VITE_TEAMS_ANON_KEY', '')
     const client = mockClient({ enroll: { ok: true, data: { install_id: 'i', install_credential: 'c', org_id: 'o', org_name: 'n' } } })
     const result = await runEnroll('CODE', 'x', { loadClient: client.loadClient })
     expect(result).toEqual({ ok: false, code: 'not_configured' })

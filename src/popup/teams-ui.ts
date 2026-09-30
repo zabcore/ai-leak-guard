@@ -4,7 +4,12 @@
 // storage, state machine) lives in `enterprise/teams-service`; this file only
 // wires the DOM and maps error codes to user-facing copy. The enrollment client
 // itself is loaded lazily by the service (dynamic import) and only on the
-// explicit Enroll click, so merely opening the popup issues no network call.
+// explicit Activate click, so merely opening the popup issues no network call.
+//
+// UX: the section is COLLAPSED by default — a Free user sees only a quiet
+// "Team management · Not set up" row with an "Activate" affordance. The code
+// field is revealed (progressive disclosure) only when they choose to activate,
+// so the everyday popup stays uncluttered.
 
 import { runEnroll, runUnenroll } from '../enterprise/teams-service'
 import { getEnrollment, getRevokedNotice } from '../shared/teams-storage'
@@ -37,6 +42,11 @@ interface TeamsEls {
   enrollBtn: HTMLButtonElement
   error: HTMLElement
   unenrollBtn: HTMLButtonElement
+  // Optional progressive-disclosure controls (present in the real popup; a
+  // minimal test DOM may omit them, in which case the form is shown directly).
+  activateBtn: HTMLButtonElement | null
+  cancelBtn: HTMLButtonElement | null
+  icon: HTMLElement | null
 }
 
 function resolveEls(): TeamsEls | null {
@@ -58,7 +68,20 @@ function resolveEls(): TeamsEls | null {
   ) {
     return null
   }
-  return { status, form, code, label, enrollBtn, error, unenrollBtn }
+  const activateEl = document.getElementById('teams-activate-btn')
+  const cancelEl = document.getElementById('teams-cancel-btn')
+  return {
+    status,
+    form,
+    code,
+    label,
+    enrollBtn,
+    error,
+    unenrollBtn,
+    activateBtn: activateEl instanceof HTMLButtonElement ? activateEl : null,
+    cancelBtn: cancelEl instanceof HTMLButtonElement ? cancelEl : null,
+    icon: document.getElementById('teams-icon'),
+  }
 }
 
 /** A sensible default install label when the operator leaves it blank. */
@@ -66,21 +89,57 @@ function defaultLabel(): string {
   return 'Chrome'
 }
 
+function setStatus(els: TeamsEls, text: string, variant: '' | 'managed' | 'revoked'): void {
+  els.status.textContent = text
+  els.status.classList.remove('teams__status--managed', 'teams__status--revoked')
+  if (variant !== '') els.status.classList.add(`teams__status--${variant}`)
+  if (els.icon !== null) els.icon.style.color = variant === 'managed' ? '#087152' : ''
+}
+
+/** Show the collapsed state (status + Activate affordance, form hidden). If the
+ *  popup has no Activate button (minimal test DOM), show the form directly. */
+function collapse(els: TeamsEls): void {
+  els.error.hidden = true
+  if (els.activateBtn !== null) {
+    els.form.hidden = true
+    els.activateBtn.hidden = false
+  } else {
+    els.form.hidden = false
+  }
+}
+
+/** Reveal the enrollment form (progressive disclosure). */
+function expand(els: TeamsEls): void {
+  els.form.hidden = false
+  if (els.activateBtn !== null) els.activateBtn.hidden = true
+  els.error.hidden = true
+  try {
+    els.code.focus()
+  } catch {
+    // focus is best-effort
+  }
+}
+
 async function render(els: TeamsEls): Promise<void> {
   const enrollment = await getEnrollment()
   if (enrollment !== null) {
-    els.status.textContent = `Enrolled to ${enrollment.org_name}`
+    setStatus(els, `Managed by ${enrollment.org_name}`, 'managed')
     els.form.hidden = true
+    if (els.activateBtn !== null) els.activateBtn.hidden = true
     els.unenrollBtn.hidden = false
     els.error.hidden = true
     return
   }
-  const revoked = await getRevokedNotice()
-  els.status.textContent = revoked
-    ? 'Enrollment was revoked by your organization.'
-    : 'Not enrolled'
-  els.form.hidden = false
   els.unenrollBtn.hidden = true
+  const revoked = await getRevokedNotice()
+  if (revoked) {
+    setStatus(els, 'Removed by your organization', 'revoked')
+    if (els.activateBtn !== null) els.activateBtn.textContent = 'Activate again'
+  } else {
+    setStatus(els, 'Not set up', '')
+    if (els.activateBtn !== null) els.activateBtn.textContent = 'Activate'
+  }
+  collapse(els)
 }
 
 function showError(els: TeamsEls, message: string): void {
@@ -111,6 +170,12 @@ export async function setupTeamsSection(): Promise<void> {
 
   await render(els)
 
+  els.activateBtn?.addEventListener('click', () => expand(els))
+  els.cancelBtn?.addEventListener('click', () => {
+    els.code.value = ''
+    void render(els)
+  })
+
   els.enrollBtn.addEventListener('click', () => {
     void (async () => {
       els.error.hidden = true
@@ -121,11 +186,12 @@ export async function setupTeamsSection(): Promise<void> {
       }
       const label = els.label.value.trim() || defaultLabel()
       els.enrollBtn.disabled = true
-      els.enrollBtn.textContent = 'Enrolling…'
+      els.enrollBtn.textContent = 'Activating…'
       try {
         const result = await runEnroll(code, label)
         if (result.ok) {
           els.code.value = ''
+          els.label.value = ''
           requestImmediateCheckin()
           await render(els)
         } else {
@@ -135,7 +201,7 @@ export async function setupTeamsSection(): Promise<void> {
         showError(els, enrollErrorMessage('network'))
       } finally {
         els.enrollBtn.disabled = false
-        els.enrollBtn.textContent = 'Enroll'
+        els.enrollBtn.textContent = 'Activate'
       }
     })()
   })
