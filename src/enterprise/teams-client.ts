@@ -32,6 +32,20 @@ function authHeaders(anonKey: string): Record<string, string> {
   }
 }
 
+// Abort a request that the backend accepts but never answers — otherwise
+// `runCheckin` would stay pending (and the MV3 worker could be torn down
+// mid-call) and the popup's Enroll button would stick on "Enrolling…". The
+// abort surfaces as a thrown fetch, which both paths already map to the RETAIN /
+// `network` outcome. `AbortSignal.timeout` is a no-op-safe guard here.
+const REQUEST_TIMEOUT_MS = 15_000
+function requestSignal(): AbortSignal | undefined {
+  try {
+    return AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  } catch {
+    return undefined
+  }
+}
+
 /** POST /functions/v1/enroll. Maps the contract's status codes to error codes;
  *  any offline / malformed / unexpected result becomes `network` (never a
  *  spurious "invalid code"). */
@@ -46,6 +60,7 @@ export async function enroll(
       method: 'POST',
       headers: authHeaders(anonKey),
       body: JSON.stringify({ code: req.code, label: req.label }),
+      signal: requestSignal(),
     })
   } catch {
     return { ok: false, code: 'network' }
@@ -83,6 +98,7 @@ export async function checkin(
       method: 'POST',
       headers: authHeaders(anonKey),
       body: JSON.stringify(req),
+      signal: requestSignal(),
     })
   } catch {
     return { ok: false }

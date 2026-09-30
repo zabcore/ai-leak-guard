@@ -10,6 +10,7 @@ import { runEnroll, runCheckin, runUnenroll } from '../src/enterprise/teams-serv
 import {
   getEnrollment,
   setEnrollment,
+  clearEnrollment,
   getManagedState,
   setManagedState,
   getPreManagedPrefs,
@@ -219,6 +220,45 @@ describe('runCheckin — self-test evidence timestamp', () => {
     const client = mockClient({ checkin: { ok: true, response: activeResponse(1, true) } })
     await runCheckin({ loadClient: client.loadClient })
     expect('self_test' in (client.checkinRequests[0] ?? {})).toBe(false)
+  })
+})
+
+describe('runCheckin — concurrency safety (CodeRabbit #79)', () => {
+  it('serializes overlapping runs through one shared in-flight call', async () => {
+    await enrolledFixture()
+    const client = mockClient({ checkin: { ok: true, response: activeResponse(1, false) } })
+    // Two concurrent triggers (e.g. startup + post-enroll) must reuse ONE run.
+    const [a, b] = await Promise.all([
+      runCheckin({ loadClient: client.loadClient }),
+      runCheckin({ loadClient: client.loadClient }),
+    ])
+    expect(a).toBe('apply')
+    expect(b).toBe('apply')
+    expect(client.checkinRequests.length).toBe(1) // not two racing check-ins
+    expect(client.loadCalls).toBe(1)
+  })
+
+  it('does NOT apply a stale result if enrollment was cleared during the request', async () => {
+    await enrolledFixture()
+    await setPrefs({ showIndicator: true })
+    // Simulate a concurrent unenroll/revocation landing WHILE the request is in
+    // flight: the mocked checkin clears the enrollment before returning "active".
+    const client: MockClient = {
+      loadCalls: 0,
+      checkinRequests: [],
+      loadClient: async () => ({
+        enroll: async () => ({ ok: false as const, code: 'network' as const }),
+        checkin: async () => {
+          await clearEnrollment()
+          return { ok: true as const, response: activeResponse(1, false) }
+        },
+      }),
+    }
+    const outcome = await runCheckin({ loadClient: client.loadClient })
+    expect(outcome).toBe('skipped-unenrolled')
+    // The stale "show_indicator:false" was NOT applied over the user's pref.
+    expect((await getPrefs()).showIndicator).toBe(true)
+    expect(await getManagedState()).toBeNull()
   })
 })
 

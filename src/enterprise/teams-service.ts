@@ -101,8 +101,23 @@ export type CheckinRunOutcome =
  * content-free body, calls `/checkin`, reconciles the result through the pure
  * state machine, and persists the decision. On revocation it also clears the
  * enrollment credential (management is over) after restoring the user's prefs.
+ *
+ * Serialized: the service worker fires check-ins from startup, install, the
+ * alarm, and the post-enroll message, so overlapping runs are possible. A single
+ * shared in-flight promise makes concurrent callers reuse the same run — without
+ * it, one run could read state, a second could process a revocation and clear
+ * enrollment, and the first could then write back a stale managed overlay.
  */
-export async function runCheckin(deps: TeamsClientDeps = {}): Promise<CheckinRunOutcome> {
+let inFlightCheckin: Promise<CheckinRunOutcome> | null = null
+
+export function runCheckin(deps: TeamsClientDeps = {}): Promise<CheckinRunOutcome> {
+  inFlightCheckin ??= runCheckinOnce(deps).finally(() => {
+    inFlightCheckin = null
+  })
+  return inFlightCheckin
+}
+
+async function runCheckinOnce(deps: TeamsClientDeps): Promise<CheckinRunOutcome> {
   const enrollment = await getEnrollment()
   if (enrollment === null) return 'skipped-unenrolled'
   const config = getBackendConfig()
@@ -120,6 +135,11 @@ export async function runCheckin(deps: TeamsClientDeps = {}): Promise<CheckinRun
   const { checkin } = await (deps.loadClient ?? defaultLoadClient)()
   const call = await checkin(enrollment.base_url, config.anonKey, request)
 
+  // A concurrent unenroll (popup) or a revocation processed elsewhere may have
+  // cleared the enrollment while this request was in flight. If so, DO NOT apply
+  // a now-stale result over the restored user preferences.
+  if ((await getEnrollment()) === null) return 'skipped-unenrolled'
+
   const outcome: CheckinOutcome = call.ok
     ? call.response.revoked === true
       ? { kind: 'revoked' }
@@ -131,10 +151,13 @@ export async function runCheckin(deps: TeamsClientDeps = {}): Promise<CheckinRun
         }
     : { kind: 'error' }
 
+  // Re-read the managed/pre-managed/prefs state fresh (it may have changed since
+  // the request was built) so the reconcile decision is against current state.
+  const currentManaged = await getManagedState()
   const prefs = await getPrefs()
   const preManaged = await getPreManagedPrefs()
   const reconciliation = reconcileCheckin(
-    { managed, preManaged, currentShowIndicator: prefs.showIndicator },
+    { managed: currentManaged, preManaged, currentShowIndicator: prefs.showIndicator },
     outcome,
   )
   await applyReconciliation(reconciliation)
