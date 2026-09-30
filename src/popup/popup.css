@@ -453,3 +453,70 @@ body {
   outline: 2px solid #7dd3fc;
   outline-offset: 2px;
 }
+
+/* Teams Lite (#78) — enrollment section. */
+.teams {
+  margin: 16px 0 4px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+  text-align: left;
+}
+.teams__heading {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  margin: 0 0 6px;
+}
+.teams__status {
+  font-size: 13px;
+  color: #0b1324;
+  margin: 0 0 8px;
+}
+.teams__label {
+  display: block;
+  font-size: 11px;
+  color: #6b7280;
+  margin: 6px 0 2px;
+}
+.teams__input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+}
+.teams__input:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+.teams__btn,
+.teams__unenroll {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.teams__btn {
+  background: #2563eb;
+  color: #fff;
+  border: 1px solid #2563eb;
+}
+.teams__btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.teams__unenroll {
+  background: #fff;
+  color: #b91c1c;
+  border: 1px solid #e5e7eb;
+}
+.teams__error {
+  font-size: 12px;
+  color: #b91c1c;
+  margin: 8px 0 0;
+}

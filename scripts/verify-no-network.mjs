@@ -50,10 +50,28 @@ const VENDORED_ALLOWLIST = [
   { re: /^pptx-[^/]*\.js$/, reason: 'vendored pptx parser — fed an ArrayBuffer' },
 ]
 
-function vendoredReason(file) {
+// Teams Lite (#78) — OUR gated-egress chunk. The enrollment client is the only
+// authored code that calls `fetch`, and it is loaded ONLY via a dynamic import
+// from enrolled code paths (the Enroll click / the check-in scheduler, which is
+// a strict no-op unless enrolled). Because it is a dynamic import, Vite emits it
+// in its own chunk, so no `fetch` lands in the content-script / service-worker /
+// popup chunks — this single named chunk is the entire egress surface. The
+// Free-mode silence guarantee is carried by the BEHAVIORAL test (an unenrolled
+// build makes zero network calls), not by claiming the whole bundle is fetch-free.
+const GATED_EGRESS_ALLOWLIST = [
+  {
+    re: /^teams-client-[^/]*\.js$/,
+    reason:
+      'Teams enrollment client — egress gated behind explicit enrollment; the Free/unenrolled path never loads this chunk (proven by tests/teams-free-mode-silence.test.ts)',
+  },
+]
+
+function allowlistReason(file) {
   const name = basename(file)
-  const hit = VENDORED_ALLOWLIST.find((v) => v.re.test(name))
-  return hit ? hit.reason : null
+  const vendored = VENDORED_ALLOWLIST.find((v) => v.re.test(name))
+  if (vendored) return vendored.reason
+  const gated = GATED_EGRESS_ALLOWLIST.find((v) => v.re.test(name))
+  return gated ? gated.reason : null
 }
 
 // Each pattern is matched against the string/comment-STRIPPED code, so
@@ -122,10 +140,11 @@ for (const file of files) {
     if (rule.re.test(haystack)) hits.push(rule.name)
   }
   if (hits.length === 0) continue
-  const reason = vendoredReason(file)
+  const reason = allowlistReason(file)
   if (reason !== null) {
-    // A vendored format parser (network code present but never invoked —
-    // fed in-memory data, never a URL). Skip, but record for the audit
+    // Either a vendored format parser (network code present but never invoked
+    // — fed in-memory data, never a URL) or our gated-egress enrollment client
+    // (loaded only after explicit enrollment). Skip, but record for the audit
     // trail printed below.
     allowlisted.push({ file: relative('.', file), apis: hits, reason })
   } else {
@@ -136,9 +155,7 @@ for (const file of files) {
 // Always surface the allowlisted vendored chunks so the exemption is
 // visible on every run, not silent.
 for (const a of allowlisted) {
-  console.log(
-    `[verify-no-network] allowlisted vendored: ${a.file} (${a.apis.join(', ')}) — ${a.reason}`,
-  )
+  console.log(`[verify-no-network] allowlisted: ${a.file} (${a.apis.join(', ')}) — ${a.reason}`)
 }
 
 if (violations.length > 0) {

@@ -30,11 +30,46 @@ import {
 } from '../shared/event-log-schema'
 import { setSubmitKillSwitch } from '../shared/storage'
 import { withLinkSource } from '../shared/link-source'
+import { runCheckin } from '../enterprise/teams-service'
 
 console.log('[AI Leak Guard] service worker started')
 
 const STORAGE_KEY = 'events'
 const APPEND_MESSAGE_TYPE = 'alg-event-append'
+
+// ─── Teams Lite (#78) — enrolled check-in scheduler ──────────────────
+//
+// Check-ins run on startup, on a ~15-minute alarm, and once right after an
+// enroll (the popup messages us). Every entry point funnels through
+// `runCheckin`, which is a strict NO-OP with ZERO network unless the install is
+// enrolled — so an unenrolled (Free) browser never phones home from the alarm.
+// Best-effort: a failed check-in logs and is retried on the next tick (the state
+// machine RETAINS the last config on any error; it never downgrades).
+const TEAMS_CHECKIN_ALARM = 'alg-teams-checkin'
+const TEAMS_CHECKIN_PERIOD_MIN = 15
+const TEAMS_CHECKIN_MESSAGE_TYPE = 'alg-teams-checkin'
+
+function safeRunCheckin(reason: string): void {
+  try {
+    void runCheckin().catch((err: unknown) => {
+      console.warn(`[AI Leak Guard] teams check-in (${reason}) failed:`, err)
+    })
+  } catch (err) {
+    console.warn(`[AI Leak Guard] teams check-in (${reason}) threw:`, err)
+  }
+}
+
+function ensureCheckinAlarm(): void {
+  try {
+    chrome.alarms?.create(TEAMS_CHECKIN_ALARM, { periodInMinutes: TEAMS_CHECKIN_PERIOD_MIN })
+  } catch (err) {
+    console.warn('[AI Leak Guard] failed to create teams check-in alarm:', err)
+  }
+}
+
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm.name === TEAMS_CHECKIN_ALARM) safeRunCheckin('alarm')
+})
 
 /**
  * Wire-level shape of the append request. Kept in sync with
@@ -204,6 +239,8 @@ function clearSubmitKillSwitchOnStartup(): void {
 
 chrome.runtime.onStartup.addListener(() => {
   clearSubmitKillSwitchOnStartup()
+  ensureCheckinAlarm()
+  safeRunCheckin('startup')
 })
 
 // onInstalled already fires above for the welcome tab; clear the kill
@@ -211,4 +248,16 @@ chrome.runtime.onStartup.addListener(() => {
 // paused state.
 chrome.runtime.onInstalled.addListener(() => {
   clearSubmitKillSwitchOnStartup()
+  ensureCheckinAlarm()
+  safeRunCheckin('install')
+})
+
+// The popup asks us to run a check-in immediately after a successful enroll so
+// the managed configuration applies without waiting for the next alarm. The
+// message carries no data; `runCheckin` reads the freshly-stored credential.
+chrome.runtime.onMessage.addListener((message) => {
+  if ((message as { type?: unknown } | null)?.type === TEAMS_CHECKIN_MESSAGE_TYPE) {
+    safeRunCheckin('post-enroll')
+  }
+  return false
 })

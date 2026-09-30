@@ -34,3 +34,17 @@ declare module '*?worker&url' {
   const url: string
   export default url
 }
+
+// Teams Lite (#78) — the ONLY build-time env vars we read, declared narrowly so
+// `import.meta.env.VITE_TEAMS_*` type-checks without pulling in the full
+// `vite/client` types. Both are OPTIONAL: an unconfigured (Free) build leaves
+// them undefined and the enrollment path reports `not_configured` rather than
+// calling anything. The anon key is the Supabase PUBLIC key — never a
+// service-role key.
+interface ImportMetaEnv {
+  readonly VITE_TEAMS_BASE_URL?: string
+  readonly VITE_TEAMS_ANON_KEY?: string
+}
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}

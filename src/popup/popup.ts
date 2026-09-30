@@ -33,6 +33,7 @@ import {
 } from '../shared/self-test-report'
 import { showReportPreview } from '../content/submit/self-test-report-preview'
 import { siteLabel, actionLabel, eventTypeLabel, relativeTime } from './labels'
+import { setupTeamsSection } from './teams-ui'
 import { mountGrowthPrompt, wireSupportLink, type GrowthCardDeps } from '../growth/card'
 import { recordProblemReport } from '../growth/store'
 
@@ -639,6 +640,13 @@ async function init(): Promise<void> {
     await setupChipVisibilityToggle(activeTabUrl)
   } catch (err) {
     console.warn('[AI Leak Guard] chip visibility toggle setup failed:', err)
+  }
+
+  // Teams Lite (#78) — enrollment section (no network until Enroll is clicked).
+  try {
+    await setupTeamsSection()
+  } catch (err) {
+    console.warn('[AI Leak Guard] teams section setup failed:', err)
   }
   // Preselect the chooser to the active supported tab's site so the
   // obvious "Test protection" click tests where the user actually is.

@@ -13,17 +13,27 @@ describe('storage', () => {
   })
 
   it('returns default prefs when nothing is stored', async () => {
-    expect(await getPrefs()).toEqual({ enabled: true, rulesUpdatedAt: 0 })
+    // #78 added `showIndicator` (default true — the indicator shows when active,
+    // as before). It is the effective indicator-visibility value the content
+    // script reads (user choice in Free mode; managed override when enrolled).
+    expect(await getPrefs()).toEqual({ enabled: true, rulesUpdatedAt: 0, showIndicator: true })
   })
 
   it('merges a partial prefs update, preserving other fields', async () => {
     await setPrefs({ enabled: false })
-    expect(await getPrefs()).toEqual({ enabled: false, rulesUpdatedAt: 0 })
+    expect(await getPrefs()).toEqual({ enabled: false, rulesUpdatedAt: 0, showIndicator: true })
   })
 
   it('updates rulesUpdatedAt without clobbering enabled', async () => {
     await setPrefs({ enabled: false })
     await setPrefs({ rulesUpdatedAt: 123 })
-    expect(await getPrefs()).toEqual({ enabled: false, rulesUpdatedAt: 123 })
+    expect(await getPrefs()).toEqual({ enabled: false, rulesUpdatedAt: 123, showIndicator: true })
+  })
+
+  it('round-trips showIndicator (the managed/user indicator visibility)', async () => {
+    await setPrefs({ showIndicator: false })
+    expect((await getPrefs()).showIndicator).toBe(false)
+    await setPrefs({ showIndicator: true })
+    expect((await getPrefs()).showIndicator).toBe(true)
   })
 })
