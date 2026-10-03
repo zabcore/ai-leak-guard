@@ -20,6 +20,7 @@ import { clearFileInput, consumePassThroughIfArmed } from './upload-release'
 import { showReattachNudge } from './document-nudge'
 import { installFsaMessageHandler } from './fsa-isolated'
 import { appendEvent, type AlgAction, type AlgEvent } from '../shared/event-log'
+import { startTeamsHeartbeat } from './teams-heartbeat'
 import type { DetectorCategory, Finding } from '../detector/types'
 import { readPastedText } from './clipboard-text'
 import { isSubmitProtectionEnabled } from './submit/submit-flag'
@@ -92,6 +93,11 @@ const enabledState = createEnabledState(false)
 void resolveInitialEnabled(getPrefs).then((value) => {
   enabledState.applyInitial(value)
 })
+
+// Teams Lite (#78): an enrolled browser on a managed AI tool refreshes its
+// managed settings in the background (no popup). Enrolled-only + throttled;
+// a Free user's visit does nothing but one local storage read.
+startTeamsHeartbeat()
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return

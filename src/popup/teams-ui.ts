@@ -11,7 +11,7 @@
 // field is revealed (progressive disclosure) only when they choose to activate,
 // so the everyday popup stays uncluttered.
 
-import { runEnroll, runUnenroll } from '../enterprise/teams-service'
+import { runCheckin, runEnroll, runUnenroll } from '../enterprise/teams-service'
 import { getEnrollment, getRevokedNotice } from '../shared/teams-storage'
 import type { EnrollErrorCode } from '../shared/teams-contract'
 
@@ -153,7 +153,7 @@ function requestImmediateCheckin(): void {
     const rt = (globalThis as { chrome?: { runtime?: { sendMessage?: (m: unknown) => unknown } } })
       .chrome?.runtime
     if (rt && typeof rt.sendMessage === 'function') {
-      const maybePromise = rt.sendMessage({ type: 'alg-teams-checkin' }) as
+      const maybePromise = rt.sendMessage({ type: 'alg-teams-checkin', reason: 'post-enroll' }) as
         | Promise<unknown>
         | undefined
       if (maybePromise && typeof maybePromise.then === 'function') void maybePromise.catch(() => {})
@@ -169,6 +169,19 @@ export async function setupTeamsSection(): Promise<void> {
   if (els === null) return
 
   await render(els)
+
+  // If enrolled, refresh managed settings from the backend NOW, from the popup's
+  // own context. The background service worker can be torn down before its
+  // check-in fetch completes (MV3), so a popup-context check-in is the reliable
+  // path — and it means an MSP's change shows up the moment the user opens the
+  // popup, not only on the next background tick.
+  try {
+    if ((await getEnrollment()) !== null) {
+      void runCheckin({ reason: 'popup' }).then(() => render(els))
+    }
+  } catch {
+    // best-effort
+  }
 
   els.activateBtn?.addEventListener('click', () => expand(els))
   els.cancelBtn?.addEventListener('click', () => {
@@ -192,7 +205,8 @@ export async function setupTeamsSection(): Promise<void> {
         if (result.ok) {
           els.code.value = ''
           els.label.value = ''
-          requestImmediateCheckin()
+          void runCheckin({ reason: 'popup' }).then(() => render(els)) // popup-context: apply now
+          requestImmediateCheckin() // also nudge the background worker
           await render(els)
         } else {
           showError(els, enrollErrorMessage(result.code))

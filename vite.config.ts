@@ -55,6 +55,26 @@ export default defineConfig(({ mode }) => {
       // "cross-world extension resource mismatch" errors on chrome://extensions.
       // Disabling both the injection and the polyfill keeps the popup HTML clean.
       modulePreload: false,
+      rollupOptions: {
+        output: {
+          // Teams Lite (#78): the service worker STATICALLY imports the check-in
+          // client (dynamic import() is disallowed in a worker). Pin two modules
+          // to their own chunks so rollup can't park the pure, shared
+          // `teams-contract` inside a window-using content chunk (pdf/zip) and
+          // drag it into the worker's import graph (which breaks SW registration):
+          //  - `teams-client`: the ONLY fetch; kept as its own chunk so the
+          //    `verify:no-network` allowlist still matches by name, the worker can
+          //    import it statically, and the popup/content still load it lazily.
+          //  - `teams-contract`: pure (no imports); isolated so it never merges
+          //    into a DOM chunk.
+          // Both are DOM-free (fetch / plain data only); `verify:sw` enforces it.
+          manualChunks(id: string) {
+            if (/\/src\/enterprise\/teams-client\./.test(id)) return 'teams-client'
+            if (/\/src\/shared\/teams-contract\./.test(id)) return 'teams-contract'
+            return undefined
+          },
+        },
+      },
     },
     // V1.2 A4.3 (#39): our local workers (xlsx.worker.ts) are spawned
     // from a `blob:` URL in `spawnExtensionWorkerFromBlob`, so they

@@ -25,10 +25,13 @@ import {
 } from '../shared/teams-storage'
 import { getBackendConfig } from './teams-config'
 import { reconcileCheckin, type CheckinOutcome, type Reconciliation } from './teams-state'
+import { recordCheckinAttempt } from '../shared/teams-diag'
 import type { checkin as checkinFn, enroll as enrollFn } from './teams-client'
 
 export interface TeamsClientDeps {
   readonly loadClient?: () => Promise<{ enroll: typeof enrollFn; checkin: typeof checkinFn }>
+  /** Instrumentation-only label for what fired this check-in (diagnostics). */
+  readonly reason?: string
 }
 
 /** Default loader: a dynamic import, so the client is its own chunk and never in
@@ -111,19 +114,61 @@ export type CheckinRunOutcome =
 let inFlightCheckin: Promise<CheckinRunOutcome> | null = null
 
 export function runCheckin(deps: TeamsClientDeps = {}): Promise<CheckinRunOutcome> {
-  inFlightCheckin ??= runCheckinOnce(deps).finally(() => {
-    inFlightCheckin = null
-  })
+  inFlightCheckin ??= runCheckinOnce(deps)
+    .catch(async (err: unknown) => {
+      // Record the failure too (req: diagnostics for BOTH success and failure),
+      // content-free — a short error label only, never a body/URL/credential.
+      await diag(deps.reason, 'error', { error: errorLabel(err) })
+      throw err
+    })
+    .finally(() => {
+      inFlightCheckin = null
+    })
   return inFlightCheckin
+}
+
+/** A short, content-free label for a thrown error (never a body or URL). */
+function errorLabel(err: unknown): string {
+  if (err instanceof Error && typeof err.name === 'string' && err.name.length > 0) return err.name
+  return 'error'
+}
+
+/** Record one attempt for the diagnostics buffer (instrumentation only). */
+async function diag(
+  reason: string | undefined,
+  result: CheckinRunOutcome | 'error',
+  revs: {
+    reported?: number | null
+    received?: number | null
+    applied?: number | null
+    error?: string
+  } = {},
+): Promise<void> {
+  await recordCheckinAttempt({
+    at: new Date().toISOString(),
+    trigger: reason ?? 'unknown',
+    result,
+    reported: revs.reported ?? null,
+    received: revs.received ?? null,
+    applied: revs.applied ?? null,
+    ...(revs.error !== undefined ? { error: revs.error } : {}),
+  })
 }
 
 async function runCheckinOnce(deps: TeamsClientDeps): Promise<CheckinRunOutcome> {
   const enrollment = await getEnrollment()
-  if (enrollment === null) return 'skipped-unenrolled'
+  if (enrollment === null) {
+    await diag(deps.reason, 'skipped-unenrolled')
+    return 'skipped-unenrolled'
+  }
   const config = getBackendConfig()
-  if (config === null) return 'not_configured'
+  if (config === null) {
+    await diag(deps.reason, 'not_configured')
+    return 'not_configured'
+  }
 
   const managed = await getManagedState()
+  const reported = managed?.appliedSettingsRevision ?? null
   const request = buildCheckinRequest({
     install_id: enrollment.install_id,
     credential: enrollment.install_credential,
@@ -135,10 +180,17 @@ async function runCheckinOnce(deps: TeamsClientDeps): Promise<CheckinRunOutcome>
   const { checkin } = await (deps.loadClient ?? defaultLoadClient)()
   const call = await checkin(enrollment.base_url, config.anonKey, request)
 
+  // What the server returned (for diagnostics): the target revision on an active
+  // 2xx; null on a non-2xx/network failure or a revocation.
+  const received = call.ok && call.response.revoked !== true ? call.response.target_settings_revision : null
+
   // A concurrent unenroll (popup) or a revocation processed elsewhere may have
   // cleared the enrollment while this request was in flight. If so, DO NOT apply
   // a now-stale result over the restored user preferences.
-  if ((await getEnrollment()) === null) return 'skipped-unenrolled'
+  if ((await getEnrollment()) === null) {
+    await diag(deps.reason, 'skipped-unenrolled', { reported, received })
+    return 'skipped-unenrolled'
+  }
 
   const outcome: CheckinOutcome = call.ok
     ? call.response.revoked === true
@@ -169,6 +221,16 @@ async function runCheckinOnce(deps: TeamsClientDeps): Promise<CheckinRunOutcome>
     await clearEnrollment()
     await setRevokedNotice(true)
   }
+
+  // Applied revision AFTER this attempt (for diagnostics): the new revision on an
+  // apply; the unchanged current revision on noop/retain; null once revoked.
+  const applied =
+    reconciliation.action === 'apply'
+      ? reconciliation.nextManaged.appliedSettingsRevision
+      : reconciliation.action === 'revoke'
+        ? null
+        : (currentManaged?.appliedSettingsRevision ?? null)
+  await diag(deps.reason, reconciliation.action, { reported, received, applied })
 
   return reconciliation.action
 }
