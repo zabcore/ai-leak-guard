@@ -29,6 +29,34 @@ const local = {
   },
 }
 
+// Teams Lite (deployment m1): `chrome.storage.managed` (read-only in Chrome —
+// tests seed it via `__set`) and `chrome.storage.onChanged`, which the service
+// worker subscribes to at import time for managed-policy changes. Tests can pull
+// the listeners off `onChanged.__listeners`.
+const managedStore = new Map<string, unknown>()
+const managed = {
+  get: async (keys?: string | string[] | null): Promise<Record<string, unknown>> => {
+    if (keys === undefined || keys === null) return Object.fromEntries(managedStore)
+    const result: Record<string, unknown> = {}
+    for (const key of Array.isArray(keys) ? keys : [keys]) {
+      if (managedStore.has(key)) result[key] = managedStore.get(key)
+    }
+    return result
+  },
+  __set: (items: Record<string, unknown> | null): void => {
+    managedStore.clear()
+    for (const [key, value] of Object.entries(items ?? {})) managedStore.set(key, value)
+  },
+}
+type StorageChangedListener = (changes: Record<string, unknown>, areaName: string) => unknown
+const storageChangedListeners: StorageChangedListener[] = []
+const onChanged = {
+  __listeners: storageChangedListeners,
+  addListener: (fn: StorageChangedListener) => {
+    storageChangedListeners.push(fn)
+  },
+}
+
 // Minimal `chrome.runtime` shim covering both the worker-URL
 // resolver (#39 — `getURL`) and the A5 event-log's cross-process
 // `sendMessage` path (#40 CR — writes now live in the service
@@ -209,19 +237,20 @@ const tabs = {
 ;(
   globalThis as unknown as {
     chrome: {
-      storage: { local: typeof local }
+      storage: { local: typeof local; managed: typeof managed; onChanged: typeof onChanged }
       runtime: typeof runtime
       tabs: typeof tabs
     }
   }
 ).chrome = {
-  storage: { local },
+  storage: { local, managed, onChanged },
   runtime,
   tabs,
 }
 
 beforeEach(() => {
   store.clear()
+  managedStore.clear()
 })
 
 // ─── V1.2 A1 test polyfills ────────────────────────────────────────────────
