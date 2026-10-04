@@ -33,6 +33,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { verifyCrx3 } from './crx3-verify.mjs'
 
 const DIST = resolve('dist')
 const OUT = resolve(process.env.ALG_CRX_OUT ?? 'release/selfhosted')
@@ -45,9 +46,34 @@ function fail(msg) {
 const keyPath = process.env.ALG_CRX_KEY
 if (!keyPath || !existsSync(keyPath)) fail('Set ALG_CRX_KEY to the FIXED signing key (.pem).')
 const updateBase = process.env.ALG_UPDATE_BASE
-if (!updateBase || !/^https?:\/\/.+\/$/.test(updateBase)) {
+if (!updateBase || !updateBase.endsWith('/')) {
   fail('Set ALG_UPDATE_BASE to the hosting folder URL, with a trailing slash.')
 }
+// HTTPS only: the CRX signature does not authenticate update.xml, so plain HTTP
+// would let a network intermediary alter or suppress update metadata. The one
+// exception is loopback (localhost / 127.0.0.1 / [::1]) for local testing,
+// where the traffic never crosses a network.
+{
+  let u
+  try {
+    u = new URL(updateBase)
+  } catch {
+    fail('ALG_UPDATE_BASE is not a valid URL.')
+  }
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)
+  if (u.protocol !== 'https:' && !(u.protocol === 'http:' && loopback)) {
+    fail('ALG_UPDATE_BASE must be https:// (plain http:// is allowed only for loopback testing).')
+  }
+}
+
+/** Escape a value for an XML attribute. */
+const xmlAttr = (v) =>
+  String(v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
 if (!existsSync(join(DIST, 'manifest.json'))) fail('No dist/ — run `npm run build` first.')
 
 /** Chrome's extension ID: SHA-256 of the DER public key, first 16 bytes, each
@@ -107,10 +133,13 @@ execFileSync(
 const packed = join(stage, 'ext.crx')
 if (!existsSync(packed)) fail('Chromium did not produce a .crx.')
 const crx = readFileSync(packed)
-if (crx.subarray(0, 4).toString('latin1') !== 'Cr24' || crx.readUInt32LE(4) !== 3) {
-  fail('Output is not a CRX3 file.')
+// Verify the CRX3 proof itself (signed header + full archive) before writing
+// anything or reporting success — not just that the key bytes appear.
+try {
+  verifyCrx3(crx, der)
+} catch (err) {
+  fail(`CRX3 verification failed: ${err.message}`)
 }
-if (crx.indexOf(der) === -1) fail('The CRX is not signed with ALG_CRX_KEY.')
 
 mkdirSync(OUT, { recursive: true })
 writeFileSync(join(OUT, crxName), crx)
@@ -120,8 +149,8 @@ writeFileSync(
   join(OUT, 'update.xml'),
   `<?xml version='1.0' encoding='UTF-8'?>
 <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
-  <app appid='${id}'>
-    <updatecheck codebase='${updateBase}${crxName}' version='${version}' />
+  <app appid='${xmlAttr(id)}'>
+    <updatecheck codebase='${xmlAttr(`${updateBase}${crxName}`)}' version='${xmlAttr(version)}' />
   </app>
 </gupdate>
 `,
