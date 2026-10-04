@@ -182,6 +182,82 @@ export async function provision(
   return { ok: false, code: 'network' }
 }
 
+// ─── Staff-invitation join (connect handoff, Contract A §4c) ─────────
+export interface JoinRequest {
+  /** Bound by the backend to {challenge, recipient, invitation, organization}. */
+  readonly exchange_token: string
+  /** The extension-held code-verifier; SHA256(attempt_secret) == challenge. */
+  readonly attempt_secret: string
+  readonly idempotency_key: string
+}
+export interface JoinSuccess {
+  readonly install_id: string
+  readonly install_credential: string
+  readonly org_id: string
+  readonly org_name: string
+  readonly role: 'staff'
+}
+export type JoinErrorCode =
+  | 'invalid_proof'
+  | 'expired'
+  | 'revoked'
+  | 'recovery_window_expired'
+  | 'network'
+export type JoinCallResult = { ok: true; data: JoinSuccess } | { ok: false; code: JoinErrorCode }
+
+function isJoinSuccess(body: unknown): body is JoinSuccess {
+  if (body === null || typeof body !== 'object') return false
+  const b = body as Record<string, unknown>
+  return (
+    typeof b.install_id === 'string' &&
+    typeof b.install_credential === 'string' &&
+    typeof b.org_id === 'string' &&
+    typeof b.org_name === 'string' &&
+    b.role === 'staff'
+  )
+}
+
+/** POST /functions/v1/join — redeem a bound exchange token with the attempt
+ *  secret. The secret travels ONLY in this body to the backend (never to the
+ *  website, a URL, or diagnostics). Offline / malformed / unexpected → `network`,
+ *  on which the caller retries with the SAME persisted attempt. */
+export async function join(
+  baseUrl: string,
+  anonKey: string,
+  req: JoinRequest,
+): Promise<JoinCallResult> {
+  let res: Response
+  try {
+    res = await fetch(`${baseUrl}/functions/v1/join`, {
+      method: 'POST',
+      headers: authHeaders(anonKey),
+      body: JSON.stringify({
+        exchange_token: req.exchange_token,
+        attempt_secret: req.attempt_secret,
+        idempotency_key: req.idempotency_key,
+      }),
+      signal: requestSignal(),
+    })
+  } catch {
+    return { ok: false, code: 'network' }
+  }
+
+  if (res.ok) {
+    const body = await readJson(res)
+    if (isJoinSuccess(body)) return { ok: true, data: body }
+    return { ok: false, code: 'network' }
+  }
+  if (res.status === 401) return { ok: false, code: 'invalid_proof' }
+  if (res.status === 410) {
+    const body = await readJson(res)
+    const err = (body as { error?: unknown } | null)?.error
+    if (err === 'revoked') return { ok: false, code: 'revoked' }
+    if (err === 'recovery_window_expired') return { ok: false, code: 'recovery_window_expired' }
+    return { ok: false, code: 'expired' }
+  }
+  return { ok: false, code: 'network' }
+}
+
 async function readJson(res: Response): Promise<unknown> {
   try {
     return await res.json()
