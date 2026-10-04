@@ -16,7 +16,7 @@ export interface ProvisionAttempt {
   readonly attemptId: string
   /** The deployment token this attempt is bound to (reuse only for the same token). */
   readonly deploymentToken: string
-  /** Idempotency key for the exchange (derived from / paired with the attempt). */
+  /** base64url(SHA-256(attemptId)) — see `deriveIdempotencyKey` (pinned). */
   readonly idempotencyKey: string
   /** ISO timestamp the attempt was first persisted. */
   readonly createdAt: string

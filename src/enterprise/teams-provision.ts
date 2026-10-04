@@ -15,6 +15,7 @@
 // logs the attempt secret.
 
 import { getBackendConfig } from './teams-config'
+import { deriveIdempotencyKey } from '../shared/teams-contract'
 import { getEnrollment, setEnrollment } from '../shared/teams-storage'
 import {
   getProvisionAttempt,
@@ -75,10 +76,11 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
   if (existing !== null && existing.deploymentToken === deps.deploymentToken) {
     attempt = existing
   } else {
+    const attemptId = newId()
     attempt = {
-      attemptId: newId(),
+      attemptId,
       deploymentToken: deps.deploymentToken,
-      idempotencyKey: newId(),
+      idempotencyKey: await deriveIdempotencyKey(attemptId),
       createdAt: new Date().toISOString(),
     }
     await setProvisionAttempt(attempt)
@@ -88,7 +90,9 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
   const result = await provision(config.baseUrl, config.anonKey, {
     deployment_token: deps.deploymentToken,
     attempt_id: attempt.attemptId,
-    idempotency_key: attempt.idempotencyKey,
+    // Always re-derived from the attempt id (pinned contract), so even an
+    // attempt persisted by an older build sends the canonical key.
+    idempotency_key: await deriveIdempotencyKey(attempt.attemptId),
   })
 
   if (result.ok) {

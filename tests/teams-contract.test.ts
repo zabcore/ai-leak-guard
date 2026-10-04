@@ -7,6 +7,7 @@ import {
   isEnrollSuccess,
   enrollErrorForStatus,
   provisionErrorFor,
+  deriveIdempotencyKey,
   CHECKIN_ALLOWED_KEYS,
 } from '../src/shared/teams-contract'
 
@@ -128,5 +129,20 @@ describe('provisionErrorFor (Contract B §5 — explicit revoke split)', () => {
   it('an ambiguous / unknown 410 (incl. a bare legacy "revoked") is terminal `expired` — never a block', () => {
     expect(provisionErrorFor(410, { error: 'revoked' })).toBe('expired')
     expect(provisionErrorFor(410, null)).toBe('expired')
+  })
+})
+
+describe('deriveIdempotencyKey (pinned: base64url(SHA-256(attempt_id)))', () => {
+  it('is deterministic and matches an independent SHA-256', async () => {
+    const { createHash } = await import('node:crypto')
+    const id = '6f1c2a0e-1b7d-4e55-9a3f-0c2d4b8e9f10'
+    const k = await deriveIdempotencyKey(id)
+    expect(k).toBe(createHash('sha256').update(id).digest('base64url'))
+    expect(await deriveIdempotencyKey(id)).toBe(k)
+    expect(k).toMatch(/^[A-Za-z0-9_-]{43}$/)
+  })
+
+  it('fixed vector — the backend must derive the same value', async () => {
+    expect(await deriveIdempotencyKey('abc')).toBe('ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0')
   })
 })

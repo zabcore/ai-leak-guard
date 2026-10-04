@@ -185,3 +185,18 @@ export function provisionErrorFor(status: number, body: unknown): ProvisionError
   }
   return 'network'
 }
+
+// ─── idempotency_key derivation (Contract B §5a #1 — PINNED) ─────────
+// idempotency_key = base64url_nopad(SHA-256(UTF-8(attempt_id))). Deterministic,
+// so the extension and the backend derive the identical value from the same
+// attempt, and a retry of the same attempt always carries the same key.
+
+/** Derive the pinned idempotency key for a `/provision` attempt id. */
+export async function deriveIdempotencyKey(attemptId: string): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(attemptId)),
+  )
+  let bin = ''
+  for (const b of digest) bin += String.fromCharCode(b)
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
