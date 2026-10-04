@@ -18,6 +18,7 @@ export interface JoinAttempt {
   readonly attemptSecret: string
   /** base64url(SHA256(attemptSecret)) — the only value given to the website. */
   readonly challenge: string
+  /** base64url(SHA-256(attemptSecret)) — see `deriveIdempotencyKey` (pinned). */
   readonly idempotencyKey: string
   readonly createdAt: string
   /** The bound exchange token, persisted before the first `/join` request. */

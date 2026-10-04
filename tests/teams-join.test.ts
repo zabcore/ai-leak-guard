@@ -36,7 +36,9 @@ function joinClient(results: JoinCallResult[] = []) {
   return { loadClient, calls }
 }
 
-const fixed = { newSecret: () => 'verifier-secret-1', newId: () => 'idem-1' }
+const fixed = { newSecret: () => 'verifier-secret-1' }
+// Pinned: idempotency_key = base64url(SHA-256(attempt secret)) — never random.
+const IDEM = createHash('sha256').update('verifier-secret-1').digest('base64url')
 
 beforeEach(() => {
   vi.stubEnv('VITE_TEAMS_BASE_URL', BASE)
@@ -62,14 +64,14 @@ describe('beginJoin', () => {
   it('persists the attempt BEFORE returning, and returns only the challenge', async () => {
     const r = await beginJoin(fixed)
     const stored = await getJoinAttempt()
-    expect(stored).toMatchObject({ attemptSecret: 'verifier-secret-1', idempotencyKey: 'idem-1' })
+    expect(stored).toMatchObject({ attemptSecret: 'verifier-secret-1', idempotencyKey: IDEM })
     expect(r).toEqual({ ok: true, challenge: stored?.challenge })
     expect(JSON.stringify(r)).not.toContain('verifier-secret-1')
   })
 
   it('reuses an unsent attempt (same challenge, same secret) across repeated begins', async () => {
     const a = await beginJoin(fixed)
-    const b = await beginJoin({ newSecret: () => 'other', newId: () => 'other' })
+    const b = await beginJoin({ newSecret: () => 'other' })
     expect(b).toEqual(a)
     expect((await getJoinAttempt())?.attemptSecret).toBe('verifier-secret-1')
   })
@@ -93,6 +95,27 @@ describe('beginJoin', () => {
   })
 })
 
+describe('join idempotency_key derivation (pinned, same as /provision)', () => {
+  it('is base64url(SHA-256(attempt secret)) and identical on every retry of the attempt', async () => {
+    await beginJoin(fixed)
+    const c = joinClient([{ ok: false, code: 'network' }, { ok: false, code: 'network' }, OK])
+    await runJoin('xt-1', { loadClient: c.loadClient })
+    await runJoin(undefined, { loadClient: c.loadClient })
+    await runJoin('xt-1', { loadClient: c.loadClient })
+    expect(c.calls.map((x) => x.idempotency_key)).toEqual([IDEM, IDEM, IDEM])
+  })
+
+  it('a fresh random secret still yields its derived (not random) key', async () => {
+    await beginJoin()
+    const secret = (await getJoinAttempt())?.attemptSecret as string
+    const c = joinClient([OK])
+    await runJoin('xt-1', { loadClient: c.loadClient })
+    expect(c.calls[0]?.idempotency_key).toBe(
+      createHash('sha256').update(secret).digest('base64url'),
+    )
+  })
+})
+
 describe('runJoin', () => {
   it('sends {exchange_token, attempt_secret, idempotency_key}, stores the credential, clears the attempt', async () => {
     await setRevokedNotice(true)
@@ -100,7 +123,7 @@ describe('runJoin', () => {
     const c = joinClient([OK])
     expect(await runJoin('xt-1', { loadClient: c.loadClient })).toBe('enrolled')
     expect(c.calls).toEqual([
-      { exchange_token: 'xt-1', attempt_secret: 'verifier-secret-1', idempotency_key: 'idem-1' },
+      { exchange_token: 'xt-1', attempt_secret: 'verifier-secret-1', idempotency_key: IDEM },
     ])
     expect(await getEnrollment()).toEqual({
       install_id: 'i1',
@@ -182,7 +205,7 @@ describe('runJoin', () => {
     expect(recovery).toBe('no-exchange-token')
     expect(handoff).toBe('enrolled')
     expect(c.calls).toEqual([
-      { exchange_token: 'xt-1', attempt_secret: 'verifier-secret-1', idempotency_key: 'idem-1' },
+      { exchange_token: 'xt-1', attempt_secret: 'verifier-secret-1', idempotency_key: IDEM },
     ])
   })
 })

@@ -27,6 +27,7 @@ import {
   setJoinAttempt,
   type JoinAttempt,
 } from '../shared/teams-join-attempt'
+import { deriveIdempotencyKey } from '../shared/teams-contract'
 import type { join as joinFn } from './teams-client'
 
 export type BeginJoinResult =
@@ -51,8 +52,6 @@ export interface JoinDeps {
   readonly loadClient?: () => Promise<{ join: typeof joinFn }>
   /** Injectable secret generator (tests). */
   readonly newSecret?: () => string
-  /** Injectable idempotency-key generator (tests). */
-  readonly newId?: () => string
 }
 
 const defaultLoadClient = (): Promise<{ join: typeof joinFn }> => import('./teams-client')
@@ -74,7 +73,8 @@ export async function beginJoin(deps: JoinDeps = {}): Promise<BeginJoinResult> {
   const attempt: JoinAttempt = {
     attemptSecret,
     challenge: await deriveChallenge(attemptSecret),
-    idempotencyKey: (deps.newId ?? (() => crypto.randomUUID()))(),
+    // Pinned (same as /provision): base64url(SHA-256(attempt secret)).
+    idempotencyKey: await deriveIdempotencyKey(attemptSecret),
     createdAt: new Date().toISOString(),
   }
   // Persist BEFORE the challenge leaves the extension.
@@ -126,7 +126,9 @@ async function runJoinOnce(
   const result = await join(config.baseUrl, config.anonKey, {
     exchange_token: exchangeToken,
     attempt_secret: attempt.attemptSecret,
-    idempotency_key: attempt.idempotencyKey,
+    // Re-derived on every request, so a retry of the same attempt always carries
+    // the same key (even for an attempt persisted by an older build).
+    idempotency_key: await deriveIdempotencyKey(attempt.attemptSecret),
   })
 
   if (result.ok) {
