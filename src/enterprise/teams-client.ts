@@ -109,6 +109,79 @@ export async function checkin(
   return { ok: false }
 }
 
+// ─── Deployment-token provisioning (managed deployment, Contract B) ──
+export interface ProvisionRequest {
+  readonly deployment_token: string
+  readonly attempt_id: string
+  readonly idempotency_key: string
+}
+export interface ProvisionSuccess {
+  readonly install_id: string
+  readonly install_credential: string
+  readonly org_id: string
+  readonly org_name: string
+}
+export type ProvisionErrorCode =
+  | 'invalid_token'
+  | 'exhausted'
+  | 'expired'
+  | 'revoked'
+  | 'recovery_window_expired'
+  | 'network'
+export type ProvisionCallResult =
+  | { ok: true; data: ProvisionSuccess }
+  | { ok: false; code: ProvisionErrorCode }
+
+function isProvisionSuccess(body: unknown): body is ProvisionSuccess {
+  if (body === null || typeof body !== 'object') return false
+  const b = body as Record<string, unknown>
+  return (
+    typeof b.install_id === 'string' &&
+    typeof b.install_credential === 'string' &&
+    typeof b.org_id === 'string' &&
+    typeof b.org_name === 'string'
+  )
+}
+
+/** POST /functions/v1/provision — exchange a deployment token for a per-install
+ *  credential. Content-free body; the attempt secret travels only here (never a
+ *  URL / diagnostic). Maps the contract's status codes to error codes; any
+ *  offline / malformed / unexpected result becomes `network`, on which the caller
+ *  retries with the SAME persisted attempt. */
+export async function provision(
+  baseUrl: string,
+  anonKey: string,
+  req: ProvisionRequest,
+): Promise<ProvisionCallResult> {
+  let res: Response
+  try {
+    res = await fetch(`${baseUrl}/functions/v1/provision`, {
+      method: 'POST',
+      headers: authHeaders(anonKey),
+      body: JSON.stringify(req),
+      signal: requestSignal(),
+    })
+  } catch {
+    return { ok: false, code: 'network' }
+  }
+
+  if (res.ok) {
+    const body = await readJson(res)
+    if (isProvisionSuccess(body)) return { ok: true, data: body }
+    return { ok: false, code: 'network' }
+  }
+  if (res.status === 404) return { ok: false, code: 'invalid_token' }
+  if (res.status === 409) return { ok: false, code: 'exhausted' }
+  if (res.status === 410) {
+    const body = await readJson(res)
+    const err = (body as { error?: unknown } | null)?.error
+    if (err === 'revoked') return { ok: false, code: 'revoked' }
+    if (err === 'recovery_window_expired') return { ok: false, code: 'recovery_window_expired' }
+    return { ok: false, code: 'expired' }
+  }
+  return { ok: false, code: 'network' }
+}
+
 async function readJson(res: Response): Promise<unknown> {
   try {
     return await res.json()
