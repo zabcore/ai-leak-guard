@@ -32,6 +32,8 @@ import { setSubmitKillSwitch } from '../shared/storage'
 import { withLinkSource } from '../shared/link-source'
 import { runCheckin } from '../enterprise/teams-service'
 import { runManagedBootstrap } from '../enterprise/teams-bootstrap'
+import { beginJoin, hasPendingJoin, runJoin } from '../enterprise/teams-join'
+import { handleJoinHandoff, isJoinHandoffMessage } from './teams-join-handoff'
 import * as teamsCheckinClient from '../enterprise/teams-client'
 import { recordNextAttempt } from '../shared/teams-diag'
 import { nextRetryPlan } from './teams-retry-plan'
@@ -287,6 +289,61 @@ chrome.storage.onChanged?.addListener(async (_changes, areaName) => {
   await bootstrapThenCheckin()
 })
 
+// ─── Teams Lite (deployment m1) — staff-invitation join handoff ───────
+//
+// The zabcore join page (the only `externally_connectable` origin, re-checked in
+// `handleJoinHandoff`) asks for the non-secret challenge, then hands back the
+// bound exchange token; the worker redeems it at /join with the attempt secret,
+// which never leaves the extension except to the backend. The join client is the
+// same STATIC import as check-in. Code-entry enrollment remains the fallback.
+const swLoadJoinClient = async (): Promise<{ join: typeof teamsCheckinClient.join }> => ({
+  join: teamsCheckinClient.join,
+})
+
+/** Redeem/recover the join attempt; on a fresh enrollment run the first
+ *  check-in so the alarm exists and managed settings apply right away. */
+async function safeRunJoin(
+  exchangeToken: string | undefined,
+): Promise<Awaited<ReturnType<typeof runJoin>> | 'internal'> {
+  try {
+    const outcome = await runJoin(exchangeToken, { loadClient: swLoadJoinClient })
+    if (outcome === 'enrolled') await safeRunCheckin('post-join')
+    return outcome
+  } catch (err) {
+    console.warn('[AI Leak Guard] teams join failed:', err instanceof Error ? err.name : 'error')
+    return 'internal'
+  }
+}
+
+chrome.runtime.onMessageExternal?.addListener((message, sender, sendResponse) => {
+  if (!isJoinHandoffMessage(message)) return false
+  void handleJoinHandoff(message, sender, {
+    begin: () => beginJoin(),
+    complete: async (token) => {
+      const outcome = await safeRunJoin(token)
+      if (outcome === 'internal') throw new Error('internal')
+      return outcome
+    },
+  }).then((response) => {
+    try {
+      sendResponse(response)
+    } catch {
+      // the page may have navigated away; the join outcome is persisted anyway
+    }
+  })
+  return true
+})
+
+/** On startup, retry a join whose response was lost (same persisted attempt).
+ *  Network only when the user already started a join that reached /join. */
+async function recoverPendingJoin(): Promise<void> {
+  try {
+    if (await hasPendingJoin()) await safeRunJoin(undefined)
+  } catch {
+    // best-effort
+  }
+}
+
 chrome.alarms?.onAlarm.addListener(async (alarm) => {
   // Async listener → Chrome keeps the worker alive until the check-in settles.
   if (alarm.name === TEAMS_CHECKIN_ALARM) await safeRunCheckin('alarm')
@@ -465,6 +522,7 @@ chrome.runtime.onStartup.addListener(async () => {
   // Managed bootstrap first (a no-op without a policy), so a just-provisioned
   // browser's first check-in is this startup one.
   await safeManagedBootstrap()
+  await recoverPendingJoin()
   await safeRunCheckin('startup')
 })
 
@@ -518,6 +576,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 //   • managed provision → storage.onChanged(managed) / provision-retry alarm
 //                         ('post-provision'); on startup/install the bootstrap
 //                         runs first and the normal check-in follows
+//   • staff join        → onMessageExternal(alg-join-complete) / startup
+//                         recovery of a lost /join response ('post-join')
 // The alarm is persistent (created at enroll, survives restarts), so a bare
 // chrome://extensions reload with no event still syncs on the next alarm fire.
 // Top-level `await` is disallowed in a worker anyway, so there is no reliable

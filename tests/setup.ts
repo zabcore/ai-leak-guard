@@ -189,8 +189,19 @@ const onStartup = {
   },
 }
 
+// Teams Lite (deployment m1): the worker wires the website join handoff through
+// `chrome.runtime.onMessageExternal` at import time.
+const externalMessageListeners: MessageListener[] = []
+const onMessageExternal = {
+  __listeners: externalMessageListeners,
+  addListener: (fn: MessageListener) => {
+    externalMessageListeners.push(fn)
+  },
+}
+
 const runtime = {
   onMessage,
+  onMessageExternal,
   onInstalled,
   onStartup,
   getURL: (path: string): string => {

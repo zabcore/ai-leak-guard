@@ -18,6 +18,9 @@
     "http://127.0.0.1:54321/*",
     "http://localhost:54321/*"
   ],
+  "externally_connectable": {
+    "matches": ["https://zabcore.com/*"]
+  },
   "background": {
     "service_worker": "src/background/service-worker.ts",
     "type": "module"
