@@ -1,10 +1,12 @@
 // Teams Lite — the enrollment/check-in HTTP client. THE ONLY `fetch` in the
 // extension's own code.
 //
-// This module is loaded ONLY via dynamic `import()` from enrolled code paths
-// (the popup's Enroll click and the service worker's check-in scheduler, which
-// runs only when enrolled). The Free, unenrolled mode never imports it, so no
-// network call is even reachable before an explicit enrollment. Because it is a
+// Every call here is gated at RUNTIME by its caller: enroll (the popup's code
+// entry) and join (the zabcore join-page handoff) only on an explicit user
+// enrollment; provision only when an admin's managed policy authorizes it
+// (`planManagedBootstrap`); checkin only when enrolled. The popup loads this
+// module lazily; the service worker imports it statically (no dynamic import()
+// in a worker) but an unenrolled worker with no policy never calls it. Because it is a
 // dynamic import, Vite emits it as its own chunk, which `verify-no-network.mjs`
 // allowlists BY NAME (egress gated behind explicit enrollment) — the free-mode
 // silence guarantee is carried by the behavioral test, not the static scan.
