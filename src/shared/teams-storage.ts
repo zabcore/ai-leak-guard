@@ -130,3 +130,25 @@ export async function setRevokedNotice(value: boolean): Promise<void> {
   }
   await chrome.storage.local.remove(TEAMS_REVOKED_KEY)
 }
+
+/** Set after a CONFIRMED revocation of this install (Contract B §5b). Blocks
+ *  managed-policy auto-enroll so a removed browser is never silently re-enrolled.
+ *  Unlike `teamsRevoked` (a UI notice), this block is NOT cleared by a new or
+ *  rotated policy token, by a code enroll ("Activate"), or by a user unenroll —
+ *  only by an explicit authorized recovery (`clearRevokeBlock`). */
+export const TEAMS_REVOKE_BLOCK_KEY = 'teamsRevokeBlock'
+
+export async function getRevokeBlock(): Promise<boolean> {
+  const stored = await chrome.storage.local.get(TEAMS_REVOKE_BLOCK_KEY)
+  return stored[TEAMS_REVOKE_BLOCK_KEY] === true
+}
+
+export async function setRevokeBlock(): Promise<void> {
+  await chrome.storage.local.set({ [TEAMS_REVOKE_BLOCK_KEY]: true })
+}
+
+/** Lift the revoke block. Call ONLY from an explicit, authorized recovery
+ *  action (Contract B §5a #8) — never from a policy change or an enroll. */
+export async function clearRevokeBlock(): Promise<void> {
+  await chrome.storage.local.remove(TEAMS_REVOKE_BLOCK_KEY)
+}

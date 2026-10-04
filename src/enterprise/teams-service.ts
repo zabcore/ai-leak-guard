@@ -22,6 +22,7 @@ import {
   getPreManagedPrefs,
   setPreManagedPrefs,
   setRevokedNotice,
+  setRevokeBlock,
 } from '../shared/teams-storage'
 import { getBackendConfig } from './teams-config'
 import { reconcileCheckin, type CheckinOutcome, type Reconciliation } from './teams-state'
@@ -42,8 +43,9 @@ const defaultLoadClient = (): Promise<{ enroll: typeof enrollFn; checkin: typeof
 /** The running extension version, for the (metadata-only) check-in body. */
 function extensionVersion(): string | undefined {
   try {
-    const rt = (globalThis as { chrome?: { runtime?: { getManifest?: () => { version?: string } } } })
-      .chrome?.runtime
+    const rt = (
+      globalThis as { chrome?: { runtime?: { getManifest?: () => { version?: string } } } }
+    ).chrome?.runtime
     return rt?.getManifest?.().version
   } catch {
     return undefined
@@ -182,7 +184,8 @@ async function runCheckinOnce(deps: TeamsClientDeps): Promise<CheckinRunOutcome>
 
   // What the server returned (for diagnostics): the target revision on an active
   // 2xx; null on a non-2xx/network failure or a revocation.
-  const received = call.ok && call.response.revoked !== true ? call.response.target_settings_revision : null
+  const received =
+    call.ok && call.response.revoked !== true ? call.response.target_settings_revision : null
 
   // A concurrent unenroll (popup) or a revocation processed elsewhere may have
   // cleared the enrollment while this request was in flight. If so, DO NOT apply
@@ -216,10 +219,13 @@ async function runCheckinOnce(deps: TeamsClientDeps): Promise<CheckinRunOutcome>
 
   // A confirmed revocation ends management entirely: drop the credential so no
   // further check-ins run (prefs were already restored by applyReconciliation),
-  // and record the notice so the popup can say it was revoked by the org.
+  // and record the notice so the popup can say it was revoked by the org. Also
+  // set the persistent revoke block so a managed deployment policy can never
+  // silently re-enroll this removed browser (Contract B §5b).
   if (reconciliation.action === 'revoke') {
     await clearEnrollment()
     await setRevokedNotice(true)
+    await setRevokeBlock()
   }
 
   // Applied revision AFTER this attempt (for diagnostics): the new revision on an
