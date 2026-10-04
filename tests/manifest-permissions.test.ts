@@ -32,12 +32,13 @@ interface Manifest {
 
 const manifest = JSON.parse(readFileSync(resolve('manifest.json'), 'utf8')) as Manifest
 
-describe('manifest — A5.1 permission delta', () => {
-  it('permissions list is exactly ["storage"] — no `downloads` or anything new', () => {
-    expect(manifest.permissions).toEqual(['storage'])
-    // Explicit anti-regressions on the specific permissions the
-    // local blob-download path would trigger a reviewer to add
-    // if they didn't know the anchor-click pattern was enough.
+describe('manifest — A5.1 + Teams Lite (#78) permission delta', () => {
+  it('permissions list is exactly ["storage", "alarms"] — no `downloads` or anything else', () => {
+    // #78 adds `alarms` (and ONLY `alarms`) for the enrolled check-in
+    // scheduler. It carries no data and does nothing on the Free path (the
+    // alarm handler is a no-op unless enrolled). Everything else is still
+    // forbidden so a well-meaning edit can't sneak past review.
+    expect(manifest.permissions).toEqual(['storage', 'alarms'])
     expect(manifest.permissions ?? []).not.toContain('downloads')
     expect(manifest.permissions ?? []).not.toContain('activeTab')
     expect(manifest.permissions ?? []).not.toContain('tabs')
@@ -53,11 +54,12 @@ describe('manifest — A5.1 permission delta', () => {
     expect(manifest.optional_host_permissions ?? []).toEqual([])
   })
 
-  it('host_permissions are the in-scope AI tool sites (+ legacy chat.openai.com + both Copilot origins)', () => {
-    // V1.3.1 added exactly ONE narrow origin — `copilot.cloud.microsoft`
-    // — because Copilot migrated there (personal AND work chat share
-    // that host). The legacy `copilot.microsoft.com` redirector stays.
-    // `permissions` remains `['storage']`; no blanket `*.microsoft.com`.
+  it('host_permissions are the AI tool sites + the Teams Lite backend (local supabase for the dev demo)', () => {
+    // The AI-site origins are unchanged. #78 adds the local `supabase functions
+    // serve` origins so the ENROLLED check-in fetch is permitted for the M1
+    // dev demo; a real deployment's project origin is appended at build time
+    // from VITE_TEAMS_BASE_URL (see vite.config.ts). `permissions` stays narrow;
+    // no blanket wildcards.
     expect(manifest.host_permissions).toEqual([
       'https://chatgpt.com/*',
       'https://chat.openai.com/*',
@@ -66,6 +68,8 @@ describe('manifest — A5.1 permission delta', () => {
       'https://www.perplexity.ai/*',
       'https://copilot.microsoft.com/*',
       'https://copilot.cloud.microsoft/*',
+      'http://127.0.0.1:54321/*',
+      'http://localhost:54321/*',
     ])
   })
 

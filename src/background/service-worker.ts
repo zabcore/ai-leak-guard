@@ -30,11 +30,190 @@ import {
 } from '../shared/event-log-schema'
 import { setSubmitKillSwitch } from '../shared/storage'
 import { withLinkSource } from '../shared/link-source'
+import { runCheckin } from '../enterprise/teams-service'
+import * as teamsCheckinClient from '../enterprise/teams-client'
+import { recordNextAttempt } from '../shared/teams-diag'
+import { nextRetryPlan } from './teams-retry-plan'
 
 console.log('[AI Leak Guard] service worker started')
 
 const STORAGE_KEY = 'events'
 const APPEND_MESSAGE_TYPE = 'alg-event-append'
+
+// ─── Teams Lite (#78) — enrolled check-in scheduler ──────────────────
+//
+// Runs the managed-settings check-in in the background. Network is reached ONLY
+// when enrolled: `runCheckin` returns before the client is used otherwise, so an
+// unenrolled (Free) startup / alarm / content-nudge is network-silent. The
+// network client is imported STATICALLY above — dynamic `import()` is disallowed
+// in a ServiceWorkerGlobalScope by the HTML spec, which silently broke every
+// worker-driven check-in before — and is wired in via `loadClient` so the worker
+// path actually runs the request. Importing the client has NO network side
+// effect; it only defines functions.
+const TEAMS_CHECKIN_ALARM = 'alg-teams-checkin'
+const TEAMS_RETRY_ALARM = 'alg-teams-retry'
+const TEAMS_CHECKIN_PERIOD_MIN = 15
+const TEAMS_CHECKIN_DELAY_MIN = 1
+const TEAMS_CHECKIN_MESSAGE_TYPE = 'alg-teams-checkin'
+const TEAMS_RETRY_COUNT_KEY = 'teamsRetryCount'
+// Bounded backoff (minutes) for failed check-ins, capped at the steady period,
+// and the pure "never postpone a pending retry" decision — see `teams-retry-plan`.
+
+/** Static client wired into `runCheckin` for the worker (no dynamic import). The
+ *  fetch inside runs ONLY when runCheckin decides to call it — i.e. enrolled. */
+const swLoadClient = async (): Promise<{
+  enroll: typeof teamsCheckinClient.enroll
+  checkin: typeof teamsCheckinClient.checkin
+}> => ({ enroll: teamsCheckinClient.enroll, checkin: teamsCheckinClient.checkin })
+
+/** Create the steady alarm only if one isn't already scheduled — NEVER reset an
+ *  existing alarm's countdown (recreating it each wake pinned cadence to ~1min). */
+async function ensureCheckinAlarm(): Promise<void> {
+  try {
+    const existing = await chrome.alarms?.get(TEAMS_CHECKIN_ALARM)
+    if (!existing) {
+      chrome.alarms?.create(TEAMS_CHECKIN_ALARM, {
+        delayInMinutes: TEAMS_CHECKIN_DELAY_MIN,
+        periodInMinutes: TEAMS_CHECKIN_PERIOD_MIN,
+      })
+    }
+  } catch (err) {
+    console.warn('[AI Leak Guard] failed to ensure teams check-in alarm:', err)
+  }
+}
+
+/** Remove ALL teams scheduling + retry state (unenrolled / revoked). */
+async function clearCheckinSchedule(): Promise<void> {
+  try {
+    await chrome.alarms?.clear(TEAMS_CHECKIN_ALARM)
+    await chrome.alarms?.clear(TEAMS_RETRY_ALARM)
+    await chrome.storage.local.remove(TEAMS_RETRY_COUNT_KEY)
+  } catch (err) {
+    console.warn('[AI Leak Guard] failed to clear teams schedule:', err)
+  }
+}
+
+async function getRetryCount(): Promise<number> {
+  try {
+    const got = await chrome.storage.local.get(TEAMS_RETRY_COUNT_KEY)
+    const n = got[TEAMS_RETRY_COUNT_KEY]
+    return typeof n === 'number' && n >= 0 ? n : 0
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Schedule one bounded backoff retry after a failed check-in — but NEVER postpone
+ * an already-pending retry. Check-ins fire from several sources (periodic alarm,
+ * retry alarm, content-nudge, post-enroll); while a retry is already scheduled it
+ * is the soonest attempt, so an extra failing attempt must keep it rather than
+ * replace it with a longer-delay alarm of the same name. `nextRetryPlan` holds
+ * that decision (unit-tested in `teams-retry-plan`); here we only read whether a
+ * retry alarm is pending and the current failure count, then apply it.
+ */
+async function scheduleRetry(): Promise<void> {
+  try {
+    const existing = await chrome.alarms?.get(TEAMS_RETRY_ALARM)
+    const plan = nextRetryPlan(Boolean(existing), await getRetryCount())
+    if (!plan.schedule) return
+    chrome.alarms?.create(TEAMS_RETRY_ALARM, { delayInMinutes: plan.delayMin })
+    await chrome.storage.local.set({ [TEAMS_RETRY_COUNT_KEY]: plan.nextCount })
+  } catch (err) {
+    console.warn('[AI Leak Guard] failed to schedule teams retry:', err)
+  }
+}
+
+/** Clear the retry backoff after a success. */
+async function clearRetry(): Promise<void> {
+  try {
+    await chrome.alarms?.clear(TEAMS_RETRY_ALARM)
+    await chrome.storage.local.remove(TEAMS_RETRY_COUNT_KEY)
+  } catch {
+    // best-effort
+  }
+}
+
+/** Diagnostics: record the soonest next scheduled attempt (steady OR retry). */
+async function recordNextScheduledAttempt(): Promise<void> {
+  try {
+    const [main, retry] = await Promise.all([
+      chrome.alarms?.get(TEAMS_CHECKIN_ALARM),
+      chrome.alarms?.get(TEAMS_RETRY_ALARM),
+    ])
+    const times = [main?.scheduledTime, retry?.scheduledTime].filter(
+      (t): t is number => typeof t === 'number',
+    )
+    await recordNextAttempt(times.length > 0 ? new Date(Math.min(...times)).toISOString() : null)
+  } catch {
+    // diagnostics best-effort
+  }
+}
+
+/**
+ * Run one check-in with the static client, then reconcile the schedule from the
+ * outcome: keep the steady alarm while enrolled, back off on failure, send ONE
+ * prompt acknowledgment after an apply, and cancel everything once revoked.
+ * Awaiting this inside a listener keeps the worker alive until it settles.
+ */
+async function safeRunCheckin(reason: string): Promise<void> {
+  let outcome: Awaited<ReturnType<typeof runCheckin>> | 'error'
+  try {
+    outcome = await runCheckin({ reason, loadClient: swLoadClient })
+  } catch (err) {
+    console.warn(`[AI Leak Guard] teams check-in (${reason}) failed:`, err)
+    outcome = 'error'
+  }
+
+  try {
+    switch (outcome) {
+      case 'apply':
+        await clearRetry()
+        await ensureCheckinAlarm()
+        // One prompt acknowledgment of the just-applied revision — don't wait a
+        // full period. Bounded: the ack check-in reports the applied revision and
+        // returns 'noop', so it never chains. 'ack' trigger shows in diagnostics.
+        if (reason !== 'ack') {
+          try {
+            await runCheckin({ reason: 'ack', loadClient: swLoadClient })
+          } catch (err) {
+            console.warn('[AI Leak Guard] teams ack check-in failed:', err)
+          }
+        }
+        break
+      case 'noop':
+        await clearRetry()
+        await ensureCheckinAlarm()
+        break
+      case 'retain':
+      case 'error':
+        // Failure: keep the steady alarm AND add a bounded backoff retry so an
+        // outage recovers on its own, without waiting a whole period.
+        await ensureCheckinAlarm()
+        await scheduleRetry()
+        break
+      case 'revoke':
+        // Management is over: cancel ALL scheduling + any pending retry.
+        await clearCheckinSchedule()
+        break
+      case 'skipped-unenrolled':
+      case 'not_configured':
+        // Not managed: no scheduling should linger (stays network-silent).
+        await clearCheckinSchedule()
+        break
+    }
+  } catch (err) {
+    console.warn('[AI Leak Guard] teams schedule reconcile failed:', err)
+  }
+
+  await recordNextScheduledAttempt()
+}
+
+chrome.alarms?.onAlarm.addListener(async (alarm) => {
+  // Async listener → Chrome keeps the worker alive until the check-in settles.
+  if (alarm.name === TEAMS_CHECKIN_ALARM) await safeRunCheckin('alarm')
+  else if (alarm.name === TEAMS_RETRY_ALARM) await safeRunCheckin('retry')
+})
 
 /**
  * Wire-level shape of the append request. Kept in sync with
@@ -202,13 +381,58 @@ function clearSubmitKillSwitchOnStartup(): void {
   }
 }
 
-chrome.runtime.onStartup.addListener(() => {
+chrome.runtime.onStartup.addListener(async () => {
   clearSubmitKillSwitchOnStartup()
+  await safeRunCheckin('startup')
 })
 
 // onInstalled already fires above for the welcome tab; clear the kill
 // switch on install/update too so an update never inherits a stale
 // paused state.
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
   clearSubmitKillSwitchOnStartup()
+  await safeRunCheckin('install')
 })
+
+// The popup asks us to run a check-in immediately after a successful enroll so
+// the managed configuration applies without waiting for the next alarm. We
+// return `true` and `sendResponse` only AFTER the check-in settles — that keeps
+// the message channel (and the worker) alive for the async fetch, instead of
+// letting MV3 tear the worker down the moment this listener returns.
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  const msg = message as { type?: unknown; reason?: unknown } | null
+  if (msg?.type === TEAMS_CHECKIN_MESSAGE_TYPE) {
+    // The sender names what it is (diagnostics): 'content-nudge' from an AI-tab
+    // heartbeat, 'post-enroll' from the just-enrolled popup. Default: post-enroll.
+    const reason = typeof msg.reason === 'string' ? msg.reason : 'post-enroll'
+    void safeRunCheckin(reason).then(() => {
+      try {
+        sendResponse({ ok: true })
+      } catch {
+        // the popup may have closed; the check-in still completed
+      }
+    })
+    return true
+  }
+  return false
+})
+
+// ─── No top-level check-in (deliberate) ──────────────────────────────
+//
+// Every cold worker wake runs this module from the top FIRST, then dispatches
+// the event that caused the wake (onAlarm / onStartup / onInstalled / onMessage).
+// A top-level `safeRunCheckin` would therefore run on EVERY wake and, via the
+// single-flight guard, coalesce the real event's run under a generic "sw-start"
+// label — hiding whether delivery came from the alarm, a retry, or startup
+// (exactly the trigger attribution the acceptance needs). So we do NOT check in
+// at the top level. Instead:
+//   • enroll            → onMessage('post-enroll')  [creates the alarm]
+//   • periodic delivery → onAlarm('alarm')
+//   • bounded retry     → onAlarm('retry')
+//   • browser launch    → onStartup('startup')
+//   • install/update    → onInstalled('install')
+//   • AI-tab heartbeat  → onMessage('content-nudge')
+// The alarm is persistent (created at enroll, survives restarts), so a bare
+// chrome://extensions reload with no event still syncs on the next alarm fire.
+// Top-level `await` is disallowed in a worker anyway, so there is no reliable
+// way to run an awaited startup check-in here regardless.

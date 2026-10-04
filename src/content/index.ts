@@ -20,6 +20,7 @@ import { clearFileInput, consumePassThroughIfArmed } from './upload-release'
 import { showReattachNudge } from './document-nudge'
 import { installFsaMessageHandler } from './fsa-isolated'
 import { appendEvent, type AlgAction, type AlgEvent } from '../shared/event-log'
+import { startTeamsHeartbeat } from './teams-heartbeat'
 import type { DetectorCategory, Finding } from '../detector/types'
 import { readPastedText } from './clipboard-text'
 import { isSubmitProtectionEnabled } from './submit/submit-flag'
@@ -92,6 +93,11 @@ const enabledState = createEnabledState(false)
 void resolveInitialEnabled(getPrefs).then((value) => {
   enabledState.applyInitial(value)
 })
+
+// Teams Lite (#78): an enrolled browser on a managed AI tool refreshes its
+// managed settings in the background (no popup). Enrolled-only + throttled;
+// a Free user's visit does nothing but one local storage read.
+startTeamsHeartbeat()
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return
@@ -755,6 +761,11 @@ if (adapter.id !== 'fallback' && getSurfaceCoverage(availabilitySurfaceId) !== u
   // later). `indicatorOrigin` keys the flag.
   const indicatorOrigin = location.origin
   let indicatorDismissed = false
+  // Teams Lite (#78) — the EFFECTIVE indicator-visibility pref (prefs.showIndicator):
+  // the user's own choice in Free mode, or the centrally-managed override while
+  // enrolled + under management. `false` hides the whole pill (reusing the
+  // v1.3.4 show/hide plumbing) without touching scanning/protection.
+  let showIndicatorPref = true
 
   const indicator = createAvailabilityIndicator({
     getAvailability: () =>
@@ -766,7 +777,7 @@ if (adapter.id !== 'fallback' && getSurfaceCoverage(availabilitySurfaceId) !== u
         composerPresent: adapter.resolveComposer() !== null,
         lastSelfTest,
       }),
-    isDismissed: () => indicatorDismissed,
+    isDismissed: () => indicatorDismissed || !showIndicatorPref,
     onDismiss: () => {
       indicatorDismissed = true
       void setIndicatorDismissed(indicatorOrigin)
@@ -790,6 +801,17 @@ if (adapter.id !== 'fallback' && getSurfaceCoverage(availabilitySurfaceId) !== u
     indicator.refresh()
   }
   void hydrateDismissed()
+
+  // Read the effective show-indicator pref (managed or user) and keep it live.
+  const hydrateShowIndicator = async (): Promise<void> => {
+    try {
+      showIndicatorPref = (await getPrefs()).showIndicator
+    } catch {
+      showIndicatorPref = true
+    }
+    indicator.refresh()
+  }
+  void hydrateShowIndicator()
 
   const hydrateSelfTest = async (): Promise<void> => {
     try {
@@ -838,7 +860,8 @@ if (adapter.id !== 'fallback' && getSurfaceCoverage(availabilitySurfaceId) !== u
   // result changes (metadata only).
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local') return
-    if ('prefs' in changes) indicator.refresh()
+    // A prefs change may carry a new (managed or user) show-indicator value.
+    if ('prefs' in changes) void hydrateShowIndicator()
     if ('algSelfTestResult' in changes) void hydrateSelfTest()
     // A dismissal toggled elsewhere (another tab on this origin, or a future
     // popup "show again") re-hydrates so this tab reflects it.

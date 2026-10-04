@@ -56,6 +56,57 @@
       <p class="popup__notice" role="status" hidden id="submit-killswitch"></p>
 
       <!--
+        Teams Lite (#78) — enrollment. Enrolled installs apply a centrally-
+        managed indicator setting and report back (content-free). The Free
+        (unenrolled) mode makes NO network calls: nothing here runs until the
+        user explicitly enters a code and clicks Enroll. The network client is
+        loaded lazily (dynamic import) only on that click.
+      -->
+      <section class="teams" id="teams-section" aria-labelledby="teams-heading">
+        <div class="teams__bar">
+          <span class="teams__icon" id="teams-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 21h18M6 21V7l6-4 6 4v14" />
+              <path d="M10 9h.01M14 9h.01M10 13h.01M14 13h.01M10 17h4" />
+            </svg>
+          </span>
+          <div class="teams__meta">
+            <p class="teams__heading" id="teams-heading">Team management</p>
+            <p class="teams__status" role="status" id="teams-status">Not set up</p>
+          </div>
+          <button type="button" class="teams__activate" id="teams-activate-btn">Activate</button>
+          <button type="button" class="teams__remove" hidden id="teams-unenroll-btn">Remove</button>
+        </div>
+
+        <div class="teams__enroll" id="teams-enroll-form" hidden>
+          <p class="teams__hint">Enter the enrollment code from your IT provider to let them manage this browser's settings.</p>
+          <input
+            class="teams__input"
+            id="teams-code"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="Enrollment code"
+            placeholder="Enrollment code"
+          />
+          <input
+            class="teams__input teams__input--secondary"
+            id="teams-label"
+            type="text"
+            autocomplete="off"
+            aria-label="Label (optional)"
+            placeholder="Label — e.g. Front desk (optional)"
+          />
+          <div class="teams__actions">
+            <button type="button" class="teams__btn" id="teams-enroll-btn">Activate</button>
+            <button type="button" class="teams__cancel" id="teams-cancel-btn">Cancel</button>
+          </div>
+          <p class="teams__error" role="alert" hidden id="teams-error"></p>
+        </div>
+      </section>
+
+      <!--
         V1.3 M5 — one-click self-test. Opens a FRESH tab on a supported
         site, runs the REAL interception on SYNTHETIC data only, confirms
         the warning appears, then auto-cancels (never submits). The

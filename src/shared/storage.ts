@@ -17,10 +17,24 @@ export interface Counters {
 export interface Prefs {
   enabled: boolean
   rulesUpdatedAt: number
+  /**
+   * Teams Lite (#78) — whether the in-page availability indicator is shown.
+   * This is the EFFECTIVE value the content script reads: the user's own choice
+   * in Free mode, or the centrally-managed override while an enrolled install is
+   * under management. Management snapshots the user's value into
+   * `teamsPreManagedPrefs` before overriding and restores it on revocation, so
+   * this field is never a lossy shared slot. Default `true` (shown), matching
+   * the pre-#78 behavior where the indicator always showed when active.
+   */
+  showIndicator: boolean
 }
 
 const DEFAULT_COUNTERS: Counters = { total: 0, byType: {}, byDay: {} }
-const DEFAULT_PREFS: Prefs = { enabled: true, rulesUpdatedAt: 0 }
+const DEFAULT_PREFS: Prefs = { enabled: true, rulesUpdatedAt: 0, showIndicator: true }
+
+/** The extension-default indicator visibility (used when no prior user pref is
+ *  recorded on a managed → revoked restore). */
+export const DEFAULT_SHOW_INDICATOR = DEFAULT_PREFS.showIndicator
 
 export async function getCounters(): Promise<Counters> {
   const stored = await chrome.storage.local.get('counters')
@@ -42,6 +56,8 @@ export async function getPrefs(): Promise<Prefs> {
   return {
     enabled: prefs?.enabled ?? DEFAULT_PREFS.enabled,
     rulesUpdatedAt: prefs?.rulesUpdatedAt ?? DEFAULT_PREFS.rulesUpdatedAt,
+    showIndicator:
+      typeof prefs?.showIndicator === 'boolean' ? prefs.showIndicator : DEFAULT_PREFS.showIndicator,
   }
 }
 
