@@ -87,18 +87,19 @@ export async function hasPendingJoin(): Promise<boolean> {
   return (await getJoinAttempt())?.exchangeToken !== undefined
 }
 
-let inFlight: Promise<JoinRunOutcome> | null = null
+let queue: Promise<unknown> = Promise.resolve()
 
-/** Redeem (or recover) the persisted attempt. Serialized so a handoff message
- *  and a startup recovery can't race two requests. */
+/** Redeem (or recover) the persisted attempt. Calls are QUEUED, not coalesced:
+ *  each runs after the previous one with its own token, so a handoff arriving
+ *  during a startup recovery isn't dropped; once one call enrolls, the
+ *  enrollment check makes the later ones no-ops (no second request). */
 export function runJoin(
   exchangeToken: string | undefined,
   deps: JoinDeps = {},
 ): Promise<JoinRunOutcome> {
-  inFlight ??= runJoinOnce(exchangeToken, deps).finally(() => {
-    inFlight = null
-  })
-  return inFlight
+  const run = queue.then(() => runJoinOnce(exchangeToken, deps))
+  queue = run.catch(() => undefined)
+  return run
 }
 
 async function runJoinOnce(

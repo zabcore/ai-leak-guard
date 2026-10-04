@@ -161,15 +161,29 @@ describe('runJoin', () => {
     expect(c.calls).toHaveLength(0)
   })
 
-  it('serializes concurrent completes into ONE request', async () => {
+  it('queues concurrent completes: ONE request, the later call is a no-op', async () => {
     await beginJoin(fixed)
     const c = joinClient([OK])
     const [a, b] = await Promise.all([
       runJoin('xt-1', { loadClient: c.loadClient }),
       runJoin('xt-1', { loadClient: c.loadClient }),
     ])
-    expect([a, b]).toEqual(['enrolled', 'enrolled'])
+    expect([a, b]).toEqual(['enrolled', 'already-enrolled'])
     expect(c.calls).toHaveLength(1)
+  })
+
+  it('a handoff arriving DURING a startup recovery keeps its own token (not dropped)', async () => {
+    await beginJoin(fixed) // attempt minted, no exchange token yet
+    const c = joinClient([OK])
+    const [recovery, handoff] = await Promise.all([
+      runJoin(undefined, { loadClient: c.loadClient }),
+      runJoin('xt-1', { loadClient: c.loadClient }),
+    ])
+    expect(recovery).toBe('no-exchange-token')
+    expect(handoff).toBe('enrolled')
+    expect(c.calls).toEqual([
+      { exchange_token: 'xt-1', attempt_secret: 'verifier-secret-1', idempotency_key: 'idem-1' },
+    ])
   })
 })
 
