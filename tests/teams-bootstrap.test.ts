@@ -182,28 +182,53 @@ describe('revoke block (Contract B §5b — no auto-reenroll)', () => {
     expect(r).toEqual({ action: 'provision', outcome: 'enrolled' })
   })
 
-  it('`revoked` while RECOVERING an already-sent attempt sets the block (install removed)', async () => {
+  it('`install_revoked` sets the block, and it then survives token rotation', async () => {
+    const c = provisionClient([{ ok: false, code: 'install_revoked' }])
+    expect(
+      await runManagedBootstrap({
+        readPolicy: policy({ deploymentToken: 'tok-A' }),
+        loadClient: c.loadClient,
+        newId: seqIds(),
+      }),
+    ).toEqual({ action: 'provision', outcome: 'install-revoked' })
+    expect(await getRevokeBlock()).toBe(true)
+
+    const rotated = provisionClient([OK])
+    expect(
+      await runManagedBootstrap({
+        readPolicy: policy({ deploymentToken: 'tok-ROTATED' }),
+        loadClient: rotated.loadClient,
+      }),
+    ).toEqual({ action: 'skip', reason: 'revoked-block' })
+    expect(rotated.calls).toHaveLength(0)
+  })
+
+  it('`install_revoked` on a RETRY of an already-sent attempt blocks too (no inference needed)', async () => {
     const deps = { readPolicy: policy({ deploymentToken: 'tok-A' }), newId: seqIds() }
     await runManagedBootstrap({
       ...deps,
       loadClient: provisionClient([{ ok: false, code: 'network' }]).loadClient,
     })
-    const retry = provisionClient([{ ok: false, code: 'revoked' }])
-    const r = await runManagedBootstrap({ ...deps, loadClient: retry.loadClient })
-    expect(r).toEqual({ action: 'provision', outcome: 'revoked' })
-    expect(retry.calls[0]?.attempt_id).toBe('id1') // same attempt was retried
+    const retry = provisionClient([{ ok: false, code: 'install_revoked' }])
+    expect(await runManagedBootstrap({ ...deps, loadClient: retry.loadClient })).toEqual({
+      action: 'provision',
+      outcome: 'install-revoked',
+    })
+    expect(retry.calls[0]?.attempt_id).toBe('id1')
     expect(await getRevokeBlock()).toBe(true)
   })
 
-  it('`revoked` on a FRESH attempt is the token itself → no block, a rotated token can enroll', async () => {
-    const first = provisionClient([{ ok: false, code: 'revoked' }])
-    expect(
-      await runManagedBootstrap({
-        readPolicy: policy({ deploymentToken: 'tok-REVOKED' }),
-        loadClient: first.loadClient,
-        newId: seqIds(),
-      }),
-    ).toEqual({ action: 'provision', outcome: 'revoked' })
+  it('`token_revoked` never sets the block — even on a retried attempt — so a rotated token can enroll', async () => {
+    const deps = { readPolicy: policy({ deploymentToken: 'tok-REVOKED' }), newId: seqIds() }
+    await runManagedBootstrap({
+      ...deps,
+      loadClient: provisionClient([{ ok: false, code: 'network' }]).loadClient,
+    })
+    const retry = provisionClient([{ ok: false, code: 'token_revoked' }])
+    expect(await runManagedBootstrap({ ...deps, loadClient: retry.loadClient })).toEqual({
+      action: 'provision',
+      outcome: 'token-revoked',
+    })
     expect(await getRevokeBlock()).toBe(false)
 
     const rotated = provisionClient([OK])

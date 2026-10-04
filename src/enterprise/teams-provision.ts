@@ -8,7 +8,7 @@
 //   • bind the attempt to the deployment token it is attempting against (§5a #3);
 //   • on a network failure keep the attempt (so a retry recovers a lost response
 //     with the same attempt_id — §5a #1/#5); on any terminal outcome clear it;
-//   • on `revoked` never enrol (§5a #7).
+//   • on `token_revoked` / `install_revoked` never enrol (§5a #7).
 // The decision of WHETHER to provision (policy present, not enrolled, not
 // revoke-blocked) is `planManagedBootstrap`; this module performs an approved
 // provisioning. The server owns capacity/recovery accounting; this module never
@@ -31,7 +31,8 @@ export type ProvisionRunOutcome =
   | 'invalid-token'
   | 'exhausted'
   | 'expired'
-  | 'revoked'
+  | 'token-revoked'
+  | 'install-revoked'
   | 'recovery-expired'
   | 'network'
 
@@ -46,13 +47,12 @@ export interface ProvisionRunDeps {
 
 const defaultLoadClient = (): Promise<{ provision: typeof provisionFn }> => import('./teams-client')
 
+/** CSPRNG only: the attempt id is a proof secret, so there is no weak fallback
+ *  (no Math.random / Date.now). Throws if no secure source exists. */
 function defaultNewId(): string {
-  try {
-    return crypto.randomUUID()
-  } catch {
-    // Extremely defensive fallback; randomUUID exists in the MV3 worker.
-    return `a-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  }
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 /**
@@ -116,9 +116,12 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
     case 'expired':
       await clearProvisionAttempt()
       return 'expired'
-    case 'revoked':
+    case 'token_revoked':
       await clearProvisionAttempt()
-      return 'revoked'
+      return 'token-revoked'
+    case 'install_revoked':
+      await clearProvisionAttempt()
+      return 'install-revoked'
     case 'recovery_window_expired':
       await clearProvisionAttempt()
       return 'recovery-expired'

@@ -1,7 +1,7 @@
 // Teams Lite (deployment m1) — provisioning orchestration (Contract B §5a).
 // Executed tests for the client-side retry-safety: persist-before-request,
 // same-attempt reuse on retry (worker-restart safety), terminal-outcome cleanup,
-// and "revoked never enrols".
+// and "token/install revoked never enrols".
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runProvision } from '../src/enterprise/teams-provision'
@@ -86,9 +86,12 @@ describe('runProvision', () => {
     expect(await getProvisionAttempt()).toBeNull()
   })
 
-  it('revoked never enrolls and clears the attempt', async () => {
-    const { loadClient } = mockClient([{ ok: false, code: 'revoked' }])
-    expect(await runProvision({ deploymentToken: 'tok-A', loadClient, newId: seqIds() })).toBe('revoked')
+  it.each([
+    ['install_revoked', 'install-revoked'],
+    ['token_revoked', 'token-revoked'],
+  ] as const)('%s never enrolls and clears the attempt', async (code, outcome) => {
+    const { loadClient } = mockClient([{ ok: false, code }])
+    expect(await runProvision({ deploymentToken: 'tok-A', loadClient, newId: seqIds() })).toBe(outcome)
     expect(await getEnrollment()).toBeNull()
     expect(await getProvisionAttempt()).toBeNull()
   })

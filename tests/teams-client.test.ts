@@ -109,3 +109,14 @@ describe('checkin', () => {
     expect(await checkin(BASE, ANON, { install_id: 'i', credential: 'c' })).toEqual({ ok: false })
   })
 })
+
+describe('provision', () => {
+  it('reads the 410 body to tell token_revoked from install_revoked', async () => {
+    const { provision } = await import('../src/enterprise/teams-client')
+    const req = { deployment_token: 't', attempt_id: 'a', idempotency_key: 'k' }
+    for (const error of ['token_revoked', 'install_revoked'] as const) {
+      ;(globalThis as { fetch: unknown }).fetch = vi.fn(async () => res(410, { error }))
+      expect(await provision(BASE, ANON, req)).toEqual({ ok: false, code: error })
+    }
+  })
+})

@@ -20,6 +20,8 @@ import {
   enrollErrorForStatus,
   isCheckinResponse,
   isEnrollSuccess,
+  provisionErrorFor,
+  type ProvisionErrorCode,
   type CheckinRequest,
   type CheckinResponse,
   type EnrollRequest,
@@ -123,13 +125,7 @@ export interface ProvisionSuccess {
   readonly org_id: string
   readonly org_name: string
 }
-export type ProvisionErrorCode =
-  | 'invalid_token'
-  | 'exhausted'
-  | 'expired'
-  | 'revoked'
-  | 'recovery_window_expired'
-  | 'network'
+export type { ProvisionErrorCode }
 export type ProvisionCallResult =
   | { ok: true; data: ProvisionSuccess }
   | { ok: false; code: ProvisionErrorCode }
@@ -172,16 +168,10 @@ export async function provision(
     if (isProvisionSuccess(body)) return { ok: true, data: body }
     return { ok: false, code: 'network' }
   }
-  if (res.status === 404) return { ok: false, code: 'invalid_token' }
-  if (res.status === 409) return { ok: false, code: 'exhausted' }
-  if (res.status === 410) {
-    const body = await readJson(res)
-    const err = (body as { error?: unknown } | null)?.error
-    if (err === 'revoked') return { ok: false, code: 'revoked' }
-    if (err === 'recovery_window_expired') return { ok: false, code: 'recovery_window_expired' }
-    return { ok: false, code: 'expired' }
+  return {
+    ok: false,
+    code: provisionErrorFor(res.status, res.status === 410 ? await readJson(res) : null),
   }
-  return { ok: false, code: 'network' }
 }
 
 // ─── Staff-invitation join (connect handoff, Contract A §4c) ─────────

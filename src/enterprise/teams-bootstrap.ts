@@ -13,13 +13,10 @@
 //   • Otherwise                   → runProvision with the policy's token.
 //
 // Revoke block on a confirmed revoke: the check-in path sets it when the server
-// confirms revocation (`teams-service`). Here, a `/provision` answer of
-// `revoked` sets it ONLY when we were RECOVERING an attempt that was already
-// sent for this token: the server has seen that attempt and may have created an
-// install for it, so `revoked` can mean "this install was removed". A brand-new
-// attempt id has never reached the server, so `revoked` there can only refer to
-// the deployment token itself — blocking on it would wrongly stop a rotated
-// token from enrolling.
+// confirms revocation (`teams-service`). Here, `/provision` answers explicitly:
+// `install_revoked` (this installation was removed) sets the block, which then
+// survives token rotation; `token_revoked` (only the deployment token was
+// revoked) does NOT, so a rotated / new token may still enroll.
 //
 // Serialized: startup, install, the managed-storage change event, and the retry
 // alarm can all fire together. One shared in-flight run means two concurrent
@@ -28,7 +25,6 @@
 import { planManagedBootstrap, type BootstrapSkipReason } from '../background/teams-bootstrap-plan'
 import { readManagedPolicy } from '../shared/teams-managed-policy'
 import { getEnrollment, getRevokeBlock, setRevokeBlock } from '../shared/teams-storage'
-import { getProvisionAttempt } from '../shared/teams-provision-attempt'
 import { runProvision, type ProvisionRunDeps, type ProvisionRunOutcome } from './teams-provision'
 import type { ManagedDeploymentPolicy } from '../background/teams-bootstrap-plan'
 
@@ -64,15 +60,12 @@ async function runOnce(deps: ManagedBootstrapDeps): Promise<ManagedBootstrapResu
   })
   if (decision.action === 'skip') return decision
 
-  const prior = await getProvisionAttempt()
-  const recovering = prior !== null && prior.deploymentToken === decision.deploymentToken
-
   const outcome = await runProvision({
     deploymentToken: decision.deploymentToken,
     ...(deps.loadClient !== undefined ? { loadClient: deps.loadClient } : {}),
     ...(deps.newId !== undefined ? { newId: deps.newId } : {}),
   })
 
-  if (outcome === 'revoked' && recovering) await setRevokeBlock()
+  if (outcome === 'install-revoked') await setRevokeBlock()
   return { action: 'provision', outcome }
 }

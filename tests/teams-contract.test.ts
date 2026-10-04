@@ -6,6 +6,7 @@ import {
   isCheckinResponse,
   isEnrollSuccess,
   enrollErrorForStatus,
+  provisionErrorFor,
   CHECKIN_ALLOWED_KEYS,
 } from '../src/shared/teams-contract'
 
@@ -22,7 +23,13 @@ describe('buildCheckinRequest — content-free', () => {
     // Every emitted key is in the allowlist.
     for (const k of keys) expect(CHECKIN_ALLOWED_KEYS).toContain(k)
     expect(keys).toEqual(
-      ['applied_settings_revision', 'credential', 'extension_version', 'install_id', 'self_test'].sort(),
+      [
+        'applied_settings_revision',
+        'credential',
+        'extension_version',
+        'install_id',
+        'self_test',
+      ].sort(),
     )
     // self_test carries only passed + at.
     expect(Object.keys(req.self_test ?? {}).sort()).toEqual(['at', 'passed'])
@@ -102,5 +109,24 @@ describe('isEnrollSuccess / enrollErrorForStatus', () => {
     expect(enrollErrorForStatus(409)).toBe('already_used')
     expect(enrollErrorForStatus(410)).toBe('expired')
     expect(enrollErrorForStatus(500)).toBe('network')
+  })
+})
+
+describe('provisionErrorFor (Contract B §5 — explicit revoke split)', () => {
+  it('maps status + body to the pinned error enum', () => {
+    expect(provisionErrorFor(404, null)).toBe('invalid_token')
+    expect(provisionErrorFor(409, null)).toBe('exhausted')
+    expect(provisionErrorFor(410, { error: 'expired' })).toBe('expired')
+    expect(provisionErrorFor(410, { error: 'token_revoked' })).toBe('token_revoked')
+    expect(provisionErrorFor(410, { error: 'install_revoked' })).toBe('install_revoked')
+    expect(provisionErrorFor(410, { error: 'recovery_window_expired' })).toBe(
+      'recovery_window_expired',
+    )
+    expect(provisionErrorFor(500, null)).toBe('network')
+  })
+
+  it('an ambiguous / unknown 410 (incl. a bare legacy "revoked") is terminal `expired` — never a block', () => {
+    expect(provisionErrorFor(410, { error: 'revoked' })).toBe('expired')
+    expect(provisionErrorFor(410, null)).toBe('expired')
   })
 })

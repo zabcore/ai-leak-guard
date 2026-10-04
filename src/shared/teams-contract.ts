@@ -154,3 +154,34 @@ export function enrollErrorForStatus(status: number): EnrollErrorCode {
   if (status === 410) return 'expired' // expired | revoked share 410; treated the same
   return 'network'
 }
+
+// ─── /provision errors (Contract B §5) ───────────────────────────────
+// 410 carries an explicit body `error`. Revocation is split so the extension
+// never has to infer what was revoked:
+//   • `token_revoked`   — the DEPLOYMENT TOKEN was revoked. No block: a rotated
+//                         or new token may still enroll this browser.
+//   • `install_revoked` — THIS INSTALLATION was revoked. Sets the persistent
+//                         no-reenroll block (survives token rotation).
+export const PROVISION_GONE_ERRORS = [
+  'expired',
+  'token_revoked',
+  'install_revoked',
+  'recovery_window_expired',
+] as const
+export type ProvisionGoneError = (typeof PROVISION_GONE_ERRORS)[number]
+export type ProvisionErrorCode = 'invalid_token' | 'exhausted' | ProvisionGoneError | 'network'
+
+/** Map a non-2xx /provision answer to its error code. An unrecognized 410 body
+ *  is treated as `expired` (terminal, no block); anything unexpected is
+ *  `network` (retry with the same attempt). */
+export function provisionErrorFor(status: number, body: unknown): ProvisionErrorCode {
+  if (status === 404) return 'invalid_token'
+  if (status === 409) return 'exhausted'
+  if (status === 410) {
+    const err = (body as { error?: unknown } | null)?.error
+    return (PROVISION_GONE_ERRORS as readonly unknown[]).includes(err)
+      ? (err as ProvisionGoneError)
+      : 'expired'
+  }
+  return 'network'
+}
