@@ -1,0 +1,138 @@
+openapi: 3.1.0
+info:
+  title: Teams Lite — deployment & onboarding API
+  version: 1.1.0
+  x-contract-version: "1.1.0"
+  description: >
+    CANONICAL machine-readable contract for the managed-deployment + onboarding
+    endpoints. This file lives in the BACKEND repo (zabcore/teams-onboarding-backend)
+    and is the single source of truth. Generate TypeScript types from it (e.g.
+    `openapi-typescript`) — do NOT hand-maintain a second definition. The repo's
+    `contracts/REV4.md` is REFERENCE-ONLY prose and is NOT canonical. Extension and
+    portal consume a PINNED version. Pinned together with bridge/1.1.0
+    (Teams_Lite_Bridge_Contract_v1_1_PINNED). v1.1.0 changes vs v1.0.0: split
+    `revoked` into `token_revoked` + `install_revoked`; `/join-init` auth is the
+    verified-recipient session (cookie or bearer); idempotency keys are domain-tagged
+    so they never equal the attempt_challenge. Recovery/revocation semantics are in
+    the per-operation `x-rules`; they are enforced by the HTTP contract test suite,
+    not by types alone.
+servers:
+  - url: "{baseUrl}/functions/v1"
+    variables:
+      baseUrl:
+        default: "http://127.0.0.1:54321"
+components:
+  securitySchemes:
+    anonKey:            # /provision, /join — functions run verify_jwt=false and
+      type: apiKey      # authenticate the install from the body; service-role key
+      in: header        # is NEVER sent by a client.
+      name: apikey
+    recipientSession:   # /join-init — the verified recipient's website session.
+      type: http        # Concrete mechanism (signed HttpOnly cookie, or a bearer
+      scheme: bearer    # minted from it) is pinned by the backend in B1/B2; the
+                        # website is a thin consumer. Modeled here as bearer.
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          # v1.1.0: `revoked` split into token_revoked (deployment token; does NOT
+          # block a later rotation) and install_revoked (install; blocks re-enroll
+          # and always denies recovery).
+          enum: [invalid_token, invalid_proof, exhausted, expired, token_revoked, install_revoked, recovery_window_expired]
+    Credential:
+      type: object
+      required: [install_id, install_credential, org_id, org_name]
+      properties:
+        install_id: { type: string }
+        install_credential: { type: string, description: "Shown once; client stores it, backend keeps only a hash." }
+        org_id: { type: string }
+        org_name: { type: string }
+    StaffCredential:
+      allOf:
+        - $ref: "#/components/schemas/Credential"
+        - type: object
+          required: [role]
+          properties:
+            role: { type: string, enum: [staff] }
+    ProvisionRequest:
+      type: object
+      required: [deployment_token, attempt_id, idempotency_key]
+      properties:
+        deployment_token: { type: string, description: "Validated against a stored HASH; never stored plaintext." }
+        attempt_id: { type: string, description: "High-entropy per-attempt secret; server stores hash(attempt_id)." }
+        idempotency_key: { type: string, description: "Domain-tagged derivation: base64url(SHA256('alg-provision-idem:' + attempt_id)). Stable across retries of the same attempt." }
+    JoinInitRequest:
+      type: object
+      required: [invitation_ref, attempt_challenge]
+      properties:
+        invitation_ref: { type: string }
+        attempt_challenge: { type: string, description: "Non-secret: base64url(SHA256(attempt_secret)). The secret never reaches this endpoint." }
+    JoinInitResponse:
+      type: object
+      required: [exchange_token, org_id, org_name]
+      properties:
+        exchange_token: { type: string, description: "Single-use, short-lived (~2m), bound to {challenge, recipient, invitation, org}." }
+        org_id: { type: string }
+        org_name: { type: string }
+    JoinRequest:
+      type: object
+      required: [exchange_token, attempt_secret, idempotency_key]
+      properties:
+        exchange_token: { type: string }
+        attempt_secret: { type: string, description: "Verified server-side: SHA256(attempt_secret) must equal the bound challenge." }
+        idempotency_key: { type: string, description: "Domain-tagged derivation: base64url(SHA256('alg-join-idem:' + attempt_secret)). MUST differ from attempt_challenge; stable across retries." }
+paths:
+  /provision:
+    post:
+      summary: Managed-deployment bootstrap — exchange a deployment token for a per-install credential.
+      security: [{ anonKey: [] }]
+      x-rules:
+        - "ATOMIC: validate token (not expired/revoked) + reserve capacity (installs_used < max_installs) + create install + increment usage in ONE transaction."
+        - "Recovery: keep a TEMP ENCRYPTED copy of the credential keyed by hash(attempt_id) for a bounded window (~10m, configurable); permanent store keeps only the hash."
+        - "A retry with the same attempt_id returns the SAME credential within the window; RECOGNIZE an existing success BEFORE declaring 'exhausted' (final-slot recovery)."
+        - "After the window: non-secret completion record only -> 410 recovery_window_expired referencing the existing install (no new install, no extra slot)."
+        - "Revocation: token_revoked (410) stops new provisioning but does NOT block a future deployment-token rotation; install_revoked (410) ALWAYS denies recovery and blocks re-enroll. Deployment-token expiry/revocation also DENY recovery."
+        - "Content-free body; rate-limited."
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ProvisionRequest" } } }
+      responses:
+        "200": { description: Provisioned/recovered, content: { application/json: { schema: { $ref: "#/components/schemas/Credential" } } } }
+        "404": { description: invalid_token, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: exhausted, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "410": { description: expired | token_revoked | install_revoked | recovery_window_expired, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /join-init:
+    post:
+      summary: Website-facing — mint an exchange_token bound to the verified recipient's attempt.
+      security: [{ recipientSession: [] }]
+      x-rules:
+        - "Caller is the VERIFIED recipient session (website; cookie or bearer per B1/B2). Verify invitation is 'verified' and recipient matches the session."
+        - "Mint exchange_token bound to {attempt_challenge, recipient, invitation, org}; single-use; short-lived (~2m). The attempt SECRET is never seen here."
+        - "Org binding is derived from invitation_ref alone; the website sends no org identifier."
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/JoinInitRequest" } } }
+      responses:
+        "200": { description: Exchange token issued, content: { application/json: { schema: { $ref: "#/components/schemas/JoinInitResponse" } } } }
+        "401": { description: invalid_proof (unverified / recipient mismatch), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: invalid_token (invitation_ref unknown), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "410": { description: expired (invitation) | install_revoked, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /join:
+    post:
+      summary: Extension-facing — redeem a staff invitation for a per-install credential.
+      security: [{ anonKey: [] }]
+      x-rules:
+        - "Verify SHA256(attempt_secret) == bound challenge; exchange_token valid/single-use/unexpired; install not revoked."
+        - "ATOMICALLY redeem the invitation + create install."
+        - "Recovery-ordering: a retry of a COMPLETED join must verify the bound attempt + install status and return the EXISTING credential BEFORE rejecting on a consumed/expired exchange_token (within the ~10m window)."
+        - "install_revoked ALWAYS prevents recovery. Content-free; rate-limited."
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/JoinRequest" } } }
+      responses:
+        "200": { description: Enrolled/recovered, content: { application/json: { schema: { $ref: "#/components/schemas/StaffCredential" } } } }
+        "401": { description: invalid_proof, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "410": { description: expired | install_revoked | recovery_window_expired, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }

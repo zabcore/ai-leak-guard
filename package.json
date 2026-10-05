@@ -19,6 +19,7 @@
     "verify:sw": "node scripts/verify-sw.mjs",
     "verify:no-network": "node scripts/verify-no-network.mjs",
     "pack:crx": "node scripts/pack-crx.mjs",
+    "gen:contract-types": "npx --yes openapi-typescript@7.13.0 contracts/teams-contract.openapi.yaml -o src/shared/generated/teams-contract.ts",
     "verify:live-status": "node scripts/verify-live-status.mjs",
     "monitor": "playwright test -c monitor/playwright.config.ts",
     "teams:live-check": "node scripts/teams-live-check.mjs"

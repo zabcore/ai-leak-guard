@@ -10,6 +10,8 @@
 // count. `buildCheckinRequest` is the single constructor and cannot emit any
 // other key; a test asserts the emitted key set.
 
+import type { components } from './generated/teams-contract'
+
 /** Managed settings the server may push down. Only `show_indicator` in M1. */
 export interface ManagedSettings {
   readonly show_indicator: boolean
@@ -187,9 +189,12 @@ export function provisionErrorFor(status: number, body: unknown): ProvisionError
 }
 
 // ─── Canonical error enum (bridge/1.1.0, OpenAPI Error.error) ─────────
-// Mirrors the backend's `Error.error` enum until the generated OpenAPI types
-// replace this hand copy. `revoked` no longer exists: it is split into
-// `token_revoked` (deployment token) and `install_revoked` (this install).
+// The TYPE comes from the generated contract (contracts/teams-contract.openapi.yaml,
+// x-contract-version 1.1.0 -> src/shared/generated/teams-contract.ts); the runtime
+// list below is checked against it at compile time (both directions) and against
+// the YAML in tests. `revoked` no longer exists: it is split into `token_revoked`
+// (deployment token) and `install_revoked` (this install).
+export type ApiErrorCode = components['schemas']['Error']['error']
 export const API_ERROR_CODES = [
   'invalid_token',
   'invalid_proof',
@@ -198,8 +203,11 @@ export const API_ERROR_CODES = [
   'token_revoked',
   'install_revoked',
   'recovery_window_expired',
-] as const
-export type ApiErrorCode = (typeof API_ERROR_CODES)[number]
+] as const satisfies readonly ApiErrorCode[]
+// Compile-time exhaustiveness: every generated enum member is in the runtime list.
+type _AllCodesListed =
+  Exclude<ApiErrorCode, (typeof API_ERROR_CODES)[number]> extends never ? true : never
+export const _allCodesListed: _AllCodesListed = true
 
 // /join: 401 = invalid_proof; 410 = expired | install_revoked |
 // recovery_window_expired. `install_revoked` blocks managed re-enrollment.
