@@ -1,16 +1,16 @@
 # Pinned Teams Lite contract
 
 `teams-contract.openapi.yaml` is a byte-identical copy of the CANONICAL contract in
-**zabcore/teams-onboarding-backend** (repo root), `x-contract-version: 1.1.0`, pinned
+**zabcore/teams-onboarding-backend** (repo root), `x-contract-version: 1.1.1`, pinned
 together with bridge/1.1.0. Do not edit it here — change it in the backend repo,
 then re-pin.
 
-|                                                 |                                                                               |
-| ----------------------------------------------- | ----------------------------------------------------------------------------- |
-| Source                                          | zabcore/teams-onboarding-backend @ `e2cd5473eea63179b7cac060925265c650985715` |
-| `teams-contract.openapi.yaml` sha256            | `4adc678b1efa5d9d463a0f90ef9daff9235249d334922714e24713e144cf736a`            |
-| `src/shared/generated/teams-contract.ts` sha256 | `5322a005283c33bfd6e0e3d28b8ab295e331b17b5e590443a39c6e20a6014230`            |
-| Generator                                       | `openapi-typescript@7.13.0` (`npm run gen:contract-types`)                    |
+|                                                 |                                                                                |
+| ----------------------------------------------- | ------------------------------------------------------------------------------ |
+| Source                                          | zabcore/teams-onboarding-backend @ `e15663ef` (`feat/contract-v1.1-canonical`) |
+| `teams-contract.openapi.yaml` sha256            | `6545402286d5223d8086a9e26c908dcf457ee542ae8a63bf6a9912addf9ceb84`             |
+| `src/shared/generated/teams-contract.ts` sha256 | `60ca401088ddc5ce6c4774197957db5170ebcfea1248c10cebb3825ce3f5215c`             |
+| Generator                                       | `openapi-typescript@7.13.0` (`npm run gen:contract-types`)                     |
 
 The generated file is identical to the backend's
 `supabase/functions/_shared/generated/teams-contract.ts`, whose `npm run check:types`

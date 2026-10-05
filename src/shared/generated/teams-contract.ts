@@ -103,8 +103,17 @@ export interface paths {
                         "application/json": components["schemas"]["JoinInitResponse"];
                     };
                 };
-                /** @description invalid_proof (unverified / recipient mismatch) */
+                /** @description invalid_proof (no / expired / invalid / unconfirmed session — re-verify) */
                 401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description wrong_recipient (valid session */
+                403: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -121,7 +130,7 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
-                /** @description expired (invitation) | install_revoked */
+                /** @description invitation_revoked | invitation_expired | invitation_consumed | install_revoked */
                 410: {
                     headers: {
                         [name: string]: unknown;
@@ -179,7 +188,7 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
-                /** @description expired | install_revoked | recovery_window_expired */
+                /** @description expired (exchange token lapsed; recoverable) | invitation_revoked | invitation_expired | invitation_consumed | install_revoked | recovery_window_expired */
                 410: {
                     headers: {
                         [name: string]: unknown;
@@ -202,7 +211,7 @@ export interface components {
     schemas: {
         Error: {
             /** @enum {string} */
-            error: "invalid_token" | "invalid_proof" | "exhausted" | "expired" | "token_revoked" | "install_revoked" | "recovery_window_expired";
+            error: "invalid_token" | "invalid_proof" | "exhausted" | "expired" | "token_revoked" | "install_revoked" | "recovery_window_expired" | "wrong_recipient" | "invitation_revoked" | "invitation_expired" | "invitation_consumed";
         };
         Credential: {
             install_id: string;

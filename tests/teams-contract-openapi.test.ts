@@ -1,5 +1,5 @@
 // Teams Lite — the extension is pinned to the CANONICAL backend contract
-// (zabcore/teams-onboarding-backend, teams-contract.openapi.yaml v1.1.0). These
+// (zabcore/teams-onboarding-backend, teams-contract.openapi.yaml v1.1.1). These
 // checks fail if the pinned YAML or the generated types change without a re-pin,
 // or if the extension's runtime values drift from the contract.
 
@@ -20,13 +20,13 @@ const read = (p: string) => readFileSync(resolve(p), 'utf8').replace(/\r\n/g, '\
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const yaml = read('contracts/teams-contract.openapi.yaml')
 
-describe('pinned teams-contract.openapi.yaml (v1.1.0)', () => {
+describe('pinned teams-contract.openapi.yaml (v1.1.1)', () => {
   it('pinned YAML and generated types are unchanged (re-pin via contracts/README.md)', () => {
-    expect(sha(yaml)).toBe('4adc678b1efa5d9d463a0f90ef9daff9235249d334922714e24713e144cf736a')
+    expect(sha(yaml)).toBe('6545402286d5223d8086a9e26c908dcf457ee542ae8a63bf6a9912addf9ceb84')
     expect(sha(read('src/shared/generated/teams-contract.ts'))).toBe(
-      '5322a005283c33bfd6e0e3d28b8ab295e331b17b5e590443a39c6e20a6014230',
+      '60ca401088ddc5ce6c4774197957db5170ebcfea1248c10cebb3825ce3f5215c',
     )
-    expect(yaml).toMatch(/x-contract-version: "1\.1\.0"/)
+    expect(yaml).toMatch(/x-contract-version: "1\.1\.1"/)
   })
 
   it('runtime error list equals the YAML Error.error enum', () => {
@@ -42,12 +42,21 @@ describe('pinned teams-contract.openapi.yaml (v1.1.0)', () => {
     expect(yaml).toContain(
       'description: expired | token_revoked | install_revoked | recovery_window_expired',
     )
-    expect(yaml).toContain('description: expired | install_revoked | recovery_window_expired')
+    expect(yaml).toContain(
+      'description: expired (exchange token lapsed; recoverable) | invitation_revoked | invitation_expired | invitation_consumed | install_revoked | recovery_window_expired',
+    )
     expect([...PROVISION_GONE_ERRORS].sort()).toEqual(
       ['expired', 'token_revoked', 'install_revoked', 'recovery_window_expired'].sort(),
     )
     expect([...JOIN_GONE_ERRORS].sort()).toEqual(
-      ['expired', 'install_revoked', 'recovery_window_expired'].sort(),
+      [
+        'expired',
+        'install_revoked',
+        'recovery_window_expired',
+        'invitation_revoked',
+        'invitation_expired',
+        'invitation_consumed',
+      ].sort(),
     )
   })
 
