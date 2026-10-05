@@ -21,8 +21,29 @@ export interface JoinAttempt {
   /** base64url(SHA-256("alg-join-idem:" + attemptSecret)) — `deriveIdempotencyKey`. */
   readonly idempotencyKey: string
   readonly createdAt: string
+  /** The invitation this attempt was minted for (bridge/1.1.0 `hello.invitation_ref`). */
+  readonly invitationRef?: string
+  /** Envelope nonces of every `challenge` emitted for this attempt (newest last,
+   *  bounded). A W→E `exchange_token` must echo one of them as `challenge_nonce`. */
+  readonly challengeNonces?: readonly string[]
   /** The bound exchange token, persisted before the first `/join` request. */
   readonly exchangeToken?: string
+}
+
+/** How many challenge-envelope nonces an attempt (or result) remembers. */
+export const MAX_CHALLENGE_NONCES = 16
+
+/** Append `nonce` to a bounded nonce list (oldest dropped first). */
+export function withNonce(list: readonly string[] | undefined, nonce: string): string[] {
+  const next = (list ?? []).filter((n) => n !== nonce)
+  next.push(nonce)
+  return next.slice(-MAX_CHALLENGE_NONCES)
+}
+
+function stringList(raw: unknown): string[] | undefined {
+  return Array.isArray(raw) && raw.every((x) => typeof x === 'string')
+    ? (raw as string[])
+    : undefined
 }
 
 function base64url(bytes: Uint8Array): string {
@@ -61,6 +82,10 @@ export async function getJoinAttempt(): Promise<JoinAttempt | null> {
       challenge: raw.challenge,
       idempotencyKey: raw.idempotencyKey,
       createdAt: raw.createdAt,
+      ...(typeof raw.invitationRef === 'string' ? { invitationRef: raw.invitationRef } : {}),
+      ...(stringList(raw.challengeNonces)
+        ? { challengeNonces: stringList(raw.challengeNonces) }
+        : {}),
       ...(typeof raw.exchangeToken === 'string' ? { exchangeToken: raw.exchangeToken } : {}),
     }
   } catch {
@@ -74,4 +99,74 @@ export async function setJoinAttempt(value: JoinAttempt): Promise<void> {
 
 export async function clearJoinAttempt(): Promise<void> {
   await chrome.storage.local.remove(TEAMS_JOIN_ATTEMPT_KEY)
+}
+
+// ─── Settled join result (bridge/1.1.0 §3 replay) ─────────────────────
+//
+// When a join settles (success or terminal failure) the attempt is cleared and
+// the bridge `result` payload is kept here, together with the challenge nonces
+// that may still be echoed, so a repeat `exchange_token` after a reconnect gets
+// the SAME result (idempotent replay). Never holds the attempt secret or the
+// install credential.
+
+export const TEAMS_JOIN_RESULT_KEY = 'teamsJoinResult'
+/** How long a settled result is replayed; afterwards the attempt is dead and a
+ *  repeat gets `recovery_window_expired` (the backend's ~10-minute window). */
+export const JOIN_RESULT_REPLAY_MS = 10 * 60 * 1000
+
+export type JoinResultPayload =
+  | {
+      readonly status: 'success'
+      readonly connected_invitation_ref: string
+      readonly connected_attempt_challenge: string
+      readonly connected_org_id: string
+      readonly connected_org_name: string
+      readonly connected_at: string
+    }
+  | { readonly status: 'failed'; readonly error_code: string }
+
+export interface JoinResultRecord {
+  readonly invitationRef?: string
+  readonly challenge: string
+  readonly challengeNonces: readonly string[]
+  readonly settledAt: string
+  readonly result: JoinResultPayload
+}
+
+export async function getJoinResult(): Promise<JoinResultRecord | null> {
+  try {
+    const stored = await chrome.storage.local.get(TEAMS_JOIN_RESULT_KEY)
+    const raw = stored[TEAMS_JOIN_RESULT_KEY] as Partial<JoinResultRecord> | undefined
+    const nonces = stringList(raw?.challengeNonces)
+    if (
+      raw === undefined ||
+      raw === null ||
+      typeof raw.challenge !== 'string' ||
+      typeof raw.settledAt !== 'string' ||
+      nonces === undefined ||
+      raw.result === null ||
+      typeof raw.result !== 'object'
+    ) {
+      return null
+    }
+    return {
+      ...(typeof raw.invitationRef === 'string' ? { invitationRef: raw.invitationRef } : {}),
+      challenge: raw.challenge,
+      challengeNonces: nonces,
+      settledAt: raw.settledAt,
+      result: raw.result as JoinResultPayload,
+    }
+  } catch {
+    return null
+  }
+}
+
+export async function setJoinResult(value: JoinResultRecord): Promise<void> {
+  await chrome.storage.local.set({ [TEAMS_JOIN_RESULT_KEY]: value })
+}
+
+/** True while a settled result may still be replayed. */
+export function isJoinResultLive(record: JoinResultRecord, now: number): boolean {
+  const at = Date.parse(record.settledAt)
+  return Number.isFinite(at) && now - at <= JOIN_RESULT_REPLAY_MS
 }

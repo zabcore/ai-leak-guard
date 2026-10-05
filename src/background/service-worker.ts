@@ -32,8 +32,14 @@ import { setSubmitKillSwitch } from '../shared/storage'
 import { withLinkSource } from '../shared/link-source'
 import { runCheckin } from '../enterprise/teams-service'
 import { runManagedBootstrap } from '../enterprise/teams-bootstrap'
-import { beginJoin, hasPendingJoin, runJoin } from '../enterprise/teams-join'
-import { handleJoinHandoff, isJoinHandoffMessage } from './teams-join-handoff'
+import {
+  exchangeJoin,
+  hasPendingJoin,
+  joinPresenceState,
+  prepareChallenge,
+  runJoin,
+} from '../enterprise/teams-join'
+import { createJoinPortServer } from './teams-join-port'
 import * as teamsCheckinClient from '../enterprise/teams-client'
 import { recordNextAttempt } from '../shared/teams-diag'
 import { nextRetryPlan } from './teams-retry-plan'
@@ -291,54 +297,51 @@ chrome.storage.onChanged?.addListener(async (_changes, areaName) => {
 
 // ─── Teams Lite (deployment m1) — staff-invitation join handoff ───────
 //
-// The zabcore join page (the only `externally_connectable` origin, re-checked in
-// `handleJoinHandoff`) asks for the non-secret challenge, then hands back the
-// bound exchange token; the worker redeems it at /join with the attempt secret,
-// which never leaves the extension except to the backend. The join client is the
-// same STATIC import as check-in. Code-entry enrollment remains the fallback.
+// bridge/1.1.0: the zabcore join page (the only `externally_connectable`
+// origin, re-checked on connect and on every message in `teams-join-port`) opens
+// the long-lived `zc.join.v1` port, says `hello`, receives `presence` + the
+// non-secret `challenge`, then posts the bound `exchange_token`; the worker acks,
+// redeems it at /join with the attempt secret (which never leaves the extension
+// except to the backend) and posts the `result`. There is deliberately NO
+// `onMessageExternal` receiver. The join client is the same STATIC import as
+// check-in. Code-entry enrollment remains the fallback.
 const swLoadJoinClient = async (): Promise<{ join: typeof teamsCheckinClient.join }> => ({
   join: teamsCheckinClient.join,
 })
 
-/** Redeem/recover the join attempt; on a fresh enrollment run the first
- *  check-in so the alarm exists and managed settings apply right away. */
-async function safeRunJoin(
-  exchangeToken: string | undefined,
-): Promise<Awaited<ReturnType<typeof runJoin>> | 'internal'> {
+/** Startup recovery of a lost /join response; on a fresh enrollment run the
+ *  first check-in so the alarm exists and managed settings apply right away. */
+async function safeRunJoin(): Promise<void> {
   try {
-    const outcome = await runJoin(exchangeToken, { loadClient: swLoadJoinClient })
+    const outcome = await runJoin(undefined, { loadClient: swLoadJoinClient })
     if (outcome === 'enrolled') await safeRunCheckin('post-join')
-    return outcome
   } catch (err) {
     console.warn('[AI Leak Guard] teams join failed:', err instanceof Error ? err.name : 'error')
-    return 'internal'
   }
 }
 
-chrome.runtime.onMessageExternal?.addListener((message, sender, sendResponse) => {
-  if (!isJoinHandoffMessage(message)) return false
-  void handleJoinHandoff(message, sender, {
-    begin: () => beginJoin(),
-    complete: async (token) => {
-      const outcome = await safeRunJoin(token)
-      if (outcome === 'internal') throw new Error('internal')
-      return outcome
-    },
-  }).then((response) => {
-    try {
-      sendResponse(response)
-    } catch {
-      // the page may have navigated away; the join outcome is persisted anyway
-    }
-  })
-  return true
+const joinPortServer = createJoinPortServer({
+  presence: async () => ({
+    ext_version: chrome.runtime.getManifest?.().version ?? '0.0.0',
+    state: await joinPresenceState(),
+  }),
+  hello: (invitationRef, challengeNonce) => prepareChallenge(invitationRef, challengeNonce),
+  exchange: async (exchangeToken, challengeNonce) => {
+    const outcome = await exchangeJoin(exchangeToken, challengeNonce, {
+      loadClient: swLoadJoinClient,
+    })
+    if (outcome.enrolledNow) await safeRunCheckin('post-join')
+    return outcome
+  },
 })
+
+chrome.runtime.onConnectExternal?.addListener((port) => joinPortServer.onConnect(port))
 
 /** On startup, retry a join whose response was lost (same persisted attempt).
  *  Network only when the user already started a join that reached /join. */
 async function recoverPendingJoin(): Promise<void> {
   try {
-    if (await hasPendingJoin()) await safeRunJoin(undefined)
+    if (await hasPendingJoin()) await safeRunJoin()
   } catch {
     // best-effort
   }
@@ -576,7 +579,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 //   • managed provision → storage.onChanged(managed) / provision-retry alarm
 //                         ('post-provision'); on startup/install the bootstrap
 //                         runs first and the normal check-in follows
-//   • staff join        → onMessageExternal(alg-join-complete) / startup
+//   • staff join        → onConnectExternal('zc.join.v1' exchange_token) / startup
 //                         recovery of a lost /join response ('post-join')
 // The alarm is persistent (created at enroll, survives restarts), so a bare
 // chrome://extensions reload with no event still syncs on the next alarm fire.

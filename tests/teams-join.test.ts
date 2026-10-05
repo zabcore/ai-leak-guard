@@ -3,9 +3,23 @@
 
 import { createHash } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { beginJoin, hasPendingJoin, runJoin } from '../src/enterprise/teams-join'
+import {
+  JOIN_CHALLENGE_TTL_MS,
+  exchangeJoin,
+  hasPendingJoin,
+  joinPresenceState,
+  prepareChallenge,
+  runJoin,
+  type JoinDeps,
+} from '../src/enterprise/teams-join'
 import { join, type JoinCallResult, type JoinRequest } from '../src/enterprise/teams-client'
-import { deriveChallenge, getJoinAttempt, newAttemptSecret } from '../src/shared/teams-join-attempt'
+import {
+  JOIN_RESULT_REPLAY_MS,
+  deriveChallenge,
+  getJoinAttempt,
+  getJoinResult,
+  newAttemptSecret,
+} from '../src/shared/teams-join-attempt'
 import {
   getEnrollment,
   setEnrollment,
@@ -38,6 +52,22 @@ function joinClient(results: JoinCallResult[] = []) {
 }
 
 const fixed = { newSecret: () => 'verifier-secret-1' }
+const INV = 'inv-0001'
+let nonceSeq = 0
+const nextNonce = (): string => `0190f0f0-0000-7000-8000-${String(++nonceSeq).padStart(12, '0')}`
+/** Answer a `hello` for INV; returns the challenge and the nonce it was bound to. */
+async function begin(deps: JoinDeps = {}, invitationRef = INV) {
+  const nonce = nextNonce()
+  const out = await prepareChallenge(invitationRef, nonce, deps)
+  return { out, nonce, challenge: out.kind === 'challenge' ? out.attempt_challenge : undefined }
+}
+const ENROLLED = {
+  install_id: 'x',
+  install_credential: 'y',
+  org_id: 'o',
+  org_name: 'H',
+  base_url: BASE,
+}
 // Pinned: idempotency_key = base64url(SHA-256("alg-join-idem:" + attempt secret)) — never random.
 const IDEM = createHash('sha256').update('alg-join-idem:verifier-secret-1').digest('base64url')
 
@@ -61,55 +91,186 @@ describe('attempt secret + S256 challenge', () => {
   })
 })
 
-describe('beginJoin', () => {
-  it('persists the attempt BEFORE returning, and returns only the challenge', async () => {
-    const r = await beginJoin(fixed)
+describe('prepareChallenge (bridge hello)', () => {
+  it('persists the attempt + challenge nonce BEFORE returning, and returns only the challenge', async () => {
+    const { out, nonce } = await begin(fixed)
     const stored = await getJoinAttempt()
-    expect(stored).toMatchObject({ attemptSecret: 'verifier-secret-1', idempotencyKey: IDEM })
-    expect(r).toEqual({ ok: true, challenge: stored?.challenge })
-    expect(JSON.stringify(r)).not.toContain('verifier-secret-1')
-  })
-
-  it('reuses an unsent attempt (same challenge, same secret) across repeated begins', async () => {
-    const a = await beginJoin(fixed)
-    const b = await beginJoin({ newSecret: () => 'other' })
-    expect(b).toEqual(a)
-    expect((await getJoinAttempt())?.attemptSecret).toBe('verifier-secret-1')
-  })
-
-  it('refuses when already enrolled (no silent clinic transfer)', async () => {
-    await setEnrollment({
-      install_id: 'x',
-      install_credential: 'y',
-      org_id: 'o',
-      org_name: 'H',
-      base_url: BASE,
+    expect(stored).toMatchObject({
+      attemptSecret: 'verifier-secret-1',
+      idempotencyKey: IDEM,
+      invitationRef: INV,
+      challengeNonces: [nonce],
     })
-    expect(await beginJoin(fixed)).toEqual({ ok: false, error: 'already_enrolled' })
+    expect(out).toEqual({
+      kind: 'challenge',
+      attempt_challenge: stored?.challenge,
+      expires_at: new Date(
+        Date.parse(stored?.createdAt as string) + JOIN_CHALLENGE_TTL_MS,
+      ).toISOString(),
+    })
+    expect(JSON.stringify(out)).not.toContain('verifier-secret-1')
+  })
+
+  it('reuses an unsent attempt for the same invitation (same challenge + secret), recording each nonce', async () => {
+    const a = await begin(fixed)
+    const b = await begin({ newSecret: () => 'other' })
+    expect(b.out).toEqual(a.out)
+    expect(await getJoinAttempt()).toMatchObject({
+      attemptSecret: 'verifier-secret-1',
+      challengeNonces: [a.nonce, b.nonce],
+    })
+  })
+
+  it('an unsent attempt for ANOTHER invitation, or a stale one, is replaced', async () => {
+    const a = await begin(fixed)
+    const other = await begin({ newSecret: () => 'other' }, 'inv-0002')
+    expect(other.challenge).not.toBe(a.challenge)
+    expect(await getJoinAttempt()).toMatchObject({
+      attemptSecret: 'other',
+      invitationRef: 'inv-0002',
+    })
+
+    const later = Date.now() + JOIN_CHALLENGE_TTL_MS + 1
+    const fresh = await begin({ newSecret: () => 'third', now: () => later }, 'inv-0002')
+    expect(fresh.challenge).not.toBe(other.challenge)
+  })
+
+  it('an IN-FLIGHT attempt re-emits the SAME challenge on reconnect, even when stale', async () => {
+    const a = await begin(fixed)
+    await exchangeJoin('xt-1', a.nonce, {
+      loadClient: joinClient([{ ok: false, code: 'network' }]).loadClient,
+    })
+    const later = Date.now() + JOIN_CHALLENGE_TTL_MS + 1
+    const b = await begin({ newSecret: () => 'other', now: () => later })
+    expect(b.challenge).toBe(a.challenge)
+    expect((await getJoinAttempt())?.attemptSecret).toBe('verifier-secret-1')
+    // ...and a different invitation cannot hijack it.
+    expect((await begin({}, 'inv-0002')).out).toEqual({
+      kind: 'result',
+      result: { status: 'failed', error_code: 'join_pending' },
+    })
+  })
+
+  it('already enrolled → a failed already_enrolled result for THIS invitation, no attempt', async () => {
+    await setEnrollment(ENROLLED)
+    expect((await begin(fixed)).out).toEqual({
+      kind: 'result',
+      result: { status: 'failed', error_code: 'already_enrolled' },
+    })
     expect(await getJoinAttempt()).toBeNull()
   })
 
-  it('reports join_pending while a sent attempt awaits recovery', async () => {
-    await beginJoin(fixed)
-    await runJoin('xt-1', { loadClient: joinClient([{ ok: false, code: 'network' }]).loadClient })
-    expect(await beginJoin(fixed)).toEqual({ ok: false, error: 'join_pending' })
+  it('presence state: unenrolled → joining → enrolled', async () => {
+    expect(await joinPresenceState()).toBe('unenrolled')
+    await begin(fixed)
+    expect(await joinPresenceState()).toBe('joining')
+    await setEnrollment(ENROLLED)
+    expect(await joinPresenceState()).toBe('enrolled')
+  })
+})
+
+describe('exchangeJoin (bridge exchange_token)', () => {
+  it('success: result carries ALL connected_* fields; the record is kept for replay', async () => {
+    const { nonce, challenge } = await begin(fixed)
+    const c = joinClient([OK])
+    const first = await exchangeJoin('xt-1', nonce, { loadClient: c.loadClient })
+    expect(first.enrolledNow).toBe(true)
+    expect(first.result).toEqual({
+      status: 'success',
+      connected_invitation_ref: INV,
+      connected_attempt_challenge: challenge,
+      connected_org_id: 'org_1',
+      connected_org_name: 'Harbor',
+      connected_at: expect.any(String),
+    })
+    expect(JSON.stringify(first)).not.toContain('verifier-secret-1')
+    expect(JSON.stringify(first)).not.toContain('c1')
+    expect(await getJoinAttempt()).toBeNull()
+
+    // A repeat for the same challenge_nonce is idempotent: same result, no request.
+    const again = await exchangeJoin('xt-1', nonce, { loadClient: c.loadClient })
+    expect(again).toEqual({ result: first.result, enrolledNow: false })
+    expect(c.calls).toHaveLength(1)
+  })
+
+  it('after reconnect the page gets the SAME challenge and can replay its token', async () => {
+    const a = await begin(fixed)
+    const c = joinClient([OK])
+    const first = await exchangeJoin('xt-1', a.nonce, { loadClient: c.loadClient })
+    const b = await begin({ newSecret: () => 'other' }) // reconnect, same invitation
+    expect(b.challenge).toBe(a.challenge)
+    expect((await exchangeJoin('xt-1', b.nonce, { loadClient: c.loadClient })).result).toEqual(
+      first.result,
+    )
+    expect(c.calls).toHaveLength(1)
+  })
+
+  it('once the replay window has passed, a repeat gets recovery_window_expired', async () => {
+    const { nonce } = await begin(fixed)
+    await exchangeJoin('xt-1', nonce, { loadClient: joinClient([OK]).loadClient })
+    const later = Date.now() + JOIN_RESULT_REPLAY_MS + 1
+    expect((await exchangeJoin('xt-1', nonce, { now: () => later })).result).toEqual({
+      status: 'failed',
+      error_code: 'recovery_window_expired',
+    })
+  })
+
+  it('a challenge_nonce this extension never emitted is refused WITHOUT calling /join', async () => {
+    await begin(fixed)
+    const c = joinClient([OK])
+    expect((await exchangeJoin('xt-1', nextNonce(), { loadClient: c.loadClient })).result).toEqual({
+      status: 'failed',
+      error_code: 'recovery_window_expired',
+    })
+    expect(c.calls).toHaveLength(0)
+    expect(await getEnrollment()).toBeNull()
+  })
+
+  it('after a terminal failure a new hello starts a FRESH attempt (retry possible)', async () => {
+    const a = await begin(fixed)
+    await exchangeJoin('xt-1', a.nonce, {
+      loadClient: joinClient([{ ok: false, code: 'expired' }]).loadClient,
+    })
+    const b = await begin({ newSecret: () => 'other' })
+    expect(b.challenge).not.toBe(a.challenge)
+    // The old nonce still replays the stored failure.
+    expect((await exchangeJoin('xt-1', a.nonce)).result).toEqual({
+      status: 'failed',
+      error_code: 'expired',
+    })
+  })
+
+  it('terminal failures are replayed too; network keeps the attempt and is retryable', async () => {
+    const a = await begin(fixed)
+    const net = await exchangeJoin('xt-1', a.nonce, {
+      loadClient: joinClient([{ ok: false, code: 'network' }]).loadClient,
+    })
+    expect(net.result).toEqual({ status: 'failed', error_code: 'network' })
+    expect(await hasPendingJoin()).toBe(true)
+
+    const c = joinClient([{ ok: false, code: 'invalid_proof' }])
+    const bad = await exchangeJoin('xt-1', a.nonce, { loadClient: c.loadClient })
+    expect(bad.result).toEqual({ status: 'failed', error_code: 'invalid_proof' })
+    expect(await getJoinResult()).toMatchObject({ result: bad.result })
+    expect((await exchangeJoin('xt-1', a.nonce, { loadClient: c.loadClient })).result).toEqual(
+      bad.result,
+    )
+    expect(c.calls).toHaveLength(1)
   })
 })
 
 describe('join idempotency_key derivation (pinned, domain-tagged)', () => {
   it('differs from the S256 challenge the website holds', async () => {
-    const begun = await beginJoin(fixed)
-    expect(begun.ok && begun.challenge).toBe(
-      createHash('sha256').update('verifier-secret-1').digest('base64url'),
-    )
-    expect(IDEM).not.toBe(begun.ok ? begun.challenge : '')
+    const { challenge } = await begin(fixed)
+    expect(challenge).toBe(createHash('sha256').update('verifier-secret-1').digest('base64url'))
+    expect(IDEM).not.toBe(challenge)
   })
 
   it('install_revoked sets the persistent no-reenroll block; other terminal errors do not', async () => {
-    await beginJoin(fixed)
+    await begin(fixed)
     await runJoin('xt-1', { loadClient: joinClient([{ ok: false, code: 'expired' }]).loadClient })
     expect(await getRevokeBlock()).toBe(false)
-    await beginJoin(fixed)
+    await begin(fixed)
     await runJoin('xt-2', {
       loadClient: joinClient([{ ok: false, code: 'install_revoked' }]).loadClient,
     })
@@ -117,7 +278,7 @@ describe('join idempotency_key derivation (pinned, domain-tagged)', () => {
   })
 
   it('is base64url(SHA-256(attempt secret)) and identical on every retry of the attempt', async () => {
-    await beginJoin(fixed)
+    await begin(fixed)
     const c = joinClient([{ ok: false, code: 'network' }, { ok: false, code: 'network' }, OK])
     await runJoin('xt-1', { loadClient: c.loadClient })
     await runJoin(undefined, { loadClient: c.loadClient })
@@ -126,7 +287,7 @@ describe('join idempotency_key derivation (pinned, domain-tagged)', () => {
   })
 
   it('a fresh random secret still yields its derived (not random) key', async () => {
-    await beginJoin()
+    await begin()
     const secret = (await getJoinAttempt())?.attemptSecret as string
     const c = joinClient([OK])
     await runJoin('xt-1', { loadClient: c.loadClient })
@@ -139,7 +300,7 @@ describe('join idempotency_key derivation (pinned, domain-tagged)', () => {
 describe('runJoin', () => {
   it('sends {exchange_token, attempt_secret, idempotency_key}, stores the credential, clears the attempt', async () => {
     await setRevokedNotice(true)
-    await beginJoin(fixed)
+    await begin(fixed)
     const c = joinClient([OK])
     expect(await runJoin('xt-1', { loadClient: c.loadClient })).toBe('enrolled')
     expect(c.calls).toEqual([
@@ -157,7 +318,7 @@ describe('runJoin', () => {
   })
 
   it('REUSES the same attempt on retry after a lost response (worker restart)', async () => {
-    await beginJoin(fixed)
+    await begin(fixed)
     const first = joinClient([{ ok: false, code: 'network' }])
     expect(await runJoin('xt-1', { loadClient: first.loadClient })).toBe('network')
     expect(await hasPendingJoin()).toBe(true)
@@ -177,7 +338,7 @@ describe('runJoin', () => {
     ['install_revoked', 'install-revoked'],
     ['recovery_window_expired', 'recovery-expired'],
   ] as const)('terminal %s → %s, clears the attempt, never enrolls', async (code, outcome) => {
-    await beginJoin(fixed)
+    await begin(fixed)
     const c = joinClient([{ ok: false, code }])
     expect(await runJoin('xt-1', { loadClient: c.loadClient })).toBe(outcome)
     expect(await getJoinAttempt()).toBeNull()
@@ -191,21 +352,15 @@ describe('runJoin', () => {
   })
 
   it('already enrolled → no request', async () => {
-    await beginJoin(fixed)
-    await setEnrollment({
-      install_id: 'x',
-      install_credential: 'y',
-      org_id: 'o',
-      org_name: 'H',
-      base_url: BASE,
-    })
+    await begin(fixed)
+    await setEnrollment(ENROLLED)
     const c = joinClient()
     expect(await runJoin('xt-1', { loadClient: c.loadClient })).toBe('already-enrolled')
     expect(c.calls).toHaveLength(0)
   })
 
   it('queues concurrent completes: ONE request, the later call is a no-op', async () => {
-    await beginJoin(fixed)
+    await begin(fixed)
     const c = joinClient([OK])
     const [a, b] = await Promise.all([
       runJoin('xt-1', { loadClient: c.loadClient }),
@@ -216,7 +371,7 @@ describe('runJoin', () => {
   })
 
   it('a handoff arriving DURING a startup recovery keeps its own token (not dropped)', async () => {
-    await beginJoin(fixed) // attempt minted, no exchange token yet
+    await begin(fixed) // attempt minted, no exchange token yet
     const c = joinClient([OK])
     const [recovery, handoff] = await Promise.all([
       runJoin(undefined, { loadClient: c.loadClient }),

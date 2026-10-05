@@ -190,7 +190,9 @@ const onStartup = {
 }
 
 // Teams Lite (deployment m1): the worker wires the website join handoff through
-// `chrome.runtime.onMessageExternal` at import time.
+// `chrome.runtime.onConnectExternal` (bridge/1.1.0 `zc.join.v1` port) at import
+// time. `onMessageExternal` is mocked only so tests can assert NOTHING listens
+// on it (the retired one-shot `alg-join-complete` path).
 const externalMessageListeners: MessageListener[] = []
 const onMessageExternal = {
   __listeners: externalMessageListeners,
@@ -198,10 +200,19 @@ const onMessageExternal = {
     externalMessageListeners.push(fn)
   },
 }
+type ConnectListener = (port: unknown) => void
+const externalConnectListeners: ConnectListener[] = []
+const onConnectExternal = {
+  __listeners: externalConnectListeners,
+  addListener: (fn: ConnectListener) => {
+    externalConnectListeners.push(fn)
+  },
+}
 
 const runtime = {
   onMessage,
   onMessageExternal,
+  onConnectExternal,
   onInstalled,
   onStartup,
   getURL: (path: string): string => {
