@@ -16,6 +16,7 @@ import { join, type JoinCallResult, type JoinRequest } from '../src/enterprise/t
 import {
   JOIN_RESULT_REPLAY_MS,
   deriveChallenge,
+  getDeadInvitationCode,
   getJoinAttempt,
   getJoinResult,
   newAttemptSecret,
@@ -243,25 +244,49 @@ describe('exchangeJoin (bridge exchange_token)', () => {
     expect(await getEnrollment()).toBeNull()
   })
 
-  it.each(['expired', 'invalid_proof'] as const)(
-    'after a non-recoverable %s, a NEW hello may start a fresh attempt; the old one stays replayable',
-    async (code) => {
-      const a = await begin(fixed)
-      const c = joinClient([{ ok: false, code }])
-      await exchangeJoin('xt-1', a.nonce, { loadClient: c.loadClient })
-      // No automatic retry: nothing is minted until the page says hello again.
-      expect(await getJoinAttempt()).toBeNull()
-      expect(c.calls).toHaveLength(1)
-      const b = await begin({ newSecret: () => 'other' })
-      expect(b.challenge).not.toBe(a.challenge)
-      expect((await exchangeJoin('xt-1', a.nonce)).result).toEqual({
-        status: 'failed',
-        error_code: code,
-      })
-    },
-  )
+  it('after invalid_proof a NEW hello may start a fresh attempt; the old one stays replayable', async () => {
+    const a = await begin(fixed)
+    const c = joinClient([{ ok: false, code: 'invalid_proof' }])
+    await exchangeJoin('xt-1', a.nonce, { loadClient: c.loadClient })
+    // No automatic retry: nothing is minted until the page says hello again.
+    expect(await getJoinAttempt()).toBeNull()
+    expect(c.calls).toHaveLength(1)
+    const b = await begin({ newSecret: () => 'other' })
+    expect(b.challenge).not.toBe(a.challenge)
+    expect((await exchangeJoin('xt-1', a.nonce)).result).toEqual({
+      status: 'failed',
+      error_code: 'invalid_proof',
+    })
+  })
 
-  it.each(['install_revoked', 'recovery_window_expired'] as const)(
+  it('AMENDMENT B: a lapsed exchange token (expired) is RECOVERED with the SAME attempt + new token', async () => {
+    const a = await begin(fixed)
+    const lapsed = await exchangeJoin('xt-1', a.nonce, {
+      loadClient: joinClient([{ ok: false, code: 'expired' }]).loadClient,
+    })
+    expect(lapsed.result).toEqual({ status: 'failed', error_code: 'expired' })
+    // The attempt (secret + challenge + nonces) is kept; only the dead token is dropped.
+    const kept = await getJoinAttempt()
+    expect(kept).toMatchObject({ attemptSecret: 'verifier-secret-1', challenge: a.challenge })
+    expect(kept?.exchangeToken).toBeUndefined()
+    // Reconnect re-emits the SAME challenge; a new token redeems with the same secret.
+    const b = await begin({ newSecret: () => 'other' })
+    expect(b.challenge).toBe(a.challenge)
+    const c = joinClient([OK])
+    const done = await exchangeJoin('xt-2', b.nonce, { loadClient: c.loadClient })
+    expect(done.result).toMatchObject({ status: 'success' })
+    expect(c.calls).toEqual([
+      { exchange_token: 'xt-2', attempt_secret: 'verifier-secret-1', idempotency_key: IDEM },
+    ])
+  })
+
+  it.each([
+    'install_revoked',
+    'recovery_window_expired',
+    'invitation_revoked',
+    'invitation_expired',
+    'invitation_consumed',
+  ] as const)(
     '%s NEVER yields a fresh attempt for that invitation, even after the replay window',
     async (code) => {
       const a = await begin(fixed)
@@ -400,9 +425,11 @@ describe('runJoin', () => {
 
   it.each([
     ['invalid_proof', 'invalid-proof'],
-    ['expired', 'expired'],
     ['install_revoked', 'install-revoked'],
     ['recovery_window_expired', 'recovery-expired'],
+    ['invitation_revoked', 'invitation-dead'],
+    ['invitation_expired', 'invitation-dead'],
+    ['invitation_consumed', 'invitation-dead'],
   ] as const)('terminal %s → %s, clears the attempt, never enrolls', async (code, outcome) => {
     await begin(fixed)
     const c = joinClient([{ ok: false, code }])
@@ -410,6 +437,38 @@ describe('runJoin', () => {
     expect(await getJoinAttempt()).toBeNull()
     expect(await getEnrollment()).toBeNull()
   })
+
+  it('expired (lapsed token) is NOT terminal: the attempt is kept, never enrolls', async () => {
+    await begin(fixed)
+    const c = joinClient([{ ok: false, code: 'expired' }])
+    expect(await runJoin('xt-1', { loadClient: c.loadClient })).toBe('expired')
+    expect(await getJoinAttempt()).toMatchObject({ attemptSecret: 'verifier-secret-1' })
+    expect(await getEnrollment()).toBeNull()
+  })
+
+  // INVARIANT 3: the client distinguishes every /join sub-code and never
+  // collapses one into an install revocation.
+  it.each([
+    ['expired', { block: false, attemptKept: true, deadInvitation: false }],
+    ['invalid_proof', { block: false, attemptKept: false, deadInvitation: false }],
+    ['install_revoked', { block: true, attemptKept: false, deadInvitation: true }],
+    ['recovery_window_expired', { block: false, attemptKept: false, deadInvitation: true }],
+    ['invitation_revoked', { block: false, attemptKept: false, deadInvitation: true }],
+    ['invitation_expired', { block: false, attemptKept: false, deadInvitation: true }],
+    ['invitation_consumed', { block: false, attemptKept: false, deadInvitation: true }],
+  ] as const)(
+    'INVARIANT 3: %s → its own handling (block / keep attempt / dead invitation)',
+    async (code, want) => {
+      const a = await begin(fixed)
+      const res = await exchangeJoin('xt-1', a.nonce, {
+        loadClient: joinClient([{ ok: false, code }]).loadClient,
+      })
+      expect(res.result).toEqual({ status: 'failed', error_code: code })
+      expect(await getRevokeBlock()).toBe(want.block)
+      expect((await getJoinAttempt()) !== null).toBe(want.attemptKept)
+      expect(await getDeadInvitationCode(INV)).toBe(want.deadInvitation ? code : null)
+    },
+  )
 
   it('without a minted attempt there is nothing to redeem (no network)', async () => {
     const c = joinClient()

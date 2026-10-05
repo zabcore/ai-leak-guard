@@ -16,7 +16,7 @@
 
 import { getBackendConfig } from './teams-config'
 import { deriveIdempotencyKey } from '../shared/teams-contract'
-import { getEnrollment, setEnrollment } from '../shared/teams-storage'
+import { commitEnrollment, getEnrollment } from '../shared/teams-storage'
 import {
   getProvisionAttempt,
   setProvisionAttempt,
@@ -96,7 +96,9 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
   })
 
   if (result.ok) {
-    await setEnrollment({
+    // The store refuses to overwrite another install's enrollment (invariant):
+    // a policy-driven provision never silently switches clinics.
+    const stored = await commitEnrollment({
       install_id: result.data.install_id,
       install_credential: result.data.install_credential,
       org_id: result.data.org_id,
@@ -104,7 +106,7 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
       base_url: config.baseUrl,
     })
     await clearProvisionAttempt()
-    return 'enrolled'
+    return stored.ok ? 'enrolled' : 'already-enrolled'
   }
 
   switch (result.code) {

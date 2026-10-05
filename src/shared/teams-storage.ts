@@ -66,8 +66,37 @@ export async function getEnrollment(): Promise<TeamsEnrollment | null> {
   }
 }
 
+/** Raw write. Producers of a NEW credential must use `commitEnrollment`. */
 export async function setEnrollment(value: TeamsEnrollment): Promise<void> {
   await chrome.storage.local.set({ [TEAMS_ENROLLMENT_KEY]: value })
+}
+
+export type CommitEnrollmentResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'already_enrolled' }
+
+let commitChain: Promise<unknown> = Promise.resolve()
+
+/**
+ * Store a FRESHLY ISSUED credential (provision, join, code-entry enroll). The
+ * existing-enrollment / clinic-switch rule is enforced HERE, at the store, not
+ * only by callers: if a different install is already enrolled the new
+ * credential is refused and the existing enrollment is left untouched — so a
+ * competing join tab, a racing code-entry enroll or a different invitation can
+ * never silently overwrite it. Re-storing the SAME install (a recovered /
+ * replayed credential) is allowed. Commits are serialized within the worker.
+ */
+export function commitEnrollment(value: TeamsEnrollment): Promise<CommitEnrollmentResult> {
+  const run = commitChain.then(async (): Promise<CommitEnrollmentResult> => {
+    const existing = await getEnrollment()
+    if (existing !== null && existing.install_id !== value.install_id) {
+      return { ok: false, reason: 'already_enrolled' }
+    }
+    await setEnrollment(value)
+    return { ok: true }
+  })
+  commitChain = run.catch(() => undefined)
+  return run
 }
 
 export async function clearEnrollment(): Promise<void> {

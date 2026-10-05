@@ -15,7 +15,7 @@ import {
 } from '../shared/teams-contract'
 import {
   getEnrollment,
-  setEnrollment,
+  commitEnrollment,
   clearEnrollment,
   getManagedState,
   setManagedState,
@@ -80,13 +80,15 @@ export async function runEnroll(
   const { enroll } = await (deps.loadClient ?? defaultLoadClient)()
   const result = await enroll(config.baseUrl, config.anonKey, { code, label })
   if (result.ok) {
-    await setEnrollment({
+    // The store refuses to overwrite another install's enrollment (invariant).
+    const stored = await commitEnrollment({
       install_id: result.data.install_id,
       install_credential: result.data.install_credential,
       org_id: result.data.org_id,
       org_name: result.data.org_name,
       base_url: config.baseUrl,
     })
+    if (!stored.ok) return { ok: false, code: 'already_enrolled' }
     // A fresh enrollment clears any prior "revoked" notice.
     await setRevokedNotice(false)
   }

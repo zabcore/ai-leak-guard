@@ -17,21 +17,30 @@ The key is re-derived on every request, so a retry of the same attempt always
 carries the same key. Source: `src/shared/teams-contract.ts`
 (`deriveIdempotencyKey`, `IDEMPOTENCY_DOMAIN_TAGS`).
 
-**Error.error enum:** `invalid_token | invalid_proof | exhausted | expired |
-token_revoked | install_revoked | recovery_window_expired`. The bare value `revoked` is gone.
+**Error.error enum (contract v1.1.1):** `invalid_token | invalid_proof | exhausted | expired |
+token_revoked | install_revoked | recovery_window_expired | wrong_recipient | invitation_revoked |
+invitation_expired | invitation_consumed`. The bare value `revoked` is gone. `wrong_recipient` is a
+`/join-init` (website) answer; the extension never receives it.
 
-| Endpoint     | Status | `error`                               | Extension behaviour                                           |
-| ------------ | ------ | ------------------------------------- | ------------------------------------------------------------- |
-| `/provision` | 404    | `invalid_token`                       | terminal                                                      |
-| `/provision` | 409    | `exhausted`                           | terminal                                                      |
-| `/provision` | 410    | `token_revoked`                       | terminal; **no** re-enroll block (a rotated token may enroll) |
-| `/provision` | 410    | `install_revoked`                     | terminal; sets the persistent re-enroll block                 |
-| `/provision` | 410    | `expired` / `recovery_window_expired` | terminal                                                      |
-| `/join`      | 401    | `invalid_proof`                       | terminal                                                      |
-| `/join`      | 410    | `expired` / `recovery_window_expired` | terminal                                                      |
-| `/join`      | 410    | `install_revoked`                     | terminal; sets the re-enroll block                            |
+**Invariant 3:** every sub-code below is handled distinctly, and none but `install_revoked` is treated
+as an install revocation. Tests: `tests/teams-contract.test.ts` ("each 410 sub-code maps to itself")
+and `tests/teams-join.test.ts` ("INVARIANT 3: … → its own handling").
 
-An unrecognized 410 is treated as `expired`: terminal, and it never sets the block.
+| Endpoint     | Status | `error`                                                             | Extension behaviour                                                                |
+| ------------ | ------ | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `/provision` | 404    | `invalid_token`                                                     | terminal                                                                           |
+| `/provision` | 409    | `exhausted`                                                         | terminal                                                                           |
+| `/provision` | 410    | `token_revoked`                                                     | terminal; **no** re-enroll block (a rotated token may enroll)                      |
+| `/provision` | 410    | `install_revoked`                                                   | terminal; sets the persistent re-enroll block                                      |
+| `/provision` | 410    | `expired` / `recovery_window_expired`                               | terminal                                                                           |
+| `/join`      | 401    | `invalid_proof`                                                     | terminal for this attempt; a new `hello` may start a fresh one                     |
+| `/join`      | 410    | `expired`                                                           | **recoverable**: SAME attempt kept, dead token dropped; the page mints a new token |
+| `/join`      | 410    | `invitation_revoked` / `invitation_expired` / `invitation_consumed` | terminal; invitation remembered as dead, never retried; **no** block               |
+| `/join`      | 410    | `recovery_window_expired`                                           | terminal; invitation remembered as dead                                            |
+| `/join`      | 410    | `install_revoked`                                                   | terminal; sets the re-enroll block; invitation remembered as dead                  |
+
+An unrecognized 410 is treated as `expired` (recoverable within the window, never a block, never a
+dead invitation).
 Any other status, or a network failure, is retried with the same attempt.
 
 ## C1–C6 (extension-side confirmations)
@@ -104,7 +113,8 @@ connected_org_id, connected_org_name, connected_at}`; failure is `{status: "fail
 
 2. **`result.status`:** `success | failed`.
 3. **`result.error_code`** (§5 vocabulary):
-   - Contract codes: `invalid_proof`, `expired`, `install_revoked`, `recovery_window_expired`.
+   - Contract codes: `invalid_proof`, `expired`, `install_revoked`, `recovery_window_expired`,
+     `invitation_revoked`, `invitation_expired`, `invitation_consumed`.
    - `backend_unavailable` (retryable: resend the token; a lost response maps here too).
    - `already_enrolled`, `join_pending`, `not_configured`, `internal_error`.
 4. **Nonce dedup** is per port.
@@ -120,17 +130,34 @@ connected_org_id, connected_org_name, connected_at}`; failure is `{status: "fail
      never a fresh attempt:
      - a successful join re-emits its challenge on `hello` for the same invitation within the window;
      - an in-flight attempt is resent as-is.
-   - `install_revoked` and `recovery_window_expired` never yield a fresh attempt; only authorized
-     recovery can.
+   - `install_revoked`, `recovery_window_expired` and the v1.1.1 invitation-dead codes
+     (`invitation_revoked` / `invitation_expired` / `invitation_consumed`) never yield a fresh attempt.
+     The extension refuses the retry itself; only authorized recovery (for an install) can lift it.
      - The invitation is remembered durably, beyond the replay window, and the failure is answered again.
      - A revoked install (persistent block) gets `failed install_revoked` for any invitation.
-   - A new attempt for the same invitation is possible only after `expired` or `invalid_proof`. Those
-     make the attempt non-recoverable but do not end the invitation, and only when the page sends a
-     new `hello`. The extension never starts one on its own.
-     - Whether the invitation is still redeemable (not redeemed or revoked) is decided by the backend
-       at `/join-init`, the final guard against double redemption.
+   - A lapsed exchange token (`expired`) is recovered with the SAME attempt: the dead token is dropped,
+     the reconnect re-emits the same challenge, and the page mints a new token for it.
+   - A new attempt for the same invitation is possible only after `invalid_proof`, and only when the
+     page sends a new `hello`. The extension never starts one on its own. The backend stays the final
+     guard against double redemption.
    - Already enrolled → `failed already_enrolled` (the connected clinic is never switched). An
      in-flight attempt for a different invitation → `failed join_pending`.
+
+### Invariant 4 — enrollment conflicts are enforced at the store
+
+Every freshly issued credential (join, managed provision, code-entry enroll) is stored through
+`commitEnrollment` (`src/shared/teams-storage.ts`). It refuses to overwrite a different install's
+enrollment: the existing enrollment is kept, and the producer reports `already_enrolled`. Re-storing
+the same install (a recovered credential) is allowed, and commits are serialized. The website's result
+binding guards the display; this guards the store.
+
+Tests: `tests/teams-enrollment-guard.test.ts`:
+
+- the store itself;
+- an enrollment landing during `/join`, provisioning or code entry;
+- competing join tabs: a superseded tab's token never reaches `/join`, a second invitation never
+  switches the clinic, and an in-flight tab gets `join_pending` while the reconnect reuses the
+  original attempt.
 
 ## Authorized recovery (definition)
 

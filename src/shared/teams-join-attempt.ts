@@ -179,12 +179,24 @@ export function isJoinResultLive(record: JoinResultRecord, now: number): boolean
 // ─── Invitations that may never get a fresh attempt ───────────────────
 //
 // bridge/1.1.0: `install_revoked` and `recovery_window_expired` never yield a
-// fresh attempt for that invitation — only authorized recovery can. Remembered
-// durably (beyond the result replay window), bounded, invitation ref → code.
+// fresh attempt for that invitation — only authorized recovery can — and the
+// contract v1.1.1 invitation-dead codes (`invitation_revoked` /
+// `invitation_expired` / `invitation_consumed`) mean it must never be retried.
+// Remembered durably (beyond the result replay window), bounded, ref → code.
 
 export const TEAMS_JOIN_DEAD_INVITATIONS_KEY = 'teamsJoinDeadInvitations'
 export const MAX_DEAD_INVITATIONS = 32
-export type DeadInvitationCode = 'install_revoked' | 'recovery_window_expired'
+export const DEAD_INVITATION_CODES = [
+  'install_revoked',
+  'recovery_window_expired',
+  'invitation_revoked',
+  'invitation_expired',
+  'invitation_consumed',
+] as const
+export type DeadInvitationCode = (typeof DEAD_INVITATION_CODES)[number]
+export function isDeadInvitationCode(code: unknown): code is DeadInvitationCode {
+  return (DEAD_INVITATION_CODES as readonly unknown[]).includes(code)
+}
 
 export async function getDeadInvitationCode(
   invitationRef: string,
@@ -194,12 +206,7 @@ export async function getDeadInvitationCode(
     const raw = stored[TEAMS_JOIN_DEAD_INVITATIONS_KEY] as unknown
     if (!Array.isArray(raw)) return null
     for (const entry of raw as Array<{ ref?: unknown; code?: unknown }>) {
-      if (
-        entry?.ref === invitationRef &&
-        (entry.code === 'install_revoked' || entry.code === 'recovery_window_expired')
-      ) {
-        return entry.code
-      }
+      if (entry?.ref === invitationRef && isDeadInvitationCode(entry.code)) return entry.code
     }
     return null
   } catch {

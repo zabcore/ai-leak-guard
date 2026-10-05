@@ -40,6 +40,7 @@ export type EnrollErrorCode =
   | 'revoked' // 410
   | 'network' // offline / fetch threw / non-JSON / unexpected status
   | 'not_configured' // no backend base URL / anon key in this build
+  | 'already_enrolled' // client-side: another install is already enrolled (never overwritten)
 
 export interface EnrollFailure {
   readonly ok: false
@@ -203,20 +204,45 @@ export const API_ERROR_CODES = [
   'token_revoked',
   'install_revoked',
   'recovery_window_expired',
+  // v1.1.1: a valid session for another identity (/join-init, website only) and
+  // the invitation-dead codes (never retry).
+  'wrong_recipient',
+  'invitation_revoked',
+  'invitation_expired',
+  'invitation_consumed',
 ] as const satisfies readonly ApiErrorCode[]
 // Compile-time exhaustiveness: every generated enum member is in the runtime list.
 type _AllCodesListed =
   Exclude<ApiErrorCode, (typeof API_ERROR_CODES)[number]> extends never ? true : never
 export const _allCodesListed: _AllCodesListed = true
 
-// /join: 401 = invalid_proof; 410 = expired | install_revoked |
-// recovery_window_expired. `install_revoked` blocks managed re-enrollment.
-export const JOIN_GONE_ERRORS = ['expired', 'install_revoked', 'recovery_window_expired'] as const
+// /join (contract v1.1.1): 401 = invalid_proof; 410 =
+//   expired                  — the exchange token lapsed: RECOVERABLE (same
+//                              attempt, new token, within the window);
+//   invitation_revoked |
+//   invitation_expired |
+//   invitation_consumed      — the invitation is dead: never retry;
+//   install_revoked          — this install was revoked: blocks re-enrollment;
+//   recovery_window_expired  — the completed join can no longer be recovered.
+// Each is handled distinctly; none but install_revoked is an install revocation.
+export const INVITATION_DEAD_ERRORS = [
+  'invitation_revoked',
+  'invitation_expired',
+  'invitation_consumed',
+] as const
+export type InvitationDeadError = (typeof INVITATION_DEAD_ERRORS)[number]
+export const JOIN_GONE_ERRORS = [
+  'expired',
+  'install_revoked',
+  'recovery_window_expired',
+  ...INVITATION_DEAD_ERRORS,
+] as const
 export type JoinGoneError = (typeof JOIN_GONE_ERRORS)[number]
 export type JoinErrorCode = 'invalid_proof' | JoinGoneError | 'network'
 
 /** Map a non-2xx /join answer to its error code. An unrecognized 410 body is
- *  terminal `expired` (never a block); anything unexpected is `network`. */
+ *  `expired` (recoverable within the window, never a block, never a dead
+ *  invitation); anything unexpected is `network`. */
 export function joinErrorFor(status: number, body: unknown): JoinErrorCode {
   if (status === 401) return 'invalid_proof'
   if (status === 410) {

@@ -23,9 +23,9 @@
 
 import { getBackendConfig } from './teams-config'
 import {
+  commitEnrollment,
   getEnrollment,
   getRevokeBlock,
-  setEnrollment,
   setRevokedNotice,
   setRevokeBlock,
 } from '../shared/teams-storage'
@@ -34,6 +34,7 @@ import {
   addDeadInvitation,
   clearJoinAttempt,
   getDeadInvitationCode,
+  isDeadInvitationCode,
   deriveChallenge,
   getJoinAttempt,
   getJoinResult,
@@ -58,6 +59,7 @@ export type JoinRunOutcome =
   | 'expired'
   | 'install-revoked'
   | 'recovery-expired'
+  | 'invitation-dead'
   | 'network'
 
 /** bridge/1.1.0 §3 `presence.state` (pinned). */
@@ -293,6 +295,7 @@ const OUTCOME_ERROR_CODE: Record<JoinRunOutcome, string> = {
   expired: 'expired',
   'install-revoked': 'install_revoked',
   'recovery-expired': 'recovery_window_expired',
+  'invitation-dead': 'invitation_consumed', // always settled with its exact code first
   // Same retryable bucket as the website's existing `backend_unavailable`.
   network: 'backend_unavailable',
 }
@@ -344,13 +347,20 @@ async function runJoinOnce(
   const settledAt = new Date((deps.now ?? Date.now)()).toISOString()
 
   if (result.ok) {
-    await setEnrollment({
+    // INVARIANT (storage layer): a fresh credential never overwrites another
+    // install's enrollment — a competing tab, a racing code-entry enroll or a
+    // different invitation is refused at the store itself.
+    const stored = await commitEnrollment({
       install_id: result.data.install_id,
       install_credential: result.data.install_credential,
       org_id: result.data.org_id,
       org_name: result.data.org_name,
       base_url: config.baseUrl,
     })
+    if (!stored.ok) {
+      await settle(attempt, settledAt, failed('already_enrolled'))
+      return 'already-enrolled'
+    }
     await setRevokedNotice(false)
     await settle(attempt, settledAt, {
       status: 'success',
@@ -363,21 +373,42 @@ async function runJoinOnce(
     return 'enrolled'
   }
 
-  if (result.code === 'network') return 'network' // keep the attempt for a retry
-  await settle(attempt, settledAt, failed(result.code))
   switch (result.code) {
-    case 'invalid_proof':
-      return 'invalid-proof'
+    case 'network':
+      return 'network' // keep the attempt (and its token) for a retry
     case 'expired':
+      // Only the exchange token lapsed (contract v1.1.1): RECOVERABLE. Keep the
+      // SAME attempt and challenge, drop the dead token, so the page can mint a
+      // new token for this challenge and the same secret redeems it. (A
+      // completed join would have been recovered by the backend first.)
+      await setJoinAttempt(withoutExchangeToken(attempt))
       return 'expired'
+    case 'invalid_proof':
+      await settle(attempt, settledAt, failed(result.code))
+      return 'invalid-proof'
     case 'install_revoked':
+      await settle(attempt, settledAt, failed(result.code))
       // This install was revoked: never let a managed policy silently re-enroll
       // it (same persistent block as /provision install_revoked).
       await setRevokeBlock()
       return 'install-revoked'
     case 'recovery_window_expired':
+      await settle(attempt, settledAt, failed(result.code))
       return 'recovery-expired'
+    case 'invitation_revoked':
+    case 'invitation_expired':
+    case 'invitation_consumed':
+      // The invitation is dead: never retry it (no fresh attempt either). This
+      // is NOT an install revocation — no re-enroll block.
+      await settle(attempt, settledAt, failed(result.code))
+      return 'invitation-dead'
   }
+}
+
+function withoutExchangeToken(attempt: JoinAttempt): JoinAttempt {
+  const next: { -readonly [K in keyof JoinAttempt]: JoinAttempt[K] } = { ...attempt }
+  delete next.exchangeToken
+  return next
 }
 
 /** Keep the bridge result for replay, then drop the attempt (and its secret). */
@@ -397,7 +428,7 @@ async function settle(
   if (
     attempt.invitationRef !== undefined &&
     result.status === 'failed' &&
-    (result.error_code === 'install_revoked' || result.error_code === 'recovery_window_expired')
+    isDeadInvitationCode(result.error_code)
   ) {
     await addDeadInvitation(attempt.invitationRef, result.error_code)
   }

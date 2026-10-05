@@ -171,8 +171,8 @@ describe('deriveIdempotencyKey (bridge/1.1.0: domain-separated)', () => {
   })
 })
 
-describe('canonical error enum + joinErrorFor (bridge/1.1.0)', () => {
-  it('Error.error enum has no bare "revoked"', () => {
+describe('canonical error enum + joinErrorFor (contract v1.1.1)', () => {
+  it('Error.error enum has no bare "revoked"; v1.1.1 adds the split codes', () => {
     expect([...API_ERROR_CODES]).toEqual([
       'invalid_token',
       'invalid_proof',
@@ -181,16 +181,38 @@ describe('canonical error enum + joinErrorFor (bridge/1.1.0)', () => {
       'token_revoked',
       'install_revoked',
       'recovery_window_expired',
+      'wrong_recipient',
+      'invitation_revoked',
+      'invitation_expired',
+      'invitation_consumed',
     ])
   })
 
-  it('/join: 401 invalid_proof; 410 expired | install_revoked | recovery_window_expired', () => {
+  // INVARIANT 3: every /join sub-code is kept distinct — none collapses into
+  // another, and none but install_revoked reads as an install revocation.
+  it('/join: each 410 sub-code maps to itself (never collapsed)', () => {
     expect(joinErrorFor(401, null)).toBe('invalid_proof')
-    expect(joinErrorFor(410, { error: 'expired' })).toBe('expired')
-    expect(joinErrorFor(410, { error: 'install_revoked' })).toBe('install_revoked')
-    expect(joinErrorFor(410, { error: 'recovery_window_expired' })).toBe('recovery_window_expired')
+    for (const code of [
+      'expired',
+      'install_revoked',
+      'recovery_window_expired',
+      'invitation_revoked',
+      'invitation_expired',
+      'invitation_consumed',
+    ]) {
+      expect(joinErrorFor(410, { error: code })).toBe(code)
+    }
     expect(joinErrorFor(410, { error: 'token_revoked' })).toBe('expired') // not a /join error
     expect(joinErrorFor(410, { error: 'revoked' })).toBe('expired')
     expect(joinErrorFor(500, null)).toBe('network')
+  })
+
+  it('/provision keeps token_revoked distinct from install_revoked', () => {
+    expect(provisionErrorFor(410, { error: 'token_revoked' })).toBe('token_revoked')
+    expect(provisionErrorFor(410, { error: 'install_revoked' })).toBe('install_revoked')
+    expect(provisionErrorFor(410, { error: 'expired' })).toBe('expired')
+    expect(provisionErrorFor(410, { error: 'recovery_window_expired' })).toBe(
+      'recovery_window_expired',
+    )
   })
 })
