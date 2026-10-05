@@ -79,13 +79,8 @@ reaches `/join`. A test asserts this.
   - An unsupported `v` gets `unsupported_version` and the port is closed. An unknown `ns`/`type`, or
     a malformed envelope or payload, gets `invalid_message`.
 - **`hello {invitation_ref, locale}`:** the extension sends `presence {ext_version, state}`, then
-  `challenge {attempt_challenge, expires_at}` as a separate message.
-  - The challenge envelope's nonce is persisted on the attempt **before** it is posted.
-  - For an in-flight attempt (its token was already sent), a new `hello` re-emits the SAME challenge.
-    It never mints a new attempt because the port dropped.
-  - Already enrolled → `result {status: "failed", error_code: "already_enrolled"}` and no challenge;
-    the connected clinic is never switched.
-  - An in-flight attempt for a _different_ invitation → `failed join_pending`.
+  `challenge {attempt_challenge, expires_at}` as a separate message. The challenge envelope's nonce is
+  persisted on the attempt **before** it is posted.
 - **`exchange_token {exchange_token, expires_at, challenge_nonce}`:** the extension acks, then
   calls `/join`, then posts the result.
   - `challenge_nonce` must equal the nonce of a `challenge` this extension emitted for the current
@@ -93,19 +88,49 @@ reaches `/join`. A test asserts this.
   - Anything else → `failed recovery_window_expired`, and `/join` is never called.
 - **`result`:** success is `{status: "success", connected_invitation_ref, connected_attempt_challenge,
 connected_org_id, connected_org_name, connected_at}`; failure is `{status: "failed", error_code}`.
-  - `error_code` is a contract code (`invalid_proof`, `expired`, `install_revoked`,
-    `recovery_window_expired`) or one of `network` (retryable: resend the token),
-    `already_enrolled`, `join_pending`, `not_configured`, `internal`.
 - **Never on the port:** the attempt secret, the idempotency key and the install credential.
 
-**Choices the bridge text leaves open (please confirm):**
+### Ruled values (bridge/1.1.0 §3 / §5 / §5.1)
 
-1. `presence.state` values: `unenrolled | joining | enrolled`.
-2. `result.status` values: `success | failed`.
-3. Non-contract `error_code` values, listed above.
-4. Dedup is per port.
-5. `challenge.expires_at` = attempt creation + 10 min. A stale unsent attempt is replaced on the
-   next `hello`; an in-flight one never is.
+1. **`presence.state`** (pinned §3): `idle | awaiting_token | connecting | connected | error`.
+
+   | State            | When                                                                                                                  |
+   | ---------------- | --------------------------------------------------------------------------------------------------------------------- |
+   | `connected`      | enrolled                                                                                                              |
+   | `connecting`     | an attempt whose `exchange_token` was sent (in flight, or awaiting lost-response recovery)                            |
+   | `awaiting_token` | an attempt whose challenge is out, no token yet                                                                       |
+   | `error`          | install revoked (persistent block), or the last join failed within the 10-min window and nothing newer is in progress |
+   | `idle`           | otherwise                                                                                                             |
+
+2. **`result.status`:** `success | failed`.
+3. **`result.error_code`** (§5 vocabulary):
+   - Contract codes: `invalid_proof`, `expired`, `install_revoked`, `recovery_window_expired`.
+   - `backend_unavailable` (retryable: resend the token; a lost response maps here too).
+   - `already_enrolled`, `join_pending`, `not_configured`, `internal_error`.
+4. **Nonce dedup** is per port.
+5. **Attempt lifetime (§5.1):** `challenge.expires_at` = attempt creation + 10 min, the attempt lifetime
+   the website displays. The backend's `exchange_token.expires_at` stays 2 min, and recovery-first is
+   driven by the exchange token and attempt state within the window.
+   - An attempt whose `exchange_token` was never sent may be superseded by a new `hello` once it ages
+     out, or by a `hello` for another invitation.
+   - An attempt whose token **was** sent is never replaced. A reconnect re-emits its SAME challenge.
+6. **Fresh attempts after a failure:**
+   - The original attempt stays replayable under its `challenge_nonce`.
+   - A retry of a completed or lost-response join recovers the existing credential (recovery-ordering),
+     never a fresh attempt:
+     - a successful join re-emits its challenge on `hello` for the same invitation within the window;
+     - an in-flight attempt is resent as-is.
+   - `install_revoked` and `recovery_window_expired` never yield a fresh attempt; only authorized
+     recovery can.
+     - The invitation is remembered durably, beyond the replay window, and the failure is answered again.
+     - A revoked install (persistent block) gets `failed install_revoked` for any invitation.
+   - A new attempt for the same invitation is possible only after `expired` or `invalid_proof`. Those
+     make the attempt non-recoverable but do not end the invitation, and only when the page sends a
+     new `hello`. The extension never starts one on its own.
+     - Whether the invitation is still redeemable (not redeemed or revoked) is decided by the backend
+       at `/join-init`, the final guard against double redemption.
+   - Already enrolled → `failed already_enrolled` (the connected clinic is never switched). An
+     in-flight attempt for a different invitation → `failed join_pending`.
 
 ## Authorized recovery (definition)
 

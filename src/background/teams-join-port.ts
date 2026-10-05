@@ -270,7 +270,7 @@ export function createJoinPortServer(deps: JoinPortDeps): { onConnect(port: Join
       try {
         result = (await deps.exchange(p.exchange_token, p.challenge_nonce)).result
       } catch {
-        result = { status: 'failed', error_code: 'internal' }
+        result = { status: 'failed', error_code: 'internal_error' }
       }
       post(envelope('result', { ...result }))
     }

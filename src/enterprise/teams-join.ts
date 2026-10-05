@@ -24,13 +24,16 @@
 import { getBackendConfig } from './teams-config'
 import {
   getEnrollment,
+  getRevokeBlock,
   setEnrollment,
   setRevokedNotice,
   setRevokeBlock,
 } from '../shared/teams-storage'
 import {
   JOIN_RESULT_REPLAY_MS,
+  addDeadInvitation,
   clearJoinAttempt,
+  getDeadInvitationCode,
   deriveChallenge,
   getJoinAttempt,
   getJoinResult,
@@ -57,8 +60,8 @@ export type JoinRunOutcome =
   | 'recovery-expired'
   | 'network'
 
-/** bridge/1.1.0 `presence.state`. */
-export type JoinPresenceState = 'unenrolled' | 'joining' | 'enrolled'
+/** bridge/1.1.0 §3 `presence.state` (pinned). */
+export type JoinPresenceState = 'idle' | 'awaiting_token' | 'connecting' | 'connected' | 'error'
 
 /** What the extension answers a `hello` with after `presence`. */
 export type HelloOutcome =
@@ -92,10 +95,32 @@ function serial<T>(fn: () => Promise<T>): Promise<T> {
   return run
 }
 
-/** bridge/1.1.0 `presence.state` for this install. */
-export async function joinPresenceState(): Promise<JoinPresenceState> {
-  if ((await getEnrollment()) !== null) return 'enrolled'
-  return (await getJoinAttempt()) !== null ? 'joining' : 'unenrolled'
+/**
+ * bridge/1.1.0 §3 `presence.state` for this install:
+ * - `connected`      — enrolled;
+ * - `connecting`     — an attempt whose exchange_token was sent (in flight or
+ *                      awaiting lost-response recovery);
+ * - `awaiting_token` — an attempt whose challenge is out, no token yet;
+ * - `error`          — revoked install, or the last join failed (within the
+ *                      replay window) and nothing newer is in progress;
+ * - `idle`           — none of the above.
+ */
+export async function joinPresenceState(
+  deps: Pick<JoinDeps, 'now'> = {},
+): Promise<JoinPresenceState> {
+  if ((await getEnrollment()) !== null) return 'connected'
+  const attempt = await getJoinAttempt()
+  if (attempt !== null) return attempt.exchangeToken !== undefined ? 'connecting' : 'awaiting_token'
+  if (await getRevokeBlock()) return 'error'
+  const settled = await getJoinResult()
+  if (
+    settled !== null &&
+    settled.result.status === 'failed' &&
+    isJoinResultLive(settled, (deps.now ?? Date.now)())
+  ) {
+    return 'error'
+  }
+  return 'idle'
 }
 
 /**
@@ -105,12 +130,21 @@ export async function joinPresenceState(): Promise<JoinPresenceState> {
  *
  * - A SUCCESSFUL join for the same invitation (within the replay window)
  *   re-emits its challenge, so the page can replay its `exchange_token` and get
- *   the same result. After a terminal failure a new `hello` starts a fresh
- *   attempt; the failed result stays replayable under its old challenge nonce.
- * - An attempt whose token was already sent is reused with the SAME challenge
- *   (never a new attempt because the port dropped).
+ *   the same result (a completed join is recovered, never re-joined).
  * - Already enrolled → a `failed already_enrolled` result for THIS invitation;
  *   the connected clinic is never switched silently.
+ * - A revoked install, or an invitation that ended in `install_revoked` /
+ *   `recovery_window_expired`, NEVER gets a fresh attempt (authorized recovery
+ *   only): the failure is answered again instead.
+ * - An attempt whose token was already sent is reused with the SAME challenge
+ *   (never a new attempt because the port dropped, never replaced).
+ * - An unsent attempt is reused while its challenge is live; once it ages out,
+ *   or for another invitation, a new `hello` supersedes it.
+ * - A fresh attempt for the same invitation after a failure is therefore only
+ *   possible when that failure was non-recoverable but did not end the
+ *   invitation (`expired`, `invalid_proof`). Whether the invitation is still
+ *   redeemable is then decided by the backend at `/join-init` (the final guard
+ *   against double redemption); this extension never retries on its own.
  */
 export function prepareChallenge(
   invitationRef: string,
@@ -131,10 +165,11 @@ export function prepareChallenge(
         ...settled,
         challengeNonces: withNonce(settled.challengeNonces, challengeNonce),
       })
+      const created = Date.parse(settled.attemptCreatedAt ?? settled.settledAt)
       return {
         kind: 'challenge',
         attempt_challenge: settled.challenge,
-        expires_at: new Date(Date.parse(settled.settledAt) + JOIN_RESULT_REPLAY_MS).toISOString(),
+        expires_at: new Date(created + JOIN_CHALLENGE_TTL_MS).toISOString(),
       }
     }
 
@@ -156,6 +191,11 @@ export function prepareChallenge(
       }
       // Unsent and stale, or for another invitation: replaced below.
     }
+
+    // Never a FRESH attempt for a revoked install or a dead invitation.
+    if (await getRevokeBlock()) return { kind: 'result', result: failed('install_revoked') }
+    const dead = await getDeadInvitationCode(invitationRef)
+    if (dead !== null) return { kind: 'result', result: failed(dead) }
 
     const attemptSecret = (deps.newSecret ?? newAttemptSecret)()
     const attempt: JoinAttempt = {
@@ -244,7 +284,7 @@ export interface ExchangeOutcome {
 
 /** bridge `result.error_code` for an outcome that left no settled record. */
 const OUTCOME_ERROR_CODE: Record<JoinRunOutcome, string> = {
-  enrolled: 'internal',
+  enrolled: 'internal_error',
   'already-enrolled': 'already_enrolled',
   'not-configured': 'not_configured',
   'no-attempt': 'recovery_window_expired',
@@ -253,7 +293,8 @@ const OUTCOME_ERROR_CODE: Record<JoinRunOutcome, string> = {
   expired: 'expired',
   'install-revoked': 'install_revoked',
   'recovery-expired': 'recovery_window_expired',
-  network: 'network',
+  // Same retryable bucket as the website's existing `backend_unavailable`.
+  network: 'backend_unavailable',
 }
 
 /** True when a join was sent but its outcome is unknown (recover on startup). */
@@ -348,9 +389,17 @@ async function settle(
   await setJoinResult({
     ...(attempt.invitationRef !== undefined ? { invitationRef: attempt.invitationRef } : {}),
     challenge: attempt.challenge,
+    attemptCreatedAt: attempt.createdAt,
     challengeNonces: attempt.challengeNonces ?? [],
     settledAt,
     result,
   })
+  if (
+    attempt.invitationRef !== undefined &&
+    result.status === 'failed' &&
+    (result.error_code === 'install_revoked' || result.error_code === 'recovery_window_expired')
+  ) {
+    await addDeadInvitation(attempt.invitationRef, result.error_code)
+  }
   await clearJoinAttempt()
 }

@@ -77,7 +77,7 @@ const HELLO = () => w('hello', { invitation_ref: 'inv-1', locale: 'en' })
 function stubDeps(over: Partial<JoinPortDeps> = {}) {
   const calls = { hello: [] as string[][], exchange: [] as string[][] }
   const deps: JoinPortDeps = {
-    presence: async () => ({ ext_version: '1.4.0', state: 'unenrolled' }),
+    presence: async () => ({ ext_version: '1.4.0', state: 'idle' }),
     hello: async (ref, nonce) => {
       calls.hello.push([ref, nonce])
       return {
@@ -253,7 +253,7 @@ describe('join port — message types (§3)', () => {
     p.send(HELLO())
     await vi.waitFor(() => expect(p.posted).toHaveLength(2))
     expect(p.types()).toEqual(['presence', 'challenge'])
-    expect(p.posted[0]?.payload).toEqual({ ext_version: '1.4.0', state: 'unenrolled' })
+    expect(p.posted[0]?.payload).toEqual({ ext_version: '1.4.0', state: 'idle' })
     expect(p.posted[1]?.payload).toEqual({
       attempt_challenge: 'CHAL',
       expires_at: '2030-01-01T00:00:00.000Z',
@@ -335,7 +335,7 @@ describe('join port — message types (§3)', () => {
     await vi.waitFor(() => expect(p.posted).toHaveLength(2))
     expect(p.posted[1]).toMatchObject({
       type: 'result',
-      payload: { status: 'failed', error_code: 'internal' },
+      payload: { status: 'failed', error_code: 'internal_error' },
     })
   })
 })
@@ -365,7 +365,7 @@ describe('join port + real join logic — end to end', () => {
       },
     })
     const server = createJoinPortServer({
-      presence: async () => ({ ext_version: '1.4.0', state: 'unenrolled' }),
+      presence: async () => ({ ext_version: '1.4.0', state: 'idle' }),
       hello: (ref, nonce) => prepareChallenge(ref, nonce),
       exchange: (token, nonce) => exchangeJoin(token, nonce, { loadClient }),
     })
@@ -481,7 +481,7 @@ describe('service worker — onConnectExternal wiring', () => {
     for (const l of runtime.onConnectExternal.__listeners) l(p.port)
     p.send(HELLO())
     await vi.waitFor(() => expect(p.types()).toEqual(['presence', 'challenge']))
-    expect(p.posted[0]?.payload).toMatchObject({ state: 'unenrolled' })
+    expect(p.posted[0]?.payload).toMatchObject({ state: 'idle' })
     expect(fetchSpy).not.toHaveBeenCalled()
 
     p.send(

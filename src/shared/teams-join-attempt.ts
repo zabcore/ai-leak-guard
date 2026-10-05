@@ -128,6 +128,8 @@ export type JoinResultPayload =
 export interface JoinResultRecord {
   readonly invitationRef?: string
   readonly challenge: string
+  /** The settled attempt's creation time (drives the replayed `challenge.expires_at`). */
+  readonly attemptCreatedAt?: string
   readonly challengeNonces: readonly string[]
   readonly settledAt: string
   readonly result: JoinResultPayload
@@ -152,6 +154,9 @@ export async function getJoinResult(): Promise<JoinResultRecord | null> {
     return {
       ...(typeof raw.invitationRef === 'string' ? { invitationRef: raw.invitationRef } : {}),
       challenge: raw.challenge,
+      ...(typeof raw.attemptCreatedAt === 'string'
+        ? { attemptCreatedAt: raw.attemptCreatedAt }
+        : {}),
       challengeNonces: nonces,
       settledAt: raw.settledAt,
       result: raw.result as JoinResultPayload,
@@ -169,4 +174,50 @@ export async function setJoinResult(value: JoinResultRecord): Promise<void> {
 export function isJoinResultLive(record: JoinResultRecord, now: number): boolean {
   const at = Date.parse(record.settledAt)
   return Number.isFinite(at) && now - at <= JOIN_RESULT_REPLAY_MS
+}
+
+// ─── Invitations that may never get a fresh attempt ───────────────────
+//
+// bridge/1.1.0: `install_revoked` and `recovery_window_expired` never yield a
+// fresh attempt for that invitation — only authorized recovery can. Remembered
+// durably (beyond the result replay window), bounded, invitation ref → code.
+
+export const TEAMS_JOIN_DEAD_INVITATIONS_KEY = 'teamsJoinDeadInvitations'
+export const MAX_DEAD_INVITATIONS = 32
+export type DeadInvitationCode = 'install_revoked' | 'recovery_window_expired'
+
+export async function getDeadInvitationCode(
+  invitationRef: string,
+): Promise<DeadInvitationCode | null> {
+  try {
+    const stored = await chrome.storage.local.get(TEAMS_JOIN_DEAD_INVITATIONS_KEY)
+    const raw = stored[TEAMS_JOIN_DEAD_INVITATIONS_KEY] as unknown
+    if (!Array.isArray(raw)) return null
+    for (const entry of raw as Array<{ ref?: unknown; code?: unknown }>) {
+      if (
+        entry?.ref === invitationRef &&
+        (entry.code === 'install_revoked' || entry.code === 'recovery_window_expired')
+      ) {
+        return entry.code
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export async function addDeadInvitation(
+  invitationRef: string,
+  code: DeadInvitationCode,
+): Promise<void> {
+  const stored = await chrome.storage.local.get(TEAMS_JOIN_DEAD_INVITATIONS_KEY)
+  const raw = stored[TEAMS_JOIN_DEAD_INVITATIONS_KEY] as unknown
+  const list = (Array.isArray(raw) ? (raw as Array<{ ref?: unknown }>) : []).filter(
+    (e) => e?.ref !== invitationRef,
+  )
+  list.push({ ref: invitationRef, code } as { ref: string; code: DeadInvitationCode })
+  await chrome.storage.local.set({
+    [TEAMS_JOIN_DEAD_INVITATIONS_KEY]: list.slice(-MAX_DEAD_INVITATIONS),
+  })
 }
