@@ -14,7 +14,9 @@ import {
   PROVISION_GONE_ERRORS,
 } from '../src/shared/teams-contract'
 
-const read = (p: string) => readFileSync(resolve(p), 'utf8')
+// Line endings normalized: .gitattributes forces LF, and this keeps a CRLF working
+// copy from a misconfigured Windows checkout from failing the pins spuriously.
+const read = (p: string) => readFileSync(resolve(p), 'utf8').replace(/\r\n/g, '\n')
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const yaml = read('contracts/teams-contract.openapi.yaml')
 
