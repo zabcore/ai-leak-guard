@@ -42,6 +42,9 @@ describe('handleJoinHandoff', () => {
 
   it.each([
     [{ origin: 'https://evil.example' }],
+    [{ origin: 'https://zabcore.com' }], // no page URL
+    [{ origin: 'https://zabcore.com', url: 'https://zabcore.com/pricing' }], // not a join page
+    [{ origin: 'https://evil.example', url: 'https://zabcore.com/join' }], // origin/url mismatch
     [{ origin: 'https://zabcore.com.evil.example' }],
     [{ origin: 'http://zabcore.com' }],
     [{ url: 'https://evil.example/join' }],
@@ -79,7 +82,7 @@ describe('handleJoinHandoff', () => {
     const manifest = JSON.parse(readFileSync(resolve('manifest.json'), 'utf8')) as {
       externally_connectable?: { matches?: string[]; ids?: string[] }
     }
-    expect(manifest.externally_connectable).toEqual({ matches: ['https://zabcore.com/*'] })
+    expect(manifest.externally_connectable).toEqual({ matches: ['https://zabcore.com/join*'] })
     expect(JOIN_HANDOFF_ORIGINS).toEqual(['https://zabcore.com'])
   })
 })

@@ -19,6 +19,8 @@ import type { BeginJoinResult, JoinRunOutcome } from '../enterprise/teams-join'
 /** The ONLY origins allowed to drive the join handoff. Keep in sync with
  *  manifest.json `externally_connectable.matches`. */
 export const JOIN_HANDOFF_ORIGINS: readonly string[] = ['https://zabcore.com']
+/** Only the join pages may drive the handoff (manifest: `https://zabcore.com/join*`). */
+export const JOIN_HANDOFF_PATH_PREFIX = '/join'
 
 export const JOIN_BEGIN_TYPE = 'alg-join-begin'
 export const JOIN_COMPLETE_TYPE = 'alg-join-complete'
@@ -40,16 +42,21 @@ export interface HandoffSender {
   readonly url?: string
 }
 
-function senderOrigin(sender: HandoffSender): string | null {
-  if (typeof sender.origin === 'string') return sender.origin
-  if (typeof sender.url === 'string') {
-    try {
-      return new URL(sender.url).origin
-    } catch {
-      return null
-    }
+/** True only for a sender page on an allowlisted origin under `/join`. The page
+ *  URL is required (Chrome supplies it for externally_connectable senders); an
+ *  explicit `origin`, when present, must agree with it. */
+function isAllowedSender(sender: HandoffSender): boolean {
+  if (typeof sender.url !== 'string') return false
+  let url: URL
+  try {
+    url = new URL(sender.url)
+  } catch {
+    return false
   }
-  return null
+  if (typeof sender.origin === 'string' && sender.origin !== url.origin) return false
+  return (
+    JOIN_HANDOFF_ORIGINS.includes(url.origin) && url.pathname.startsWith(JOIN_HANDOFF_PATH_PREFIX)
+  )
 }
 
 /** True when `message` is a join-handoff message (the listener should answer). */
@@ -68,10 +75,7 @@ export async function handleJoinHandoff(
   deps: JoinHandoffDeps,
 ): Promise<JoinHandoffResponse | null> {
   if (!isJoinHandoffMessage(message)) return null
-  const origin = senderOrigin(sender)
-  if (origin === null || !JOIN_HANDOFF_ORIGINS.includes(origin)) {
-    return { ok: false, error: 'forbidden' }
-  }
+  if (!isAllowedSender(sender)) return { ok: false, error: 'forbidden' }
 
   try {
     const msg = message as { type: string; exchange_token?: unknown }

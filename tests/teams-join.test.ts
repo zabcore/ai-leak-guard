@@ -11,6 +11,7 @@ import {
   setEnrollment,
   setRevokedNotice,
   getRevokedNotice,
+  getRevokeBlock,
 } from '../src/shared/teams-storage'
 
 const BASE = 'http://127.0.0.1:54321'
@@ -37,8 +38,8 @@ function joinClient(results: JoinCallResult[] = []) {
 }
 
 const fixed = { newSecret: () => 'verifier-secret-1' }
-// Pinned: idempotency_key = base64url(SHA-256(attempt secret)) — never random.
-const IDEM = createHash('sha256').update('verifier-secret-1').digest('base64url')
+// Pinned: idempotency_key = base64url(SHA-256("alg-join-idem:" + attempt secret)) — never random.
+const IDEM = createHash('sha256').update('alg-join-idem:verifier-secret-1').digest('base64url')
 
 beforeEach(() => {
   vi.stubEnv('VITE_TEAMS_BASE_URL', BASE)
@@ -95,7 +96,26 @@ describe('beginJoin', () => {
   })
 })
 
-describe('join idempotency_key derivation (pinned, same as /provision)', () => {
+describe('join idempotency_key derivation (pinned, domain-tagged)', () => {
+  it('differs from the S256 challenge the website holds', async () => {
+    const begun = await beginJoin(fixed)
+    expect(begun.ok && begun.challenge).toBe(
+      createHash('sha256').update('verifier-secret-1').digest('base64url'),
+    )
+    expect(IDEM).not.toBe(begun.ok ? begun.challenge : '')
+  })
+
+  it('install_revoked sets the persistent no-reenroll block; other terminal errors do not', async () => {
+    await beginJoin(fixed)
+    await runJoin('xt-1', { loadClient: joinClient([{ ok: false, code: 'expired' }]).loadClient })
+    expect(await getRevokeBlock()).toBe(false)
+    await beginJoin(fixed)
+    await runJoin('xt-2', {
+      loadClient: joinClient([{ ok: false, code: 'install_revoked' }]).loadClient,
+    })
+    expect(await getRevokeBlock()).toBe(true)
+  })
+
   it('is base64url(SHA-256(attempt secret)) and identical on every retry of the attempt', async () => {
     await beginJoin(fixed)
     const c = joinClient([{ ok: false, code: 'network' }, { ok: false, code: 'network' }, OK])
@@ -111,7 +131,7 @@ describe('join idempotency_key derivation (pinned, same as /provision)', () => {
     const c = joinClient([OK])
     await runJoin('xt-1', { loadClient: c.loadClient })
     expect(c.calls[0]?.idempotency_key).toBe(
-      createHash('sha256').update(secret).digest('base64url'),
+      createHash('sha256').update(`alg-join-idem:${secret}`).digest('base64url'),
     )
   })
 })
@@ -154,7 +174,7 @@ describe('runJoin', () => {
   it.each([
     ['invalid_proof', 'invalid-proof'],
     ['expired', 'expired'],
-    ['revoked', 'revoked'],
+    ['install_revoked', 'install-revoked'],
     ['recovery_window_expired', 'recovery-expired'],
   ] as const)('terminal %s → %s, clears the attempt, never enrolls', async (code, outcome) => {
     await beginJoin(fixed)
@@ -234,7 +254,8 @@ describe('teams-client join()', () => {
     const cases: Array<[number, unknown, string]> = [
       [401, { error: 'invalid_proof' }, 'invalid_proof'],
       [410, { error: 'expired' }, 'expired'],
-      [410, { error: 'revoked' }, 'revoked'],
+      [410, { error: 'install_revoked' }, 'install_revoked'],
+      [410, { error: 'revoked' }, 'expired'],
       [410, { error: 'recovery_window_expired' }, 'recovery_window_expired'],
       [500, {}, 'network'],
       [

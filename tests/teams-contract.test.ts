@@ -8,6 +8,9 @@ import {
   enrollErrorForStatus,
   provisionErrorFor,
   deriveIdempotencyKey,
+  IDEMPOTENCY_DOMAIN_TAGS,
+  API_ERROR_CODES,
+  joinErrorFor,
   CHECKIN_ALLOWED_KEYS,
 } from '../src/shared/teams-contract'
 
@@ -132,17 +135,62 @@ describe('provisionErrorFor (Contract B §5 — explicit revoke split)', () => {
   })
 })
 
-describe('deriveIdempotencyKey (pinned: base64url(SHA-256(attempt_id)))', () => {
-  it('is deterministic and matches an independent SHA-256', async () => {
+describe('deriveIdempotencyKey (bridge/1.1.0: domain-separated)', () => {
+  it('is base64url(SHA-256(tag + secret)), deterministic, per-endpoint tag', async () => {
     const { createHash } = await import('node:crypto')
     const id = '6f1c2a0e-1b7d-4e55-9a3f-0c2d4b8e9f10'
-    const k = await deriveIdempotencyKey(id)
-    expect(k).toBe(createHash('sha256').update(id).digest('base64url'))
-    expect(await deriveIdempotencyKey(id)).toBe(k)
-    expect(k).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    const p = await deriveIdempotencyKey('provision', id)
+    expect(p).toBe(createHash('sha256').update(`alg-provision-idem:${id}`).digest('base64url'))
+    expect(await deriveIdempotencyKey('provision', id)).toBe(p)
+    expect(await deriveIdempotencyKey('join', id)).toBe(
+      createHash('sha256').update(`alg-join-idem:${id}`).digest('base64url'),
+    )
+    expect(p).toMatch(/^[A-Za-z0-9_-]{43}$/)
   })
 
-  it('fixed vector — the backend must derive the same value', async () => {
-    expect(await deriveIdempotencyKey('abc')).toBe('ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0')
+  it('never equals the untagged S256 challenge, nor the other endpoint key', async () => {
+    const { createHash } = await import('node:crypto')
+    const secret = 'verifier-secret-1'
+    const challenge = createHash('sha256').update(secret).digest('base64url')
+    const join = await deriveIdempotencyKey('join', secret)
+    expect(join).not.toBe(challenge)
+    expect(join).not.toBe(await deriveIdempotencyKey('provision', secret))
+  })
+
+  it('shared test vectors — the backend must derive the same values for "abc"', async () => {
+    expect(IDEMPOTENCY_DOMAIN_TAGS).toEqual({
+      provision: 'alg-provision-idem:',
+      join: 'alg-join-idem:',
+    })
+    expect(await deriveIdempotencyKey('provision', 'abc')).toBe(
+      '3Ih5gPY5claPtZn3TrQSYK_TOWgz9e7F2bWN6kSr4Sc',
+    )
+    expect(await deriveIdempotencyKey('join', 'abc')).toBe(
+      'wr9yGO-HiZXg5IzUjNEDFiwwcz4jZ7JWPpqs3nYdROc',
+    )
+  })
+})
+
+describe('canonical error enum + joinErrorFor (bridge/1.1.0)', () => {
+  it('Error.error enum has no bare "revoked"', () => {
+    expect([...API_ERROR_CODES]).toEqual([
+      'invalid_token',
+      'invalid_proof',
+      'exhausted',
+      'expired',
+      'token_revoked',
+      'install_revoked',
+      'recovery_window_expired',
+    ])
+  })
+
+  it('/join: 401 invalid_proof; 410 expired | install_revoked | recovery_window_expired', () => {
+    expect(joinErrorFor(401, null)).toBe('invalid_proof')
+    expect(joinErrorFor(410, { error: 'expired' })).toBe('expired')
+    expect(joinErrorFor(410, { error: 'install_revoked' })).toBe('install_revoked')
+    expect(joinErrorFor(410, { error: 'recovery_window_expired' })).toBe('recovery_window_expired')
+    expect(joinErrorFor(410, { error: 'token_revoked' })).toBe('expired') // not a /join error
+    expect(joinErrorFor(410, { error: 'revoked' })).toBe('expired')
+    expect(joinErrorFor(500, null)).toBe('network')
   })
 })

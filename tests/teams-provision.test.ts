@@ -52,8 +52,8 @@ describe('runProvision', () => {
     expect(calls[0]).toMatchObject({
       deployment_token: 'tok-A',
       attempt_id: 'id1',
-      // Pinned: idempotency_key = base64url(SHA-256(attempt_id)).
-      idempotency_key: createHash('sha256').update('id1').digest('base64url'),
+      // Pinned: idempotency_key = base64url(SHA-256("alg-provision-idem:" + attempt_id)).
+      idempotency_key: createHash('sha256').update('alg-provision-idem:id1').digest('base64url'),
     })
     expect(await getEnrollment()).toMatchObject({ install_id: 'i1', org_id: 'org_1', base_url: BASE })
     expect(await getProvisionAttempt()).toBeNull()

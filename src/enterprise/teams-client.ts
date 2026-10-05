@@ -20,6 +20,8 @@ import {
   enrollErrorForStatus,
   isCheckinResponse,
   isEnrollSuccess,
+  joinErrorFor,
+  type JoinErrorCode,
   provisionErrorFor,
   type ProvisionErrorCode,
   type CheckinRequest,
@@ -189,12 +191,7 @@ export interface JoinSuccess {
   readonly org_name: string
   readonly role: 'staff'
 }
-export type JoinErrorCode =
-  | 'invalid_proof'
-  | 'expired'
-  | 'revoked'
-  | 'recovery_window_expired'
-  | 'network'
+export type { JoinErrorCode }
 export type JoinCallResult = { ok: true; data: JoinSuccess } | { ok: false; code: JoinErrorCode }
 
 function isJoinSuccess(body: unknown): body is JoinSuccess {
@@ -239,15 +236,10 @@ export async function join(
     if (isJoinSuccess(body)) return { ok: true, data: body }
     return { ok: false, code: 'network' }
   }
-  if (res.status === 401) return { ok: false, code: 'invalid_proof' }
-  if (res.status === 410) {
-    const body = await readJson(res)
-    const err = (body as { error?: unknown } | null)?.error
-    if (err === 'revoked') return { ok: false, code: 'revoked' }
-    if (err === 'recovery_window_expired') return { ok: false, code: 'recovery_window_expired' }
-    return { ok: false, code: 'expired' }
+  return {
+    ok: false,
+    code: joinErrorFor(res.status, res.status === 410 ? await readJson(res) : null),
   }
-  return { ok: false, code: 'network' }
 }
 
 async function readJson(res: Response): Promise<unknown> {

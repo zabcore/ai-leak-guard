@@ -80,7 +80,7 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
     attempt = {
       attemptId,
       deploymentToken: deps.deploymentToken,
-      idempotencyKey: await deriveIdempotencyKey(attemptId),
+      idempotencyKey: await deriveIdempotencyKey('provision', attemptId),
       createdAt: new Date().toISOString(),
     }
     await setProvisionAttempt(attempt)
@@ -92,7 +92,7 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
     attempt_id: attempt.attemptId,
     // Always re-derived from the attempt id (pinned contract), so even an
     // attempt persisted by an older build sends the canonical key.
-    idempotency_key: await deriveIdempotencyKey(attempt.attemptId),
+    idempotency_key: await deriveIdempotencyKey('provision', attempt.attemptId),
   })
 
   if (result.ok) {

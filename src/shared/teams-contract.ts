@@ -186,15 +186,64 @@ export function provisionErrorFor(status: number, body: unknown): ProvisionError
   return 'network'
 }
 
-// ─── idempotency_key derivation (Contract B §5a #1 — PINNED) ─────────
-// idempotency_key = base64url_nopad(SHA-256(UTF-8(attempt_id))). Deterministic,
-// so the extension and the backend derive the identical value from the same
-// attempt, and a retry of the same attempt always carries the same key.
+// ─── Canonical error enum (bridge/1.1.0, OpenAPI Error.error) ─────────
+// Mirrors the backend's `Error.error` enum until the generated OpenAPI types
+// replace this hand copy. `revoked` no longer exists: it is split into
+// `token_revoked` (deployment token) and `install_revoked` (this install).
+export const API_ERROR_CODES = [
+  'invalid_token',
+  'invalid_proof',
+  'exhausted',
+  'expired',
+  'token_revoked',
+  'install_revoked',
+  'recovery_window_expired',
+] as const
+export type ApiErrorCode = (typeof API_ERROR_CODES)[number]
 
-/** Derive the pinned idempotency key for a `/provision` attempt id. */
-export async function deriveIdempotencyKey(attemptId: string): Promise<string> {
+// /join: 401 = invalid_proof; 410 = expired | install_revoked |
+// recovery_window_expired. `install_revoked` blocks managed re-enrollment.
+export const JOIN_GONE_ERRORS = ['expired', 'install_revoked', 'recovery_window_expired'] as const
+export type JoinGoneError = (typeof JOIN_GONE_ERRORS)[number]
+export type JoinErrorCode = 'invalid_proof' | JoinGoneError | 'network'
+
+/** Map a non-2xx /join answer to its error code. An unrecognized 410 body is
+ *  terminal `expired` (never a block); anything unexpected is `network`. */
+export function joinErrorFor(status: number, body: unknown): JoinErrorCode {
+  if (status === 401) return 'invalid_proof'
+  if (status === 410) {
+    const err = (body as { error?: unknown } | null)?.error
+    return (JOIN_GONE_ERRORS as readonly unknown[]).includes(err)
+      ? (err as JoinGoneError)
+      : 'expired'
+  }
+  return 'network'
+}
+
+// ─── idempotency_key derivation (bridge/1.1.0 — PINNED, domain-separated) ──
+// idempotency_key = base64url_nopad(SHA-256(UTF-8(<domain tag> + <attempt secret>)))
+//   /provision: tag "alg-provision-idem:" + attempt_id
+//   /join:      tag "alg-join-idem:"      + attempt_secret
+// The tag keeps the key distinct from the S256 attempt_challenge
+// (= SHA-256(attempt_secret) with no tag) and from the other endpoint's key.
+// Deterministic, so a retry of the same attempt always carries the same key and
+// the backend derives the identical value.
+export const IDEMPOTENCY_DOMAIN_TAGS = {
+  provision: 'alg-provision-idem:',
+  join: 'alg-join-idem:',
+} as const
+export type IdempotencyEndpoint = keyof typeof IDEMPOTENCY_DOMAIN_TAGS
+
+/** Derive the pinned idempotency key for an attempt on `endpoint`. */
+export async function deriveIdempotencyKey(
+  endpoint: IdempotencyEndpoint,
+  attemptSecret: string,
+): Promise<string> {
   const digest = new Uint8Array(
-    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(attemptId)),
+    await crypto.subtle.digest(
+      'SHA-256',
+      new TextEncoder().encode(IDEMPOTENCY_DOMAIN_TAGS[endpoint] + attemptSecret),
+    ),
   )
   let bin = ''
   for (const b of digest) bin += String.fromCharCode(b)

@@ -19,7 +19,7 @@
     "http://localhost:54321/*"
   ],
   "externally_connectable": {
-    "matches": ["https://zabcore.com/*"]
+    "matches": ["https://zabcore.com/join*"]
   },
   "background": {
     "service_worker": "src/background/service-worker.ts",

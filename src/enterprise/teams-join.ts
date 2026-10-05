@@ -18,7 +18,12 @@
 // clear the attempt. Code-entry enrollment (`runEnroll`) stays as the fallback.
 
 import { getBackendConfig } from './teams-config'
-import { getEnrollment, setEnrollment, setRevokedNotice } from '../shared/teams-storage'
+import {
+  getEnrollment,
+  setEnrollment,
+  setRevokedNotice,
+  setRevokeBlock,
+} from '../shared/teams-storage'
 import {
   clearJoinAttempt,
   deriveChallenge,
@@ -42,7 +47,7 @@ export type JoinRunOutcome =
   | 'no-exchange-token'
   | 'invalid-proof'
   | 'expired'
-  | 'revoked'
+  | 'install-revoked'
   | 'recovery-expired'
   | 'network'
 
@@ -73,8 +78,9 @@ export async function beginJoin(deps: JoinDeps = {}): Promise<BeginJoinResult> {
   const attempt: JoinAttempt = {
     attemptSecret,
     challenge: await deriveChallenge(attemptSecret),
-    // Pinned (same as /provision): base64url(SHA-256(attempt secret)).
-    idempotencyKey: await deriveIdempotencyKey(attemptSecret),
+    // Pinned: base64url(SHA-256("alg-join-idem:" + attempt secret)) — domain-tagged
+    // so it never equals the S256 challenge the website holds.
+    idempotencyKey: await deriveIdempotencyKey('join', attemptSecret),
     createdAt: new Date().toISOString(),
   }
   // Persist BEFORE the challenge leaves the extension.
@@ -128,7 +134,7 @@ async function runJoinOnce(
     attempt_secret: attempt.attemptSecret,
     // Re-derived on every request, so a retry of the same attempt always carries
     // the same key (even for an attempt persisted by an older build).
-    idempotency_key: await deriveIdempotencyKey(attempt.attemptSecret),
+    idempotency_key: await deriveIdempotencyKey('join', attempt.attemptSecret),
   })
 
   if (result.ok) {
@@ -151,8 +157,11 @@ async function runJoinOnce(
       return 'invalid-proof'
     case 'expired':
       return 'expired'
-    case 'revoked':
-      return 'revoked'
+    case 'install_revoked':
+      // This install was revoked: never let a managed policy silently re-enroll
+      // it (same persistent block as /provision install_revoked).
+      await setRevokeBlock()
+      return 'install-revoked'
     case 'recovery_window_expired':
       return 'recovery-expired'
   }

@@ -16,7 +16,7 @@ export interface ProvisionAttempt {
   readonly attemptId: string
   /** The deployment token this attempt is bound to (reuse only for the same token). */
   readonly deploymentToken: string
-  /** base64url(SHA-256(attemptId)) — see `deriveIdempotencyKey` (pinned). */
+  /** base64url(SHA-256("alg-provision-idem:" + attemptId)) — `deriveIdempotencyKey`. */
   readonly idempotencyKey: string
   /** ISO timestamp the attempt was first persisted. */
   readonly createdAt: string
