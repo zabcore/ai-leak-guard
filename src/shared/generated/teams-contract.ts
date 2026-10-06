@@ -205,6 +205,891 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/portal/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's authorized orgs with per-org roles and capabilities. */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalMe"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portal/clinics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a clinic directly — the caller becomes its owner. */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Per user + operation, kept 24h. Same key + same body → replay; different body → 409 idempotency_conflict. */
+                    "Idempotency-Key": components["parameters"]["IdempotencyKeyRequired"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CreateClinicRequest"];
+                };
+            };
+            responses: {
+                /** @description Created (or replayed) */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ClinicResult"];
+                    };
+                };
+                /** @description invalid_request (bad name or missing/bad Idempotency-Key) */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description idempotency_conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description rate_limited */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portal/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Look up a pending-clinic claim link for the signed-in claimant. */
+        get: {
+            parameters: {
+                query: {
+                    claim_ref: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ClaimLookup"];
+                    };
+                };
+                /** @description invalid_request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description not_found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Claim a pending clinic (accept an owner invitation). */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ClaimRequest"];
+                };
+            };
+            responses: {
+                /** @description Claimed */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalOrg"];
+                    };
+                };
+                /** @description invalid_request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description wrong_recipient */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description not_found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description invitation_revoked | invitation_expired | invitation_consumed */
+                410: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portal/delegation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Owner grants or declines (withdraws) an MSP's delegated access to a clinic. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DelegationDecision"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["DelegationResult"];
+                    };
+                };
+                /** @description invalid_request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description not_found (no such MSP account) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portal/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List an org's invitations with derived status, newest first. */
+        get: {
+            parameters: {
+                query: {
+                    org_id: string;
+                    status?: components["schemas"]["InvitationStatus"];
+                    limit?: number;
+                    /** @description Opaque next_cursor from the previous page (keyset on created_at, id). */
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InvitationList"];
+                    };
+                };
+                /** @description invalid_request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /** Issue a staff invitation (and email it when email delivery is configured). */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Per user + operation, kept 24h. Same key + same body → replay; different body → 409 idempotency_conflict. */
+                    "Idempotency-Key": components["parameters"]["IdempotencyKeyRequired"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IssueInvitationRequest"];
+                };
+            };
+            responses: {
+                /** @description Issued (or replayed) */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InvitationResult"];
+                    };
+                };
+                /** @description invalid_request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description invitation_exists | org_pending | idempotency_conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description rate_limited */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portal/invitations/resend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-send the invitation email. Nothing else changes. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    "Idempotency-Key"?: components["parameters"]["IdempotencyKeyOptional"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InvitationActionRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InvitationResult"];
+                    };
+                };
+                /** @description invalid_request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description not_found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description invalid_state | idempotency_conflict */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description rate_limited */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portal/invitations/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke an UNREDEEMED invitation. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InvitationActionRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InvitationRevokeResult"];
+                    };
+                };
+                /** @description invalid_request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description not_found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description invitation_enrolled */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portal/installations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** PINNED, not yet implemented: list an org's installations, independent of invitations. */
+        get: {
+            parameters: {
+                query: {
+                    org_id: string;
+                    status?: "active" | "revoked";
+                    limit?: number;
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["InstallationList"];
+                    };
+                };
+                /** @description forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portal/installations/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** PINNED, not yet implemented: remove (revoke) one installation. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InstallationActionRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Installation"];
+                    };
+                };
+                /** @description forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description not_found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/portal/installations/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** PINNED, not yet implemented: authorized recovery of an installation whose browser lost its credential. */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Per user + operation, kept 24h. Same key + same body → replay; different body → 409 idempotency_conflict. */
+                    "Idempotency-Key": components["parameters"]["IdempotencyKeyRequired"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InstallationActionRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["RecoveryResult"];
+                    };
+                };
+                /** @description forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description invalid_state */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/checkin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** PINNED v1.2.0 addition to the existing installation check-in: self-test reporting scoped to the installation. */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        install_id: string;
+                        credential: string;
+                        extension_version?: string;
+                        applied_settings_revision?: number;
+                        self_test?: {
+                            passed: boolean;
+                            /** Format: date-time */
+                            at: string;
+                            /** @enum {string} */
+                            outcome?: "pass" | "fail" | "partial";
+                            scope?: string[];
+                            suite_version?: string;
+                        };
+                    };
+                };
+            };
+            responses: {
+                /** @description Checked in ({revoked: false, org_id, target_settings_revision, settings}) or {revoked: true} */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description bad_credential */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -255,9 +1140,238 @@ export interface components {
             /** @description Domain-tagged derivation: base64url(SHA256('alg-join-idem:' + attempt_secret)). MUST differ from attempt_challenge; stable across retries. */
             idempotency_key: string;
         };
+        PortalError: {
+            /** @enum {string} */
+            error: "unauthorized" | "forbidden" | "not_found" | "invalid_request" | "idempotency_conflict" | "invitation_exists" | "invitation_enrolled" | "invalid_state" | "org_pending" | "wrong_recipient" | "invitation_revoked" | "invitation_expired" | "invitation_consumed" | "rate_limited" | "method_not_allowed" | "service_unavailable";
+            /** @description invitation_exists: the open invitation for that recipient (resend it instead). */
+            invitation_id?: string;
+            status?: components["schemas"]["InvitationStatus"];
+        };
+        /**
+         * @description The caller's relationship to ONE org. A user can hold several roles across orgs; staff have no portal role.
+         * @enum {string}
+         */
+        Role: "owner" | "admin" | "msp";
+        /**
+         * @description Per-org permission, enforced server-side on every call. owner: all. admin and msp (delegated, non-revoked): all except members.manage, owner_invitations.manage and delegation.manage, which stay owner-only.
+         * @enum {string}
+         */
+        Capability: "org.read" | "invitations.read" | "invitations.issue" | "invitations.resend" | "invitations.revoke" | "installations.read" | "installations.remove" | "installations.recover" | "settings.write" | "tokens.manage" | "members.manage" | "owner_invitations.manage" | "delegation.manage";
+        DelegationRequest: {
+            /** Format: uuid */
+            msp_account: string;
+            msp_name: string;
+        };
+        PortalOrg: {
+            /** Format: uuid */
+            org_id: string;
+            org_name: string;
+            /**
+             * @description pending: an MSP-created clinic awaiting the owner's claim and delegation decision. Invitations cannot be issued while pending.
+             * @enum {string}
+             */
+            onboarding_status: "pending" | "active";
+            roles: components["schemas"]["Role"][];
+            capabilities: components["schemas"]["Capability"][];
+            /** @description Owner only: the MSP that proposed this clinic, awaiting POST /portal/delegation. null otherwise. */
+            delegation_request: components["schemas"]["DelegationRequest"] | null;
+        };
+        PortalMe: {
+            /** Format: uuid */
+            user_id: string;
+            email: string;
+            /** @description Every org the caller may act on (owner, admin or delegated MSP), sorted by name. */
+            orgs: components["schemas"]["PortalOrg"][];
+            msp_accounts: {
+                /** Format: uuid */
+                msp_account: string;
+                msp_name: string;
+                /** @enum {string} */
+                role: "partner_owner" | "partner_technician";
+            }[];
+        };
+        CreateClinicRequest: {
+            name: string;
+        };
+        ClinicResult: components["schemas"]["PortalOrg"] & {
+            /** @description true when this answer replays an earlier request with the same Idempotency-Key. */
+            replayed: boolean;
+        };
+        ClaimRequest: {
+            /**
+             * Format: uuid
+             * @description The owner invitation id from the claim link.
+             */
+            claim_ref: string;
+        };
+        ClaimLookup: {
+            /** Format: uuid */
+            claim_ref: string;
+            org_name: string;
+            /** @enum {string} */
+            onboarding_status: "pending" | "active";
+            /** @enum {string} */
+            claim_status: "open" | "claimed" | "revoked" | "expired";
+            intended_email_masked: string;
+            /** @description Whether the signed-in user's confirmed email is the invitation's. false: sign in as the invited address. */
+            email_matches: boolean;
+            already_owner: boolean;
+            delegation_request: components["schemas"]["DelegationRequest"] | null;
+        };
+        DelegationDecision: {
+            /** Format: uuid */
+            org_id: string;
+            /** Format: uuid */
+            msp_account: string;
+            /** @enum {string} */
+            decision: "grant" | "decline";
+        };
+        DelegationResult: components["schemas"]["PortalOrg"] & {
+            /** Format: uuid */
+            msp_account: string;
+            /** @enum {string} */
+            decision: "grant" | "decline";
+        };
+        /**
+         * @description Derived, in precedence order: revoked; enrolled (redeemed: an installation exists; its own status is in `installation`); expired; connecting (a join exchange token is live); verified (the recipient signed in on /join); email_sent (an invitation email was delivered); pending (issued, no email delivered yet). Not invitation states: `failed` (extension-side outcomes are not reported to the backend) and recovery_pending / recovery_window_expired (installation/attempt states).
+         * @enum {string}
+         */
+        InvitationStatus: "pending" | "email_sent" | "verified" | "connecting" | "enrolled" | "expired" | "revoked";
+        Invitation: {
+            /** Format: uuid */
+            invitation_id: string;
+            /** Format: uuid */
+            org_id: string;
+            org_name: string;
+            /** @enum {string} */
+            type: "staff" | "owner";
+            recipient_email: string;
+            status: components["schemas"]["InvitationStatus"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** Format: date-time */
+            last_sent_at: string | null;
+            send_count: number;
+            /** Format: date-time */
+            verified_at: string | null;
+            /** Format: date-time */
+            redeemed_at: string | null;
+            /** Format: date-time */
+            revoked_at: string | null;
+            /** @description The installation this invitation produced (enrolled only). */
+            installation: {
+                /** Format: uuid */
+                install_id: string;
+                /** @enum {string} */
+                status: "active" | "revoked";
+            } | null;
+            /** @description While the invitation is usable (pending | email_sent | verified | connecting): staff → https://zabcore.com/join?invitation_ref=<id>; owner → https://zabcore.com/claim?claim_ref=<id>. Otherwise null. The same link for the invitation's whole life (resend never changes it). */
+            link: string | null;
+        };
+        IssueInvitationRequest: {
+            /** Format: uuid */
+            org_id: string;
+            recipient_email: string;
+        };
+        InvitationActionRequest: {
+            /** Format: uuid */
+            org_id: string;
+            /** Format: uuid */
+            invitation_id: string;
+        };
+        InvitationResult: {
+            invitation: components["schemas"]["Invitation"];
+            replayed: boolean;
+            /**
+             * @description sent: delivered now (last_sent_at/send_count updated). failed: delivery failed; the invitation stands, resend later. not_configured: this deployment sends no email yet — share `link` by hand. skipped: an Idempotency-Key replay (no second email).
+             * @enum {string}
+             */
+            email_dispatch: "sent" | "failed" | "not_configured" | "skipped";
+        };
+        InvitationRevokeResult: {
+            invitation: components["schemas"]["Invitation"];
+        };
+        InvitationList: {
+            items: components["schemas"]["Invitation"][];
+            /** @description Opaque; pass back as ?cursor= for the next page. null on the last page. */
+            next_cursor: string | null;
+        };
+        /** @description v1.2.0 (pinned, not yet implemented): the installation's most recent self-test, as reported over the authenticated installation channel (/checkin). */
+        SelfTest: {
+            /** @enum {string} */
+            outcome: "pass" | "fail" | "partial";
+            /**
+             * Format: date-time
+             * @description When the test ran on the device (not when it was reported).
+             */
+            tested_at: string;
+            /** @description Ids of the checks that ran. */
+            scope: string[];
+            suite_version: string;
+        };
+        /** @description v1.2.0 (pinned): independent of invitations. Policy/force-installed browsers appear with invitation_id null. */
+        Installation: {
+            /** Format: uuid */
+            install_id: string;
+            /** Format: uuid */
+            org_id: string;
+            /** @enum {string} */
+            status: "active" | "revoked";
+            /**
+             * @description null: legacy code-entry install.
+             * @enum {string|null}
+             */
+            created_via: "provision" | "join" | null;
+            /** Format: uuid */
+            invitation_id: string | null;
+            recipient_email: string | null;
+            /** Format: uuid */
+            deployment_token_id: string | null;
+            label: string | null;
+            extension_version: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_checkin_at: string | null;
+            /** Format: date-time */
+            revoked_at: string | null;
+            /** @enum {string|null} */
+            revoked_reason: "removed" | "recovered" | null;
+            self_test: components["schemas"]["SelfTest"] | null;
+        };
+        InstallationList: {
+            items: components["schemas"]["Installation"][];
+            next_cursor: string | null;
+        };
+        InstallationActionRequest: {
+            /** Format: uuid */
+            org_id: string;
+            /** Format: uuid */
+            install_id: string;
+        };
+        RecoveryResult: {
+            /** Format: uuid */
+            superseded_install_id: string;
+            recovery: {
+                /** @enum {string} */
+                kind: "invitation";
+                invitation: components["schemas"]["Invitation"];
+            } | {
+                /** @enum {string} */
+                kind: "slot_credit";
+                /** Format: uuid */
+                deployment_token_id: string;
+            };
+        };
     };
     responses: never;
-    parameters: never;
+    parameters: {
+        /** @description Per user + operation, kept 24h. Same key + same body → replay; different body → 409 idempotency_conflict. */
+        IdempotencyKeyRequired: string;
+        IdempotencyKeyOptional: string;
+    };
     requestBodies: never;
     headers: never;
     pathItems: never;
