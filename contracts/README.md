@@ -1,15 +1,15 @@
 # Pinned Teams Lite contract
 
 `teams-contract.openapi.yaml` is a byte-identical copy of the CANONICAL contract in
-**zabcore/teams-onboarding-backend** (repo root), `x-contract-version: 1.2.0`, pinned
+**zabcore/teams-onboarding-backend** (repo root), `x-contract-version: 1.3.0`, pinned
 together with bridge/1.1.0. Do not edit it here — change it in the backend repo,
 then re-pin.
 
 |                                                 |                                                                                |
 | ----------------------------------------------- | ------------------------------------------------------------------------------ |
-| Source                                          | zabcore/teams-onboarding-backend @ `f8412536` (`feat/contract-v1.1-canonical`) |
-| `teams-contract.openapi.yaml` sha256            | `9941dcefdb60a1428780b53bfe537626cd28ab817d1c10413dc0efc5d542da1d`             |
-| `src/shared/generated/teams-contract.ts` sha256 | `c8672ca20f0e3fbe04426c6f433f9a24537fbbe566901d1b47421d56676a2268`             |
+| Source                                          | zabcore/teams-onboarding-backend @ `ab64ad4a` (`feat/contract-v1.1-canonical`) |
+| `teams-contract.openapi.yaml` sha256            | `6d3992fbc5528bedca722ff8ba065ddf08eb7da96c134adfd6f954dfb45ad0d3`             |
+| `src/shared/generated/teams-contract.ts` sha256 | `ec47cf5c320cedf709ffbf8d6f3993e0225f7ca1589688e4bb7236704121f73c`             |
 | Generator                                       | `openapi-typescript@7.13.0` (`npm run gen:contract-types`)                     |
 
 The generated file is identical to the backend's

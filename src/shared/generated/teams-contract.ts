@@ -1090,6 +1090,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/email-worker": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** INTERNAL — drain due email send jobs (scheduler only; not for clients). */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Drained */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            claimed: number;
+                            sent: number;
+                            retried: number;
+                            failed: number;
+                        };
+                    };
+                };
+                /** @description unauthorized (missing or wrong worker secret) */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description not_configured | service_unavailable */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1233,10 +1288,23 @@ export interface components {
             decision: "grant" | "decline";
         };
         /**
-         * @description Derived, in precedence order: revoked; enrolled (redeemed: an installation exists; its own status is in `installation`); expired; connecting (a join exchange token is live); verified (the recipient signed in on /join); email_sent (an invitation email was delivered); pending (issued, no email delivered yet). Not invitation states: `failed` (extension-side outcomes are not reported to the backend) and recovery_pending / recovery_window_expired (installation/attempt states).
+         * @description Derived, in precedence order: revoked; browser_enrolled (redeemed: an installation exists, see `installation`); expired; connecting (a join exchange token is live); verified (the recipient signed in on /join); email_failed (the latest invitation email job gave up — resend it); email_sent (the latest invitation email was HANDED TO THE PROVIDER — a 2xx, never proof of inbox delivery); invitation_created (created; its email is queued or not yet handed over). Not invitation states: extension-side failures (never reported to the backend) and recovery_pending / recovery_window_expired (installation/attempt states).
          * @enum {string}
          */
-        InvitationStatus: "pending" | "email_sent" | "verified" | "connecting" | "enrolled" | "expired" | "revoked";
+        InvitationStatus: "invitation_created" | "email_sent" | "email_failed" | "verified" | "connecting" | "browser_enrolled" | "expired" | "revoked";
+        /** @description The invitation's LATEST email job (sign-in-link emails from /verify-start are not counted). */
+        InvitationEmail: {
+            /**
+             * @description none: no job (legacy). queued: waiting or being sent (retries with backoff). sent: handed to the provider. failed: gave up after its attempts or a permanent provider rejection — the invitation is unaffected; resend. cancelled: the invitation was revoked, expired or redeemed first.
+             * @enum {string}
+             */
+            state: "none" | "queued" | "sent" | "failed" | "cancelled";
+            attempts: number;
+            /** @description A code only (e.g. network, provider_unavailable, provider_rejected_400, link_generation_failed). Never a provider body. */
+            last_error: string | null;
+            /** Format: date-time */
+            last_attempt_at: string | null;
+        };
         Invitation: {
             /** Format: uuid */
             invitation_id: string;
@@ -1251,8 +1319,12 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             expires_at: string;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description When an invitation email was last HANDED TO THE PROVIDER.
+             */
             last_sent_at: string | null;
+            /** @description Invitation emails handed to the provider. */
             send_count: number;
             /** Format: date-time */
             verified_at: string | null;
@@ -1260,14 +1332,15 @@ export interface components {
             redeemed_at: string | null;
             /** Format: date-time */
             revoked_at: string | null;
-            /** @description The installation this invitation produced (enrolled only). */
+            email: components["schemas"]["InvitationEmail"];
+            /** @description The installation this invitation produced (browser_enrolled only). */
             installation: {
                 /** Format: uuid */
                 install_id: string;
                 /** @enum {string} */
                 status: "active" | "revoked";
             } | null;
-            /** @description While the invitation is usable (pending | email_sent | verified | connecting): staff → https://zabcore.com/join?invitation_ref=<id>; owner → https://zabcore.com/claim?claim_ref=<id>. Otherwise null. The same link for the invitation's whole life (resend never changes it). */
+            /** @description While the invitation is usable (invitation_created | email_sent | email_failed | verified | connecting): staff → https://zabcore.com/join?invitation_ref=<id>; owner → https://zabcore.com/claim?claim_ref=<id>. Otherwise null. The same link for the invitation's whole life (resend never changes it). */
             link: string | null;
         };
         IssueInvitationRequest: {
@@ -1283,12 +1356,8 @@ export interface components {
         };
         InvitationResult: {
             invitation: components["schemas"]["Invitation"];
+            /** @description true: an Idempotency-Key replay — nothing new was queued. */
             replayed: boolean;
-            /**
-             * @description sent: delivered now (last_sent_at/send_count updated). failed: delivery failed; the invitation stands, resend later. not_configured: this deployment sends no email yet — share `link` by hand. skipped: an Idempotency-Key replay (no second email).
-             * @enum {string}
-             */
-            email_dispatch: "sent" | "failed" | "not_configured" | "skipped";
         };
         InvitationRevokeResult: {
             invitation: components["schemas"]["Invitation"];

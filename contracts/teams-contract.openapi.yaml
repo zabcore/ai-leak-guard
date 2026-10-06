@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Teams Lite — deployment & onboarding API
-  version: 1.2.0
-  x-contract-version: "1.2.0"
+  version: 1.3.0
+  x-contract-version: "1.3.0"
   description: >
     CANONICAL machine-readable contract for the managed-deployment + onboarding
     endpoints. This file lives in the BACKEND repo (zabcore/teams-onboarding-backend)
@@ -30,7 +30,12 @@ info:
     (issue/list/resend/revoke) — plus PINNED, not-yet-implemented interfaces
     (`x-implemented: false`) for installations (list/remove/recover) and
     installation-scoped self-test reporting on /checkin. The extension-facing paths
-    and the Error enum are unchanged.
+    and the Error enum are unchanged. v1.3.0 (portal-only, the extension-facing
+    paths and Error enum unchanged): durable invitation email delivery (Loops). An
+    invitation and its send job are committed together; a worker sends later
+    (/email-worker). InvitationStatus is renamed to the delivery-aware states
+    (invitation_created, email_sent, email_failed, …, browser_enrolled), Invitation
+    gains `email`, and InvitationResult drops `email_dispatch`.
 servers:
   - url: "{baseUrl}/functions/v1"
     variables:
@@ -49,6 +54,10 @@ components:
     userSession:        # v1.2.0 /portal/* — the portal user's Supabase Auth access
       type: http        # token (same magic-link sign-in as /join), confirmed email,
       scheme: bearer    # re-validated per call. Roles/capabilities are NOT claims.
+    workerSecret:       # /email-worker — internal; the scheduler's server-side
+      type: apiKey      # secret (EMAIL_WORKER_SECRET, ≥32 chars). Never a user,
+      in: header        # never a browser.
+      name: x-email-worker-secret
     installCredential:  # /checkin — install_id + credential in the body, verified
       type: apiKey      # against the stored credential hash. (Modeled as a header
       in: header        # for OpenAPI; the actual values travel in the body.)
@@ -228,17 +237,31 @@ components:
     InvitationStatus:
       type: string
       description: >
-        Derived, in precedence order: revoked; enrolled (redeemed: an installation
-        exists; its own status is in `installation`); expired; connecting (a join
+        Derived, in precedence order: revoked; browser_enrolled (redeemed: an
+        installation exists, see `installation`); expired; connecting (a join
         exchange token is live); verified (the recipient signed in on /join);
-        email_sent (an invitation email was delivered); pending (issued, no email
-        delivered yet). Not invitation states: `failed` (extension-side outcomes
-        are not reported to the backend) and recovery_pending /
+        email_failed (the latest invitation email job gave up — resend it);
+        email_sent (the latest invitation email was HANDED TO THE PROVIDER — a 2xx,
+        never proof of inbox delivery); invitation_created (created; its email is
+        queued or not yet handed over). Not invitation states: extension-side
+        failures (never reported to the backend) and recovery_pending /
         recovery_window_expired (installation/attempt states).
-      enum: [pending, email_sent, verified, connecting, enrolled, expired, revoked]
+      enum: [invitation_created, email_sent, email_failed, verified, connecting, browser_enrolled, expired, revoked]
+    InvitationEmail:
+      type: object
+      description: "The invitation's LATEST email job (sign-in-link emails from /verify-start are not counted)."
+      required: [state, attempts, last_error, last_attempt_at]
+      properties:
+        state:
+          type: string
+          enum: [none, queued, sent, failed, cancelled]
+          description: "none: no job (legacy). queued: waiting or being sent (retries with backoff). sent: handed to the provider. failed: gave up after its attempts or a permanent provider rejection — the invitation is unaffected; resend. cancelled: the invitation was revoked, expired or redeemed first."
+        attempts: { type: integer, minimum: 0 }
+        last_error: { type: [string, "null"], pattern: "^[a-z0-9_]{1,64}$", description: "A code only (e.g. network, provider_unavailable, provider_rejected_400, link_generation_failed). Never a provider body." }
+        last_attempt_at: { type: [string, "null"], format: date-time }
     Invitation:
       type: object
-      required: [invitation_id, org_id, org_name, type, recipient_email, status, created_at, expires_at, last_sent_at, send_count, verified_at, redeemed_at, revoked_at, installation, link]
+      required: [invitation_id, org_id, org_name, type, recipient_email, status, created_at, expires_at, last_sent_at, send_count, verified_at, redeemed_at, revoked_at, email, installation, link]
       properties:
         invitation_id: { type: string, format: uuid }
         org_id: { type: string, format: uuid }
@@ -248,13 +271,14 @@ components:
         status: { $ref: "#/components/schemas/InvitationStatus" }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
-        last_sent_at: { type: [string, "null"], format: date-time }
-        send_count: { type: integer, minimum: 0 }
+        last_sent_at: { type: [string, "null"], format: date-time, description: "When an invitation email was last HANDED TO THE PROVIDER." }
+        send_count: { type: integer, minimum: 0, description: "Invitation emails handed to the provider." }
         verified_at: { type: [string, "null"], format: date-time }
         redeemed_at: { type: [string, "null"], format: date-time }
         revoked_at: { type: [string, "null"], format: date-time }
+        email: { $ref: "#/components/schemas/InvitationEmail" }
         installation:
-          description: "The installation this invitation produced (enrolled only)."
+          description: "The installation this invitation produced (browser_enrolled only)."
           oneOf:
             - type: object
               required: [install_id, status]
@@ -264,7 +288,7 @@ components:
             - type: "null"
         link:
           type: [string, "null"]
-          description: "While the invitation is usable (pending | email_sent | verified | connecting): staff → https://zabcore.com/join?invitation_ref=<id>; owner → https://zabcore.com/claim?claim_ref=<id>. Otherwise null. The same link for the invitation's whole life (resend never changes it)."
+          description: "While the invitation is usable (invitation_created | email_sent | email_failed | verified | connecting): staff → https://zabcore.com/join?invitation_ref=<id>; owner → https://zabcore.com/claim?claim_ref=<id>. Otherwise null. The same link for the invitation's whole life (resend never changes it)."
     IssueInvitationRequest:
       type: object
       additionalProperties: false
@@ -281,14 +305,10 @@ components:
         invitation_id: { type: string, format: uuid }
     InvitationResult:
       type: object
-      required: [invitation, replayed, email_dispatch]
+      required: [invitation, replayed]
       properties:
         invitation: { $ref: "#/components/schemas/Invitation" }
-        replayed: { type: boolean }
-        email_dispatch:
-          type: string
-          enum: [sent, failed, not_configured, skipped]
-          description: "sent: delivered now (last_sent_at/send_count updated). failed: delivery failed; the invitation stands, resend later. not_configured: this deployment sends no email yet — share `link` by hand. skipped: an Idempotency-Key replay (no second email)."
+        replayed: { type: boolean, description: "true: an Idempotency-Key replay — nothing new was queued." }
     InvitationRevokeResult:
       type: object
       required: [invitation]
@@ -522,6 +542,7 @@ paths:
         - "Capability invitations.issue on org_id. The clinic must be active (409 org_pending)."
         - "One open invitation per recipient per clinic: 409 invitation_exists carries its invitation_id (resend it instead)."
         - "Rate limits: 100 per org per hour; 5 per recipient per org per 24h."
+        - "v1.3.0: the invitation AND its email send job are committed in ONE transaction; the email is sent asynchronously by the worker (retries with backoff, provider Idempotency-Key = job id). The response shows email.state queued; a delivery failure never removes the invitation, never creates an enrollment and never consumes a slot."
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/IssueInvitationRequest" } } } }
       responses:
         "201": { description: Issued (or replayed), content: { application/json: { schema: { $ref: "#/components/schemas/InvitationResult" } } } }
@@ -537,9 +558,10 @@ paths:
       parameters: [{ $ref: "#/components/parameters/IdempotencyKeyOptional" }]
       x-rules:
         - "Capability invitations.resend (owner invitations: owner_invitations.manage)."
-        - "Resend ONLY re-sends the email: the invitation id, link, expiry and status stay the same; join exchanges and the extension's attempt (secret, challenge) are never touched or regenerated. An in-flight join continues."
-        - "Only while usable (pending | email_sent | verified | connecting); otherwise 409 invalid_state with the current status."
-        - "Rate limits: 3 per invitation per hour, 10 per invitation per 24h, 100 per org per hour. With an Idempotency-Key, a repeat replays without a second email (email_dispatch: skipped)."
+        - "Resend ONLY queues another email job: the invitation id, link, expiry and status stay the same; join exchanges and the extension's attempt (secret, challenge) are never touched or regenerated. An in-flight join continues."
+        - "At most one open (queued/sending) job per invitation: a resend while one is open reuses it (no duplicate email)."
+        - "Only while usable (invitation_created | email_sent | email_failed | verified | connecting); otherwise 409 invalid_state with the current status."
+        - "Rate limits: 3 per invitation per hour, 10 per invitation per 24h, 100 per org per hour. With an Idempotency-Key, a repeat replays and queues nothing (replayed: true)."
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/InvitationActionRequest" } } } }
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/InvitationResult" } } } }
@@ -641,3 +663,28 @@ paths:
       responses:
         "200": { description: "Checked in ({revoked: false, org_id, target_settings_revision, settings}) or {revoked: true}" }
         "401": { description: bad_credential }
+  /email-worker:
+    post:
+      summary: "INTERNAL — drain due email send jobs (scheduler only; not for clients)."
+      x-internal: true
+      security: [{ workerSecret: [] }]
+      x-rules:
+        - "Called every minute by pg_cron + pg_net with the server-side secret, and nudged best-effort after each enqueue. No user session and no browser ever call it."
+        - "Claims due jobs with a lease (FOR UPDATE SKIP LOCKED), builds each recipient's one-time sign-in link at send time (GoTrue admin generate_link → https://zabcore.com/auth/callback?inv=|claim=<ref>&token_hash=…&type=…; never stored), and hands the email to Loops (POST /api/v1/transactional, addToAudience false, Idempotency-Key = job id)."
+        - "2xx and 409 (key already used) → sent. 401/403/429/5xx/network → retried with backoff (1, 2, 4 … ≤60 min; 6 attempts). 400/404/422 → failed. A lease that expires (crash) makes the job claimable again with the same Idempotency-Key, so the provider never sends twice."
+        - "503 not_configured when the Loops key or a template id is missing: nothing is claimed; jobs stay queued."
+      responses:
+        "200":
+          description: Drained
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [claimed, sent, retried, failed]
+                properties:
+                  claimed: { type: integer }
+                  sent: { type: integer }
+                  retried: { type: integer }
+                  failed: { type: integer }
+        "401": { description: unauthorized (missing or wrong worker secret) }
+        "503": { description: not_configured | service_unavailable }
