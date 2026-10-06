@@ -64,6 +64,12 @@
       "js": ["src/content/main-world/send-capture.ts"],
       "run_at": "document_start",
       "world": "MAIN"
+    },
+    {
+      "matches": ["https://zabcore.com/join*"],
+      "js": ["src/content/zabcore-presence.ts"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "action": {
