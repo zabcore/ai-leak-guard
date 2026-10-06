@@ -65,6 +65,12 @@ const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 manifest.key = spki.toString('base64')
 manifest.externally_connectable = { matches: ['https://zabcore.com/*'] }
 manifest.name = `${manifest.name} (test join)`
+// Distinguishable from the public build of the same version on chrome://extensions.
+const sha = spawnSync('git', ['rev-parse', '--short', 'HEAD'], {
+  cwd: ROOT,
+  encoding: 'utf8',
+}).stdout.trim()
+manifest.version_name = `${manifest.version} test-join ${sha || 'local'}`
 delete manifest.update_url
 writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
 
@@ -81,6 +87,7 @@ rmSync(zip, { force: true })
 spawnSync('zip', ['-qr', zip, '.'], { cwd: out, stdio: 'inherit' })
 console.log(`[build:test-join] OK
   extension id : ${id}
+  version      : ${manifest.version_name}
   unpacked     : ${out}
   zip          : ${zip}
   backend      : ${baseUrl}
