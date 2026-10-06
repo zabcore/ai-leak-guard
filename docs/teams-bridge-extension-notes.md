@@ -17,7 +17,7 @@ The key is re-derived on every request, so a retry of the same attempt always
 carries the same key. Source: `src/shared/teams-contract.ts`
 (`deriveIdempotencyKey`, `IDEMPOTENCY_DOMAIN_TAGS`).
 
-**Error.error enum (contract v1.1.1):** `invalid_token | invalid_proof | exhausted | expired |
+**Error.error enum (contract v1.1.1, unchanged in v1.1.2):** `invalid_token | invalid_proof | exhausted | expired |
 token_revoked | install_revoked | recovery_window_expired | wrong_recipient | invitation_revoked |
 invitation_expired | invitation_consumed`. The bare value `revoked` is gone. `wrong_recipient` is a
 `/join-init` (website) answer; the extension never receives it.
@@ -91,7 +91,8 @@ reaches `/join`. A test asserts this.
   `challenge {attempt_challenge, expires_at}` as a separate message. The challenge envelope's nonce is
   persisted on the attempt **before** it is posted.
 - **`exchange_token {exchange_token, expires_at, challenge_nonce}`:** the extension acks, then
-  calls `/join`, then posts the result.
+  calls `/join`, then posts the result. `exchange_token` and `expires_at` are the `/join-init` 200
+  body's values, forwarded verbatim (contract v1.1.2: `expires_at` is ISO 8601 UTC, ~2 min).
   - `challenge_nonce` must equal the nonce of a `challenge` this extension emitted for the current
     attempt or a settled one.
   - Anything else → `failed recovery_window_expired`, and `/join` is never called.
