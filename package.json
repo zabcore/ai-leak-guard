@@ -23,7 +23,8 @@
     "verify:live-status": "node scripts/verify-live-status.mjs",
     "monitor": "playwright test -c monitor/playwright.config.ts",
     "teams:live-check": "node scripts/teams-live-check.mjs",
-    "build:test-join": "node scripts/build-test-join.mjs"
+    "build:test-join": "node scripts/build-test-join.mjs",
+    "test:it:join": "node scripts/run-join-it.mjs"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.4.0",
