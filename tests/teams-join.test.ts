@@ -350,6 +350,71 @@ describe('exchangeJoin (bridge exchange_token)', () => {
   })
 })
 
+// Acceptance review: a NEW hello (fresh envelope nonce) on an already-enrolled
+// install must never mint an attempt, mutate the enrollment, or touch a pending one.
+describe('new hello on an already-enrolled install (binding + recovery-first)', () => {
+  it('within the replay window: the SAME attempt_challenge, no attempt, enrollment unchanged, no /join', async () => {
+    const a = await begin(fixed)
+    const c = joinClient([OK])
+    const first = await exchangeJoin('xt-1', a.nonce, { loadClient: c.loadClient })
+    const enrolled = await getEnrollment()
+    expect(enrolled).toMatchObject({ install_id: 'i1' })
+
+    const probe = await begin({ newSecret: () => 'probe-secret' })
+    expect(probe.nonce).not.toBe(a.nonce)
+    expect(probe.challenge).toBe(a.challenge) // re-emitted, not minted
+    expect(await getJoinAttempt()).toBeNull()
+
+    // Any token sent against the probe's challenge only replays the stored result.
+    const replay = await exchangeJoin('xt-other', probe.nonce, { loadClient: c.loadClient })
+    expect(replay).toEqual({ result: first.result, enrolledNow: false })
+    expect(c.calls).toHaveLength(1)
+    expect(await getEnrollment()).toEqual(enrolled)
+  })
+
+  it('another invitation, or after the replay window: already_enrolled, nothing written', async () => {
+    const a = await begin(fixed)
+    await exchangeJoin('xt-1', a.nonce, { loadClient: joinClient([OK]).loadClient })
+    const enrolled = await getEnrollment()
+    const settled = await getJoinResult()
+    const later = Date.now() + JOIN_RESULT_REPLAY_MS + 1
+    for (const out of [
+      (await begin({}, 'inv-0002')).out,
+      (await begin({ now: () => later })).out,
+    ]) {
+      expect(out).toEqual({
+        kind: 'result',
+        result: { status: 'failed', error_code: 'already_enrolled' },
+      })
+    }
+    expect(await getJoinAttempt()).toBeNull()
+    expect(await getEnrollment()).toEqual(enrolled)
+    expect(await getJoinResult()).toEqual(settled)
+  })
+
+  it('a pending attempt is neither replaced nor mutated by a new hello, and never redeemed', async () => {
+    const a = await begin(fixed)
+    await exchangeJoin('xt-1', a.nonce, {
+      loadClient: joinClient([{ ok: false, code: 'network' }]).loadClient,
+    })
+    const pending = await getJoinAttempt()
+    expect(pending?.exchangeToken).toBe('xt-1')
+    await setEnrollment(ENROLLED) // enrolled by another path (code entry / policy)
+
+    for (const inv of [INV, 'inv-0002']) {
+      expect((await begin({ newSecret: () => 'probe-secret' }, inv)).out).toEqual({
+        kind: 'result',
+        result: { status: 'failed', error_code: 'already_enrolled' },
+      })
+    }
+    expect(await getJoinAttempt()).toEqual(pending)
+    const c = joinClient([OK])
+    expect(await runJoin(undefined, { loadClient: c.loadClient })).toBe('already-enrolled')
+    expect(c.calls).toHaveLength(0)
+    expect(await getEnrollment()).toEqual(ENROLLED)
+  })
+})
+
 describe('join idempotency_key derivation (pinned, domain-tagged)', () => {
   it('differs from the S256 challenge the website holds', async () => {
     const { challenge } = await begin(fixed)
