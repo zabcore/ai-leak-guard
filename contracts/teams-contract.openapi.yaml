@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Teams Lite — deployment & onboarding API
-  version: 1.1.1
-  x-contract-version: "1.1.1"
+  version: 1.1.2
+  x-contract-version: "1.1.2"
   description: >
     CANONICAL machine-readable contract for the managed-deployment + onboarding
     endpoints. This file lives in the BACKEND repo (zabcore/teams-onboarding-backend)
@@ -21,7 +21,10 @@ info:
     (no / expired / invalid session; re-verify, same attempt), and `/join-init` +
     `/join` answer `invitation_revoked` / `invitation_expired` / `invitation_consumed`
     (the invitation is dead; never retry) instead of `expired`, which now means
-    only a lapsed exchange token (recoverable within the window).
+    only a lapsed exchange token (recoverable within the window). v1.1.2
+    (additive): JoinInitResponse carries `expires_at` (ISO 8601 UTC, the exchange
+    token's expiry), which the website forwards in the bridge `exchange_token`
+    message as bridge/1.1.0 requires.
 servers:
   - url: "{baseUrl}/functions/v1"
     variables:
@@ -81,9 +84,10 @@ components:
         attempt_challenge: { type: string, description: "Non-secret: base64url(SHA256(attempt_secret)). The secret never reaches this endpoint." }
     JoinInitResponse:
       type: object
-      required: [exchange_token, org_id, org_name]
+      required: [exchange_token, expires_at, org_id, org_name]
       properties:
         exchange_token: { type: string, description: "Single-use, short-lived (~2m), bound to {challenge, recipient, invitation, org}." }
+        expires_at: { type: string, format: date-time, description: "v1.1.2: when exchange_token expires, ISO 8601 UTC (e.g. 2026-10-06T18:40:00.000Z). Never later than the invitation's own expiry. Forwarded unchanged as the bridge exchange_token message's expires_at." }
         org_id: { type: string }
         org_name: { type: string }
     JoinRequest:

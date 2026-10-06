@@ -240,6 +240,11 @@ export interface components {
         JoinInitResponse: {
             /** @description Single-use, short-lived (~2m), bound to {challenge, recipient, invitation, org}. */
             exchange_token: string;
+            /**
+             * Format: date-time
+             * @description v1.1.2: when exchange_token expires, ISO 8601 UTC (e.g. 2026-10-06T18:40:00.000Z). Never later than the invitation's own expiry. Forwarded unchanged as the bridge exchange_token message's expires_at.
+             */
+            expires_at: string;
             org_id: string;
             org_name: string;
         };
