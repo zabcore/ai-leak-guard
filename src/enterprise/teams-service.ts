@@ -59,7 +59,18 @@ async function realSelfTestEvidence(): Promise<SelfTestEvidence | undefined> {
   try {
     const rec = await getSelfTestResult()
     if (rec === null) return undefined
-    return { passed: rec.result === 'confirmed', at: rec.ts }
+    // The installation's quick check (backend contract v1.4.0): confirmed → pass,
+    // fail → fail, unsupported (could not run on that site) → incomplete.
+    const outcome =
+      rec.result === 'confirmed' ? 'pass' : rec.result === 'fail' ? 'fail' : 'incomplete'
+    const site = /^[a-z0-9_.-]{1,59}$/.test(rec.site) ? rec.site : ''
+    return {
+      passed: rec.result === 'confirmed',
+      at: rec.ts,
+      outcome,
+      scope: site ? [`${site}-send`] : [],
+      suite_version: chrome.runtime.getManifest?.().version ?? '0.0.0',
+    }
   } catch {
     return undefined
   }

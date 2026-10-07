@@ -97,7 +97,11 @@ reaches `/join`. A test asserts this.
     attempt or a settled one.
   - Anything else → `failed recovery_window_expired`, and `/join` is never called.
 - **`result`:** success is `{status: "success", connected_invitation_ref, connected_attempt_challenge,
-connected_org_id, connected_org_name, connected_at}`; failure is `{status: "failed", error_code}`.
+connected_org_id, connected_org_name, connected_at, connected_install_id}`; failure is
+  `{status: "failed", error_code}`. `connected_install_id` (#88, additive to bridge/1.1.0) names the
+  installation the join created. It is an identifier, not a credential: `/join` uses it with the
+  recipient's own session (`GET /api/portal/my-installation`) to show that installation's quick check.
+  A result replayed from a record written by an older build may lack it.
 - **Never on the port:** the attempt secret, the idempotency key and the install credential.
 
 ### Ruled values (bridge/1.1.0 §3 / §5 / §5.1)

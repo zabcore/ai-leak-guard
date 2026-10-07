@@ -60,6 +60,11 @@ export interface SelfTestEvidence {
   readonly passed: boolean
   /** The original self-test timestamp (ISO-8601). Never rewritten at check-in. */
   readonly at: string
+  /** Backend contract v1.4.0: recorded on THIS installation (its quick check). */
+  readonly outcome?: 'pass' | 'fail' | 'incomplete'
+  /** Ids of the checks that ran (e.g. `chatgpt-send`), ^[a-z0-9_.-]{1,64}$. */
+  readonly scope?: readonly string[]
+  readonly suite_version?: string
 }
 
 export interface CheckinRequest {
@@ -78,7 +83,14 @@ export const CHECKIN_ALLOWED_KEYS: readonly (keyof CheckinRequest)[] = [
   'self_test',
   'applied_settings_revision',
 ]
-export const SELF_TEST_ALLOWED_KEYS: readonly (keyof SelfTestEvidence)[] = ['passed', 'at']
+export const SELF_TEST_ALLOWED_KEYS: readonly (keyof SelfTestEvidence)[] = [
+  'passed',
+  'at',
+  'outcome',
+  'scope',
+  'suite_version',
+]
+const SELF_TEST_SCOPE_ID = /^[a-z0-9_.-]{1,64}$/
 
 export interface CheckinActive {
   readonly revoked: false
@@ -117,7 +129,24 @@ export function buildCheckinRequest(input: {
   if (input.extension_version !== undefined) body.extension_version = input.extension_version
   if (input.self_test !== undefined) {
     // Re-project self_test through its own allowlist so no stray sub-key leaks.
-    body.self_test = { passed: input.self_test.passed, at: input.self_test.at }
+    const st = input.self_test
+    body.self_test = {
+      passed: st.passed,
+      at: st.at,
+      ...(st.outcome === 'pass' || st.outcome === 'fail' || st.outcome === 'incomplete'
+        ? { outcome: st.outcome }
+        : {}),
+      ...(Array.isArray(st.scope)
+        ? {
+            scope: st.scope
+              .filter((x) => typeof x === 'string' && SELF_TEST_SCOPE_ID.test(x))
+              .slice(0, 32),
+          }
+        : {}),
+      ...(typeof st.suite_version === 'string'
+        ? { suite_version: st.suite_version.slice(0, 40) }
+        : {}),
+    }
   }
   if (input.applied_settings_revision !== undefined) {
     body.applied_settings_revision = input.applied_settings_revision

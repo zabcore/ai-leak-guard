@@ -203,6 +203,8 @@ describe.skipIf(FIXTURE === '')('B1: /join response lost AFTER the backend commi
     expect(net.joinBodies[1]).toBe(net.joinBodies[0])
     // Same install: the credential the extension stored is the one committed first.
     expect((await getEnrollment())?.install_id).toBe(net.dropped[0]!.install_id)
+    // #88: the page learns which installation this join created.
+    expect(ok.payload.connected_install_id).toBe(net.dropped[0]!.install_id)
     // No duplicate consumption.
     const after = await state(invitation_ref)
     expect(after.installs).toEqual(committed.installs)

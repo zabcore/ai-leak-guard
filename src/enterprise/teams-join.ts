@@ -369,6 +369,7 @@ async function runJoinOnce(
       connected_org_id: result.data.org_id,
       connected_org_name: result.data.org_name,
       connected_at: settledAt,
+      connected_install_id: result.data.install_id,
     })
     return 'enrolled'
   }

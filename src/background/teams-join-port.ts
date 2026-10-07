@@ -24,7 +24,8 @@
 //     E→W ack          { nonce_of }                          (before /join)
 //     E→W result       { status: "success", connected_invitation_ref,
 //                        connected_attempt_challenge, connected_org_id,
-//                        connected_org_name, connected_at }
+//                        connected_org_name, connected_at,
+//                        connected_install_id }      (#88, additive)
 //                    | { status: "failed", error_code }
 //   E→W error          { code }
 // `challenge_nonce` must echo the envelope nonce of a `challenge` this extension

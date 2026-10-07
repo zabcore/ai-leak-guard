@@ -200,6 +200,7 @@ describe('exchangeJoin (bridge exchange_token)', () => {
       connected_org_id: 'org_1',
       connected_org_name: 'Harbor',
       connected_at: expect.any(String),
+      connected_install_id: 'i1',
     })
     expect(JSON.stringify(first)).not.toContain('verifier-secret-1')
     expect(JSON.stringify(first)).not.toContain('c1')

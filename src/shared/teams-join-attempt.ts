@@ -122,6 +122,10 @@ export type JoinResultPayload =
       readonly connected_org_id: string
       readonly connected_org_name: string
       readonly connected_at: string
+      /** #88: the installation this join created (an identifier, never a
+       *  credential), so /join can read THIS installation's quick check.
+       *  Absent only on a result recorded by an older build. */
+      readonly connected_install_id?: string
     }
   | { readonly status: 'failed'; readonly error_code: string }
 

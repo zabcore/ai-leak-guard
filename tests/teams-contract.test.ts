@@ -35,7 +35,7 @@ describe('buildCheckinRequest — content-free', () => {
         'self_test',
       ].sort(),
     )
-    // self_test carries only passed + at.
+    // self_test carries only allowlisted keys (passed + at here).
     expect(Object.keys(req.self_test ?? {}).sort()).toEqual(['at', 'passed'])
   })
 
@@ -214,5 +214,28 @@ describe('canonical error enum + joinErrorFor (contract v1.1.1)', () => {
     expect(provisionErrorFor(410, { error: 'recovery_window_expired' })).toBe(
       'recovery_window_expired',
     )
+  })
+})
+
+describe('#88 quick-check fields on the check-in body', () => {
+  it('forwards outcome / scope / suite_version, filtering bad scope ids', () => {
+    const req = buildCheckinRequest({
+      install_id: 'i',
+      credential: 'c',
+      self_test: {
+        passed: false,
+        at: '2026-10-07T10:00:00.000Z',
+        outcome: 'incomplete',
+        scope: ['chatgpt-send', 'Bad Scope!'],
+        suite_version: '1.3.6',
+      },
+    })
+    expect(req.self_test).toEqual({
+      passed: false,
+      at: '2026-10-07T10:00:00.000Z',
+      outcome: 'incomplete',
+      scope: ['chatgpt-send'],
+      suite_version: '1.3.6',
+    })
   })
 })

@@ -86,6 +86,24 @@ export async function nudgeCheckin(): Promise<void> {
 }
 
 /**
+ * #88: report a just-finished quick check NOW (no throttle — it is user-run and
+ * rare), so /join can show THIS installation's result within seconds instead of
+ * at the next periodic check-in. Enrolled browsers only; best-effort.
+ */
+export async function reportQuickCheck(): Promise<void> {
+  try {
+    if ((await getEnrollment()) === null) return
+    const maybePromise = chrome.runtime?.sendMessage?.({
+      type: NUDGE_MESSAGE_TYPE,
+      reason: 'post-self-test',
+    }) as Promise<unknown> | undefined
+    if (maybePromise && typeof maybePromise.then === 'function') void maybePromise.catch(() => {})
+  } catch {
+    // never surface into the content script
+  }
+}
+
+/**
  * Wire the heartbeat. Called once at content-script init. Nudges on load (the
  * browser just landed on a managed AI tool) and on refocus (a long-open tab the
  * user returns to after an admin changed settings mid-session).

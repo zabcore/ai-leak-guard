@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   nudgeCheckin,
+  reportQuickCheck,
   TEAMS_LAST_NUDGE_KEY,
   TEAMS_NUDGE_THROTTLE_MS,
 } from '../src/content/teams-heartbeat'
@@ -13,8 +14,11 @@ import { setEnrollment } from '../src/shared/teams-storage'
 const NUDGE = { type: 'alg-teams-checkin', reason: 'content-nudge' }
 
 function chromeRuntime(): { sendMessage: (m: unknown) => Promise<unknown> } {
-  return (globalThis as unknown as { chrome: { runtime: { sendMessage: (m: unknown) => Promise<unknown> } } })
-    .chrome.runtime
+  return (
+    globalThis as unknown as {
+      chrome: { runtime: { sendMessage: (m: unknown) => Promise<unknown> } }
+    }
+  ).chrome.runtime
 }
 
 async function enroll(): Promise<void> {
@@ -68,5 +72,22 @@ describe('nudgeCheckin — throttle', () => {
     })
     await nudgeCheckin() // fires again
     expect(spy).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('#88 reportQuickCheck — a finished quick check reaches the installation now', () => {
+  it('silent for a Free (unenrolled) browser', async () => {
+    const spy = vi.spyOn(chromeRuntime(), 'sendMessage')
+    await reportQuickCheck()
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('an enrolled browser checks in immediately, even inside the heartbeat throttle', async () => {
+    await enroll()
+    const spy = vi.spyOn(chromeRuntime(), 'sendMessage')
+    await nudgeCheckin() // stamps the throttle window
+    await reportQuickCheck()
+    expect(spy).toHaveBeenCalledTimes(2)
+    expect(spy).toHaveBeenLastCalledWith({ type: 'alg-teams-checkin', reason: 'post-self-test' })
   })
 })
