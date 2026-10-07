@@ -160,3 +160,7 @@ monitor/.auth/
 # Per-route live status store — persisted across CI runs via cache/artifact,
 # never committed (it is run state, not source).
 monitor/status/
+
+# Self-hosted CRX packaging: signing keys never enter the repo; build output
+*.pem
+release/

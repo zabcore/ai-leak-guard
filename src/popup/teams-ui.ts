@@ -28,6 +28,8 @@ export function enrollErrorMessage(code: EnrollErrorCode): string {
       return 'That code was revoked. Ask your admin for a new one.'
     case 'not_configured':
       return 'Team management isn’t set up in this build.'
+    case 'already_enrolled':
+      return 'This browser is already connected to a clinic. Disconnect it first.'
     case 'network':
     default:
       return 'Couldn’t reach the server. Check your connection and try again.'

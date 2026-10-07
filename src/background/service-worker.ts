@@ -31,6 +31,15 @@ import {
 import { setSubmitKillSwitch } from '../shared/storage'
 import { withLinkSource } from '../shared/link-source'
 import { runCheckin } from '../enterprise/teams-service'
+import { runManagedBootstrap } from '../enterprise/teams-bootstrap'
+import {
+  exchangeJoin,
+  hasPendingJoin,
+  joinPresenceState,
+  prepareChallenge,
+  runJoin,
+} from '../enterprise/teams-join'
+import { createJoinPortServer } from './teams-join-port'
 import * as teamsCheckinClient from '../enterprise/teams-client'
 import { recordNextAttempt } from '../shared/teams-diag'
 import { nextRetryPlan } from './teams-retry-plan'
@@ -209,10 +218,140 @@ async function safeRunCheckin(reason: string): Promise<void> {
   await recordNextScheduledAttempt()
 }
 
+// ─── Teams Lite (deployment m1) — managed-policy bootstrap ────────────
+//
+// When an admin deploys the extension with a Chrome managed policy carrying a
+// deployment token (`public/managed_schema.json`), an unenrolled browser
+// exchanges it once for its own per-install credential. Every decision goes
+// through `planManagedBootstrap` (via `runManagedBootstrap`): no policy ⇒ no
+// network; autoEnroll:false ⇒ skip; already enrolled ⇒ skip (a changed token
+// never moves a browser to another clinic); revoke-blocked ⇒ skip. Runs on
+// startup, install, and whenever the managed policy changes. The provision
+// client is the same STATIC import as check-in (no dynamic import in a worker).
+const TEAMS_PROVISION_RETRY_ALARM = 'alg-teams-provision-retry'
+const TEAMS_PROVISION_RETRY_COUNT_KEY = 'teamsProvisionRetryCount'
+
+const swLoadProvisionClient = async (): Promise<{
+  provision: typeof teamsCheckinClient.provision
+}> => ({ provision: teamsCheckinClient.provision })
+
+async function clearProvisionRetry(): Promise<void> {
+  try {
+    await chrome.alarms?.clear(TEAMS_PROVISION_RETRY_ALARM)
+    await chrome.storage.local.remove(TEAMS_PROVISION_RETRY_COUNT_KEY)
+  } catch {
+    // best-effort
+  }
+}
+
+/** Bounded backoff for a provision that failed on the network. The persisted
+ *  attempt is reused on the retry, so a lost response never costs a 2nd slot. */
+async function scheduleProvisionRetry(): Promise<void> {
+  try {
+    const existing = await chrome.alarms?.get(TEAMS_PROVISION_RETRY_ALARM)
+    const got = await chrome.storage.local.get(TEAMS_PROVISION_RETRY_COUNT_KEY)
+    const n = got[TEAMS_PROVISION_RETRY_COUNT_KEY]
+    const plan = nextRetryPlan(Boolean(existing), typeof n === 'number' ? n : 0)
+    if (!plan.schedule) return
+    chrome.alarms?.create(TEAMS_PROVISION_RETRY_ALARM, { delayInMinutes: plan.delayMin })
+    await chrome.storage.local.set({ [TEAMS_PROVISION_RETRY_COUNT_KEY]: plan.nextCount })
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Run the managed bootstrap and reconcile its retry alarm. Returns true when
+ * this run enrolled the browser. Errors are logged by NAME only — never a
+ * message that could carry a token or URL.
+ */
+async function safeManagedBootstrap(): Promise<boolean> {
+  try {
+    const result = await runManagedBootstrap({ loadClient: swLoadProvisionClient })
+    if (result.action === 'provision' && result.outcome === 'network') {
+      await scheduleProvisionRetry()
+      return false
+    }
+    await clearProvisionRetry()
+    return result.action === 'provision' && result.outcome === 'enrolled'
+  } catch (err) {
+    console.warn(
+      '[AI Leak Guard] teams managed bootstrap failed:',
+      err instanceof Error ? err.name : 'error',
+    )
+    return false
+  }
+}
+
+/** Bootstrap outside startup/install (policy change, retry): on a fresh
+ *  enrollment, run the first check-in right away so the check-in alarm exists
+ *  and managed settings apply without waiting. */
+async function bootstrapThenCheckin(): Promise<void> {
+  if (await safeManagedBootstrap()) await safeRunCheckin('post-provision')
+}
+
+chrome.storage.onChanged?.addListener(async (_changes, areaName) => {
+  if (areaName !== 'managed') return
+  await bootstrapThenCheckin()
+})
+
+// ─── Teams Lite (deployment m1) — staff-invitation join handoff ───────
+//
+// bridge/1.1.0: the zabcore join page (the only `externally_connectable`
+// origin, re-checked on connect and on every message in `teams-join-port`) opens
+// the long-lived `zc.join.v1` port, says `hello`, receives `presence` + the
+// non-secret `challenge`, then posts the bound `exchange_token`; the worker acks,
+// redeems it at /join with the attempt secret (which never leaves the extension
+// except to the backend) and posts the `result`. There is deliberately NO
+// `onMessageExternal` receiver. The join client is the same STATIC import as
+// check-in. Code-entry enrollment remains the fallback.
+const swLoadJoinClient = async (): Promise<{ join: typeof teamsCheckinClient.join }> => ({
+  join: teamsCheckinClient.join,
+})
+
+/** Startup recovery of a lost /join response; on a fresh enrollment run the
+ *  first check-in so the alarm exists and managed settings apply right away. */
+async function safeRunJoin(): Promise<void> {
+  try {
+    const outcome = await runJoin(undefined, { loadClient: swLoadJoinClient })
+    if (outcome === 'enrolled') await safeRunCheckin('post-join')
+  } catch (err) {
+    console.warn('[AI Leak Guard] teams join failed:', err instanceof Error ? err.name : 'error')
+  }
+}
+
+const joinPortServer = createJoinPortServer({
+  presence: async () => ({
+    ext_version: chrome.runtime.getManifest?.().version ?? '0.0.0',
+    state: await joinPresenceState(),
+  }),
+  hello: (invitationRef, challengeNonce) => prepareChallenge(invitationRef, challengeNonce),
+  exchange: async (exchangeToken, challengeNonce) => {
+    const outcome = await exchangeJoin(exchangeToken, challengeNonce, {
+      loadClient: swLoadJoinClient,
+    })
+    if (outcome.enrolledNow) await safeRunCheckin('post-join')
+    return outcome
+  },
+})
+
+chrome.runtime.onConnectExternal?.addListener((port) => joinPortServer.onConnect(port))
+
+/** On startup, retry a join whose response was lost (same persisted attempt).
+ *  Network only when the user already started a join that reached /join. */
+async function recoverPendingJoin(): Promise<void> {
+  try {
+    if (await hasPendingJoin()) await safeRunJoin()
+  } catch {
+    // best-effort
+  }
+}
+
 chrome.alarms?.onAlarm.addListener(async (alarm) => {
   // Async listener → Chrome keeps the worker alive until the check-in settles.
   if (alarm.name === TEAMS_CHECKIN_ALARM) await safeRunCheckin('alarm')
   else if (alarm.name === TEAMS_RETRY_ALARM) await safeRunCheckin('retry')
+  else if (alarm.name === TEAMS_PROVISION_RETRY_ALARM) await bootstrapThenCheckin()
 })
 
 /**
@@ -383,6 +522,10 @@ function clearSubmitKillSwitchOnStartup(): void {
 
 chrome.runtime.onStartup.addListener(async () => {
   clearSubmitKillSwitchOnStartup()
+  // Managed bootstrap first (a no-op without a policy), so a just-provisioned
+  // browser's first check-in is this startup one.
+  await safeManagedBootstrap()
+  await recoverPendingJoin()
   await safeRunCheckin('startup')
 })
 
@@ -391,6 +534,7 @@ chrome.runtime.onStartup.addListener(async () => {
 // paused state.
 chrome.runtime.onInstalled.addListener(async () => {
   clearSubmitKillSwitchOnStartup()
+  await safeManagedBootstrap()
   await safeRunCheckin('install')
 })
 
@@ -432,6 +576,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 //   • browser launch    → onStartup('startup')
 //   • install/update    → onInstalled('install')
 //   • AI-tab heartbeat  → onMessage('content-nudge')
+//   • managed provision → storage.onChanged(managed) / provision-retry alarm
+//                         ('post-provision'); on startup/install the bootstrap
+//                         runs first and the normal check-in follows
+//   • staff join        → onConnectExternal('zc.join.v1' exchange_token) / startup
+//                         recovery of a lost /join response ('post-join')
 // The alarm is persistent (created at enroll, survives restarts), so a bare
 // chrome://extensions reload with no event still syncs on the next alarm fire.
 // Top-level `await` is disallowed in a worker anyway, so there is no reliable

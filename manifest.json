@@ -4,6 +4,9 @@
   "version": "1.3.6",
   "description": "Free local-only protection against accidental AI data leaks. Detects and masks sensitive data before you paste into AI tools.",
   "permissions": ["storage", "alarms"],
+  "storage": {
+    "managed_schema": "managed_schema.json"
+  },
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
@@ -15,6 +18,9 @@
     "http://127.0.0.1:54321/*",
     "http://localhost:54321/*"
   ],
+  "externally_connectable": {
+    "matches": ["https://zabcore.com/join*"]
+  },
   "background": {
     "service_worker": "src/background/service-worker.ts",
     "type": "module"
@@ -58,6 +64,12 @@
       "js": ["src/content/main-world/send-capture.ts"],
       "run_at": "document_start",
       "world": "MAIN"
+    },
+    {
+      "matches": ["https://zabcore.com/join*"],
+      "js": ["src/content/zabcore-presence.ts"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "action": {

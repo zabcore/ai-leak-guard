@@ -62,7 +62,7 @@ const GATED_EGRESS_ALLOWLIST = [
   {
     re: /^teams-client-[^/]*\.js$/,
     reason:
-      'Teams enrollment client — the ONLY egress surface, gated behind explicit enrollment at RUNTIME (runCheckin returns before using it unless enrolled). The popup/content load it lazily; the service worker imports it statically (dynamic import() is disallowed in a worker), so a Free worker loads this code but never calls it — no request. The Free-mode silence guarantee is the behavioral fetch-spy test (tests/teams-free-mode-silence.test.ts), not "chunk never loaded".',
+      'Teams client (enroll / checkin / provision / join) — the ONLY egress surface, gated at RUNTIME: check-in only when enrolled, provision only on an authorized managed policy (planManagedBootstrap), enroll/join only on explicit user enrollment. The popup/content load it lazily; the service worker imports it statically (dynamic import() is disallowed in a worker), so a Free worker loads this code but never calls it — no request. The Free-mode silence guarantee is the behavioral fetch-spy test (tests/teams-free-mode-silence.test.ts), not "chunk never loaded".',
   },
 ]
 

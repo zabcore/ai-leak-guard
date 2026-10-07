@@ -8,3 +8,8 @@ package-lock.json
 # the store renders. Prettier's autoformat would reflow the paragraphs
 # and change what's shipped.
 docs/STORE_LISTING.md
+
+# Pinned contract (byte-identical copy of the backend's canonical YAML) and the
+# types generated from it — never reformat (their sha256 is pinned).
+contracts/teams-contract.openapi.yaml
+src/shared/generated/

@@ -32,10 +32,7 @@ interface MockClient {
   checkinRequests: CheckinRequest[]
 }
 
-function mockClient(opts: {
-  enroll?: EnrollResult
-  checkin?: CheckinCallResult
-}): MockClient {
+function mockClient(opts: { enroll?: EnrollResult; checkin?: CheckinCallResult }): MockClient {
   const state = { loadCalls: 0, checkinRequests: [] as CheckinRequest[] }
   return {
     get loadCalls() {
@@ -47,8 +44,7 @@ function mockClient(opts: {
     loadClient: async () => {
       state.loadCalls += 1
       return {
-        enroll: async () =>
-          opts.enroll ?? { ok: false as const, code: 'network' as const },
+        enroll: async () => opts.enroll ?? { ok: false as const, code: 'network' as const },
         checkin: async (_b, _a, req) => {
           state.checkinRequests.push(req)
           return opts.checkin ?? { ok: false as const }
@@ -116,7 +112,12 @@ describe('runEnroll', () => {
     // unstubbing) so a developer's local `.env.local` can't make this a false pass.
     vi.stubEnv('VITE_TEAMS_BASE_URL', '')
     vi.stubEnv('VITE_TEAMS_ANON_KEY', '')
-    const client = mockClient({ enroll: { ok: true, data: { install_id: 'i', install_credential: 'c', org_id: 'o', org_name: 'n' } } })
+    const client = mockClient({
+      enroll: {
+        ok: true,
+        data: { install_id: 'i', install_credential: 'c', org_id: 'o', org_name: 'n' },
+      },
+    })
     const result = await runEnroll('CODE', 'x', { loadClient: client.loadClient })
     expect(result).toEqual({ ok: false, code: 'not_configured' })
     expect(client.loadCalls).toBe(0)
@@ -214,7 +215,41 @@ describe('runCheckin — self-test evidence timestamp', () => {
     await runCheckin({ loadClient: client.loadClient })
 
     for (const req of client.checkinRequests) {
-      expect(req.self_test).toEqual({ passed: true, at: originalTs })
+      // #88: the installation's quick check carries outcome + scope + suite.
+      expect(req.self_test).toEqual({
+        passed: true,
+        at: originalTs,
+        outcome: 'pass',
+        scope: ['gemini-send'],
+        suite_version: '0.0.0',
+      })
+    }
+  })
+
+  it('maps every self-test result to a quick-check outcome (unsupported → incomplete)', async () => {
+    await enrolledFixture()
+    for (const [result, outcome] of [
+      ['fail', 'fail'],
+      ['unsupported', 'incomplete'],
+    ] as const) {
+      await setSelfTestResult({
+        nonce: 'n',
+        result,
+        code: 'OK',
+        site: 'chatgpt',
+        adapter: 'chatgpt',
+        composer: 1,
+        intercept: 0,
+        modal: 0,
+        ts: '2026-10-07T10:00:00.000Z',
+      })
+      const client = mockClient({ checkin: { ok: true, response: activeResponse(1, true) } })
+      await runCheckin({ loadClient: client.loadClient })
+      expect(client.checkinRequests[0]?.self_test).toMatchObject({
+        passed: false,
+        outcome,
+        scope: ['chatgpt-send'],
+      })
     }
   })
 
