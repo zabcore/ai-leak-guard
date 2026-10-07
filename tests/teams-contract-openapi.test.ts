@@ -1,5 +1,5 @@
 // Teams Lite — the extension is pinned to the CANONICAL backend contract
-// (zabcore/teams-onboarding-backend, teams-contract.openapi.yaml v1.4.0). These
+// (zabcore/teams-onboarding-backend, teams-contract.openapi.yaml v1.6.0). These
 // checks fail if the pinned YAML or the generated types change without a re-pin,
 // or if the extension's runtime values drift from the contract.
 
@@ -20,13 +20,13 @@ const read = (p: string) => readFileSync(resolve(p), 'utf8').replace(/\r\n/g, '\
 const sha = (s: string) => createHash('sha256').update(s).digest('hex')
 const yaml = read('contracts/teams-contract.openapi.yaml')
 
-describe('pinned teams-contract.openapi.yaml (v1.4.0)', () => {
+describe('pinned teams-contract.openapi.yaml (v1.6.0)', () => {
   it('pinned YAML and generated types are unchanged (re-pin via contracts/README.md)', () => {
-    expect(sha(yaml)).toBe('aee4275d3acccc84f3ec0d5e85edd1543150835d426cefc10753764e8fd3c4c9')
+    expect(sha(yaml)).toBe('cb60330592955c4e365efe716a1ddd7dc2339ec5ebee274687d9e6704a0e2b5a')
     expect(sha(read('src/shared/generated/teams-contract.ts'))).toBe(
-      '37cbfda91dece2a44c469047079fb318cd8aba5392d634e92f5a15b9a1454813',
+      '620ed0423305cdb082faeec2797cd7af61395080155475cf3ea61a4a4967ba46',
     )
-    expect(yaml).toMatch(/x-contract-version: "1\.4\.0"/)
+    expect(yaml).toMatch(/x-contract-version: "1\.6\.0"/)
   })
 
   it('runtime error list equals the YAML Error.error enum', () => {

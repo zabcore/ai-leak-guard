@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Teams Lite — deployment & onboarding API
-  version: 1.4.0
-  x-contract-version: "1.4.0"
+  version: 1.6.0
+  x-contract-version: "1.6.0"
   description: >
     CANONICAL machine-readable contract for the managed-deployment + onboarding
     endpoints. This file lives in the BACKEND repo (zabcore/teams-onboarding-backend)
@@ -43,6 +43,14 @@ info:
     `attempt_state` and `replaces_install_id`; a 403 forbidden names its
     `required_capability`; every /portal call must also pass the website proxy
     hop (`x-join-proxy-secret`, 403 origin_not_allowed) — never authorization.
+    v1.4.1 (internal /email-worker rules only): one sign-in link per job, reused by
+    every retry; the Loops Idempotency-Key binds the exact request body. v1.5.0:
+    POST /portal/sign-in-link — the pre-session request by which an existing
+    portal user (owner, admin, MSP member) gets a fresh sign-in link by email
+    (callback ?portal=1), sent by the backend through Loops. v1.6.0 (#88): GET
+    /portal/my-installation — the recipient's own installation (status + quick
+    check) for /join; the extension reports `connected_install_id` in the bridge
+    result.
 servers:
   - url: "{baseUrl}/functions/v1"
     variables:
@@ -508,6 +516,56 @@ paths:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/PortalMe" } } } }
         "401": { description: unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
         "403": { description: "origin_not_allowed (the call did not come through the website proxy; applies to every /portal path)", content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+  /portal/sign-in-link:
+    post:
+      summary: Email an existing portal user a fresh one-time sign-in link (callback ?portal=1).
+      x-rules:
+        - "The ONE /portal route that takes no session (it is how a user gets one). It still requires the website proxy hop (x-join-proxy-secret; 403 origin_not_allowed)."
+        - "Always 200 {} for a well-formed address, whether or not it belongs to a confirmed user with a portal relationship (an owner or admin of any clinic, or an MSP partner member): no account oracle. Only on a match is a durable sign-in email queued; at most one is open per user (repeats reuse it)."
+        - "The link is minted at send time by the email worker (GoTrue admin generate_link) as https://zabcore.com/auth/callback?portal=1&token_hash=…&type=magiclink, and emailed via Loops with the sign-in-link template (clinic_name = the user's only clinic, else 'Zabcore'). It is never returned by this endpoint. The website's callback verifies token_hash server-side (SSR cookie) and 302s to /portal; roles then come from GET /portal/me."
+        - "Owners of a clinic they have not claimed yet use their claim link (/claim), not this. Supabase's own mailer (signInWithOtp) is not used."
+        - "Rate limits, counted for every address before any lookup: 5 per address per hour, 300 per hour overall."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email: { type: string, maxLength: 320 }
+      responses:
+        "200": { description: "Accepted (the same answer for every well-formed address)", content: { application/json: { schema: { type: object, additionalProperties: false } } } }
+        "400": { description: invalid_request, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "403": { description: origin_not_allowed, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "429": { description: rate_limited, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+  /portal/my-installation:
+    get:
+      summary: "The signed-in recipient's OWN installation (for /join's quick-check step)."
+      security: [{ userSession: [] }]
+      parameters:
+        - { name: install_id, in: query, required: true, schema: { type: string, format: uuid }, description: "From the bridge result's connected_install_id." }
+      x-rules:
+        - "Authorization is per user: only the user who redeemed the invitation that created this installation may read it. Any other install (or none) is 404 not_found. No capability is needed (staff have none)."
+        - "Read-only; no credential. last_quick_check is the installation's own report over /checkin (the extension checks in right after a quick check)."
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [install_id, org_name, status, last_seen_at, last_quick_check]
+                properties:
+                  install_id: { type: string, format: uuid }
+                  org_name: { type: string }
+                  status: { type: string, enum: [active, offline, revoked] }
+                  last_seen_at: { type: [string, "null"], format: date-time }
+                  last_quick_check: { oneOf: [{ $ref: "#/components/schemas/QuickCheck" }, { type: "null" }] }
+        "400": { description: invalid_request, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "401": { description: unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "404": { description: not_found, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
   /portal/clinics:
     post:
       summary: Create a clinic directly — the caller becomes its owner.
@@ -723,8 +781,9 @@ paths:
       security: [{ workerSecret: [] }]
       x-rules:
         - "Called every minute by pg_cron + pg_net with the server-side secret, and nudged best-effort after each enqueue. No user session and no browser ever call it."
-        - "Claims due jobs with a lease (FOR UPDATE SKIP LOCKED), builds each recipient's one-time sign-in link at send time (GoTrue admin generate_link → https://zabcore.com/auth/callback?inv=|claim=<ref>&token_hash=…&type=…; never stored), and hands the email to Loops (POST /api/v1/transactional, addToAudience false, Idempotency-Key = job id)."
-        - "2xx and 409 (key already used) → sent. 401/403/429/5xx/network → retried with backoff (1, 2, 4 … ≤60 min; 6 attempts). 400/404/422 → failed. A lease that expires (crash) makes the job claimable again with the same Idempotency-Key, so the provider never sends twice."
+        - "Claims due jobs with a lease (FOR UPDATE SKIP LOCKED). Each JOB mints ONE sign-in link (GoTrue admin generate_link → https://zabcore.com/auth/callback?inv=|claim=<ref>&token_hash=…&type=…), sealed (AES-GCM, server key) and stored before the first send, reused by every retry while it is valid (validity − 10 min), and purged when the job finishes. Plaintext links are never stored. GoTrue keeps one live token per user, so a per-attempt token would kill the link in an email already delivered."
+        - "Hands the email to Loops (POST /api/v1/transactional, addToAudience false) with Idempotency-Key = <job id>:<SHA-256 of the exact request body>. A retry sends the identical body under the identical key; a changed body never shares a key, so a 409 can only mean this exact email was already accepted."
+        - "2xx and 409 → sent. 401/403/429/5xx/network → retried with backoff (1, 2, 4 … ≤60 min; 6 attempts). 400/404/422 → failed. A lease that expires (crash after hand-off) makes the job claimable again; the retry sends the same body under the same key, Loops answers 409, and the delivered link still verifies."
         - "503 not_configured when the Loops key or a template id is missing: nothing is claimed; jobs stay queued."
       responses:
         "200":
