@@ -5,12 +5,12 @@
 together with bridge/1.1.0. Do not edit it here — change it in the backend repo,
 then re-pin.
 
-|                                                 |                                                                                |
-| ----------------------------------------------- | ------------------------------------------------------------------------------ |
-| Source                                          | zabcore/teams-onboarding-backend @ `2554b9c ` (`feat/contract-v1.1-canonical`) |
-| `teams-contract.openapi.yaml` sha256            | `aee4275d3acccc84f3ec0d5e85edd1543150835d426cefc10753764e8fd3c4c9`             |
-| `src/shared/generated/teams-contract.ts` sha256 | `37cbfda91dece2a44c469047079fb318cd8aba5392d634e92f5a15b9a1454813`             |
-| Generator                                       | `openapi-typescript@7.13.0` (`npm run gen:contract-types`)                     |
+|                                                 |                                                                               |
+| ----------------------------------------------- | ----------------------------------------------------------------------------- |
+| Source                                          | zabcore/teams-onboarding-backend @ `2554b9c` (`feat/contract-v1.1-canonical`) |
+| `teams-contract.openapi.yaml` sha256            | `aee4275d3acccc84f3ec0d5e85edd1543150835d426cefc10753764e8fd3c4c9`            |
+| `src/shared/generated/teams-contract.ts` sha256 | `37cbfda91dece2a44c469047079fb318cd8aba5392d634e92f5a15b9a1454813`            |
+| Generator                                       | `openapi-typescript@7.13.0` (`npm run gen:contract-types`)                    |
 
 The generated file is identical to the backend's
 `supabase/functions/_shared/generated/teams-contract.ts`, whose `npm run check:types`
