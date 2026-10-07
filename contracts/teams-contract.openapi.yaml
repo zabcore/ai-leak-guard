@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Teams Lite — deployment & onboarding API
-  version: 1.3.0
-  x-contract-version: "1.3.0"
+  version: 1.4.0
+  x-contract-version: "1.4.0"
   description: >
     CANONICAL machine-readable contract for the managed-deployment + onboarding
     endpoints. This file lives in the BACKEND repo (zabcore/teams-onboarding-backend)
@@ -35,7 +35,14 @@ info:
     invitation and its send job are committed together; a worker sends later
     (/email-worker). InvitationStatus is renamed to the delivery-aware states
     (invitation_created, email_sent, email_failed, …, browser_enrolled), Invitation
-    gains `email`, and InvitationResult drops `email_dispatch`.
+    gains `email`, and InvitationResult drops `email_dispatch`. v1.4.0 (portal-only;
+    reconciled with Track A's inventory rev 2): installations list / remove /
+    recover and installation-scoped quick-check reporting on /checkin are
+    implemented; PortalOrg gains `source`, PortalMe gains `user_email_masked`,
+    `can_create_org` and `current_org_id`; Invitation gains `display_name`,
+    `attempt_state` and `replaces_install_id`; a 403 forbidden names its
+    `required_capability`; every /portal call must also pass the website proxy
+    hop (`x-join-proxy-secret`, 403 origin_not_allowed) — never authorization.
 servers:
   - url: "{baseUrl}/functions/v1"
     variables:
@@ -139,9 +146,10 @@ components:
         error:
           type: string
           # Portal-only codes; the extension-facing Error enum above is unchanged.
-          enum: [unauthorized, forbidden, not_found, invalid_request, idempotency_conflict, invitation_exists, invitation_enrolled, invalid_state, org_pending, wrong_recipient, invitation_revoked, invitation_expired, invitation_consumed, rate_limited, method_not_allowed, service_unavailable]
+          enum: [unauthorized, forbidden, origin_not_allowed, not_found, invalid_request, idempotency_conflict, invitation_exists, invitation_enrolled, invalid_state, org_pending, wrong_recipient, invitation_revoked, invitation_expired, invitation_consumed, rate_limited, method_not_allowed, service_unavailable]
         invitation_id: { type: string, description: "invitation_exists: the open invitation for that recipient (resend it instead)." }
-        status: { $ref: "#/components/schemas/InvitationStatus" }
+        status: { type: string, description: "invalid_state: the current state (an InvitationStatus, or for installations revoked | legacy_code)." }
+        required_capability: { $ref: "#/components/schemas/Capability" }
     Role:
       type: string
       description: "The caller's relationship to ONE org. A user can hold several roles across orgs; staff have no portal role."
@@ -159,12 +167,23 @@ components:
       properties:
         msp_account: { type: string, format: uuid }
         msp_name: { type: string }
+    OrgSource:
+      type: string
+      description: >
+        How the caller holds this org (the highest applies). owner_direct: owner who
+        created the clinic (or received ownership); owner_invitation: owner by claiming
+        an owner invitation; admin: org admin; msp_delegated: member of an MSP partner
+        holding a non-revoked delegation. Capability defaults: owner_direct and
+        owner_invitation get all 13; admin and msp_delegated get the 10 manager
+        capabilities (not members.manage, owner_invitations.manage, delegation.manage).
+      enum: [owner_direct, owner_invitation, admin, msp_delegated]
     PortalOrg:
       type: object
-      required: [org_id, org_name, onboarding_status, roles, capabilities, delegation_request]
+      required: [org_id, org_name, onboarding_status, source, roles, capabilities, delegation_request]
       properties:
         org_id: { type: string, format: uuid }
         org_name: { type: string }
+        source: { $ref: "#/components/schemas/OrgSource" }
         onboarding_status: { type: string, enum: [pending, active], description: "pending: an MSP-created clinic awaiting the owner's claim and delegation decision. Invitations cannot be issued while pending." }
         roles: { type: array, items: { $ref: "#/components/schemas/Role" } }
         capabilities: { type: array, items: { $ref: "#/components/schemas/Capability" } }
@@ -173,10 +192,13 @@ components:
           oneOf: [{ $ref: "#/components/schemas/DelegationRequest" }, { type: "null" }]
     PortalMe:
       type: object
-      required: [user_id, email, orgs, msp_accounts]
+      required: [user_id, email, user_email_masked, orgs, can_create_org, current_org_id, msp_accounts]
       properties:
         user_id: { type: string, format: uuid }
-        email: { type: string }
+        email: { type: string, description: "The caller's own confirmed address." }
+        user_email_masked: { type: string, description: "The same, masked for display (s***@e***.com)." }
+        can_create_org: { type: boolean, description: "Whether the A1a 'Create your clinic' path is offered: true for every verified user (rate limited at POST /portal/clinics)." }
+        current_org_id: { type: [string, "null"], format: uuid, description: "A suggestion only: the single org when the caller has exactly one, else null (the UI keeps the selection)." }
         orgs: { type: array, items: { $ref: "#/components/schemas/PortalOrg" }, description: "Every org the caller may act on (owner, admin or delegated MSP), sorted by name." }
         msp_accounts:
           type: array
@@ -261,14 +283,19 @@ components:
         last_attempt_at: { type: [string, "null"], format: date-time }
     Invitation:
       type: object
-      required: [invitation_id, org_id, org_name, type, recipient_email, status, created_at, expires_at, last_sent_at, send_count, verified_at, redeemed_at, revoked_at, email, installation, link]
+      required: [invitation_id, org_id, org_name, type, recipient_email, display_name, status, attempt_state, created_at, expires_at, last_sent_at, send_count, verified_at, redeemed_at, revoked_at, replaces_install_id, email, installation, link]
       properties:
         invitation_id: { type: string, format: uuid }
         org_id: { type: string, format: uuid }
         org_name: { type: string }
         type: { type: string, enum: [staff, owner] }
-        recipient_email: { type: string }
+        recipient_email: { type: string, description: "Full address: only callers with invitations.read on this org see it." }
+        display_name: { type: [string, "null"], maxLength: 80 }
         status: { $ref: "#/components/schemas/InvitationStatus" }
+        attempt_state:
+          type: string
+          enum: [none, in_flight, lapsed, completed]
+          description: "The extension attempt's own state, never changed by resend. none: no exchange token yet; in_flight: a live, unconsumed exchange token; lapsed: tokens were minted but all expired unconsumed (the extension keeps its attempt; the page mints a new token for the same challenge); completed: redeemed."
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         last_sent_at: { type: [string, "null"], format: date-time, description: "When an invitation email was last HANDED TO THE PROVIDER." }
@@ -276,6 +303,7 @@ components:
         verified_at: { type: [string, "null"], format: date-time }
         redeemed_at: { type: [string, "null"], format: date-time }
         revoked_at: { type: [string, "null"], format: date-time }
+        replaces_install_id: { type: [string, "null"], format: uuid, description: "Set on an invitation created by installation recovery: the superseded install." }
         email: { $ref: "#/components/schemas/InvitationEmail" }
         installation:
           description: "The installation this invitation produced (browser_enrolled only)."
@@ -296,6 +324,7 @@ components:
       properties:
         org_id: { type: string, format: uuid }
         recipient_email: { type: string, maxLength: 320 }
+        display_name: { type: string, minLength: 1, maxLength: 80 }
     InvitationActionRequest:
       type: object
       additionalProperties: false
@@ -320,34 +349,34 @@ components:
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/Invitation" } }
         next_cursor: { type: [string, "null"], description: "Opaque; pass back as ?cursor= for the next page. null on the last page." }
-    SelfTest:
+    QuickCheck:
       type: object
-      description: "v1.2.0 (pinned, not yet implemented): the installation's most recent self-test, as reported over the authenticated installation channel (/checkin)."
-      required: [outcome, tested_at, scope, suite_version]
+      description: "The installation's most recent quick check (self-test), as reported by the installation itself over /checkin."
+      required: [outcome, at, scope, suite_version]
       properties:
-        outcome: { type: string, enum: [pass, fail, partial] }
-        tested_at: { type: string, format: date-time, description: "When the test ran on the device (not when it was reported)." }
-        scope: { type: array, maxItems: 32, items: { type: string, pattern: "^[a-z0-9_.-]{1,64}$" }, description: "Ids of the checks that ran." }
-        suite_version: { type: string, maxLength: 40 }
+        outcome: { type: string, enum: [pass, fail, incomplete] }
+        at: { type: string, format: date-time, description: "When the check ran on the device (not when it was reported)." }
+        scope: { type: array, maxItems: 32, items: { type: string, pattern: "^[a-z0-9_.-]{1,64}$" }, description: "Ids of the checks that ran, e.g. chatgpt-send (vocabulary owned by the extension). Empty when an older extension reported only pass/fail." }
+        suite_version: { type: [string, "null"], maxLength: 40 }
     Installation:
       type: object
-      description: "v1.2.0 (pinned): independent of invitations. Policy/force-installed browsers appear with invitation_id null."
-      required: [install_id, org_id, status, created_via, invitation_id, recipient_email, deployment_token_id, label, extension_version, created_at, last_checkin_at, revoked_at, revoked_reason, self_test]
+      description: "Independent of invitations. Policy / force-installed browsers appear with source policy_push and invitation_id null."
+      required: [install_id, org_id, source, invitation_id, recipient_email, deployment_token_id, browser_label, extension_version, status, installed_at, last_seen_at, revoked_at, revoked_reason, last_quick_check]
       properties:
         install_id: { type: string, format: uuid }
         org_id: { type: string, format: uuid }
-        status: { type: string, enum: [active, revoked] }
-        created_via: { type: [string, "null"], enum: [provision, join, null], description: "null: legacy code-entry install." }
+        source: { type: string, enum: [staff_invitation, policy_push, legacy_code], description: "staff_invitation: joined via an invitation (/join); policy_push: provisioned from a managed-policy deployment token (/provision); legacy_code: a pre-v1 code-entry install." }
         invitation_id: { type: [string, "null"], format: uuid }
         recipient_email: { type: [string, "null"] }
         deployment_token_id: { type: [string, "null"], format: uuid }
-        label: { type: [string, "null"] }
+        browser_label: { type: [string, "null"] }
         extension_version: { type: [string, "null"] }
-        created_at: { type: string, format: date-time }
-        last_checkin_at: { type: [string, "null"], format: date-time }
+        status: { type: string, enum: [active, offline, revoked], description: "offline: active, but no check-in for 24h (or none yet)." }
+        installed_at: { type: string, format: date-time }
+        last_seen_at: { type: [string, "null"], format: date-time }
         revoked_at: { type: [string, "null"], format: date-time }
-        revoked_reason: { type: [string, "null"], enum: [removed, recovered, null] }
-        self_test: { oneOf: [{ $ref: "#/components/schemas/SelfTest" }, { type: "null" }] }
+        revoked_reason: { type: [string, "null"], enum: [removed, recovered, null], description: "null on a revoked install: revoked by the legacy admin action." }
+        last_quick_check: { oneOf: [{ $ref: "#/components/schemas/QuickCheck" }, { type: "null" }] }
     InstallationList:
       type: object
       required: [items, next_cursor]
@@ -361,11 +390,25 @@ components:
       properties:
         org_id: { type: string, format: uuid }
         install_id: { type: string, format: uuid }
+    RecoverRequest:
+      type: object
+      additionalProperties: false
+      required: [org_id, install_id]
+      properties:
+        org_id: { type: string, format: uuid }
+        install_id: { type: string, format: uuid }
+        reason: { type: string, enum: [stuck, staff_lost_browser, staff_changed_device, other] }
+    InstallationResult:
+      type: object
+      required: [installation]
+      properties:
+        installation: { $ref: "#/components/schemas/Installation" }
     RecoveryResult:
       type: object
-      required: [superseded_install_id, recovery]
+      required: [superseded_install_id, recovery, replayed]
       properties:
         superseded_install_id: { type: string, format: uuid }
+        replayed: { type: boolean }
         recovery:
           oneOf:
             - type: object
@@ -444,7 +487,10 @@ paths:
   #    email. The same magic-link session as /join; roles are NOT token claims.
   #  * Authorization is PER ORG on every call (Capability). An org the caller
   #    cannot act on answers 403 forbidden whether or not it exists.
-  #  * x-join-proxy-secret is never authorization here and is ignored.
+  #  * v1.4.0: every call must come through the website's same-origin proxy, which
+  #    adds `x-join-proxy-secret` (403 origin_not_allowed otherwise). It proves the
+  #    proxy hop ONLY and is never authorization: the session + per-org capability
+  #    decide every action. 403 forbidden names the `required_capability`.
   #  * Errors are PortalError. 401 unauthorized: no / invalid / unconfirmed
   #    session. 429 rate_limited (thresholds in each operation's x-rules).
   #  * Writes that create things REQUIRE `Idempotency-Key` (16–128 chars
@@ -461,6 +507,7 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/PortalMe" } } } }
         "401": { description: unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "403": { description: "origin_not_allowed (the call did not come through the website proxy; applies to every /portal path)", content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
   /portal/clinics:
     post:
       summary: Create a clinic directly — the caller becomes its owner.
@@ -589,56 +636,62 @@ paths:
         "409": { description: invitation_enrolled, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
   /portal/installations:
     get:
-      summary: "PINNED, not yet implemented: list an org's installations, independent of invitations."
-      x-implemented: false
+      summary: List an org's installations (independent of invitations), newest first.
       security: [{ userSession: [] }]
       parameters:
         - { name: org_id, in: query, required: true, schema: { type: string, format: uuid } }
-        - { name: status, in: query, required: false, schema: { type: string, enum: [active, revoked] } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [active, offline, revoked] } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
         - { name: cursor, in: query, required: false, schema: { type: string } }
       x-rules:
-        - "Capability installations.read. Includes every install of the org: join (with invitation_id), provision / policy force-install (invitation_id null) and legacy code-entry."
+        - "Capability installations.read. Every install of the org: staff_invitation (with invitation_id), policy_push (force-installed from a deployment token; no invitation) and legacy_code."
+        - "last_quick_check is the installation's own quick-check result (outcome, at, scope), reported only by that installation over /checkin."
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/InstallationList" } } } }
+        "400": { description: invalid_request, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "401": { description: unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
         "403": { description: forbidden, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
   /portal/installations/remove:
     post:
-      summary: "PINNED, not yet implemented: remove (revoke) one installation."
-      x-implemented: false
+      summary: Remove one installation (end that browser's access).
       security: [{ userSession: [] }]
       x-rules:
-        - "Capability installations.remove. Sets status revoked, revoked_reason removed. The install's credential stops working at once (checkin → revoked; /join recovery → install_revoked; the extension sets its no-re-enroll block)."
-        - "Never releases a deployment-token slot and never touches the invitation that produced it. Idempotent by state."
+        - "Capability installations.remove. Sets status revoked, revoked_reason removed. The credential stops working at once: checkin → revoked; /join recovery → install_revoked; the extension sets its no-re-enroll block."
+        - "Does NOT release a deployment-token slot and does NOT touch the invitation that produced it (revoke ≠ remove ≠ release-slot). Only recovery adjusts a slot. Idempotent by state: removing a removed install answers 200 unchanged."
       requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/InstallationActionRequest" } } } }
       responses:
-        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Installation" } } } }
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/InstallationResult" } } } }
+        "400": { description: invalid_request, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "401": { description: unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
         "403": { description: forbidden, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
         "404": { description: not_found, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
   /portal/installations/recover:
     post:
-      summary: "PINNED, not yet implemented: authorized recovery of an installation whose browser lost its credential."
-      x-implemented: false
+      summary: Authorized recovery of an installation whose browser lost (or must replace) its credential.
       security: [{ userSession: [] }]
       parameters: [{ $ref: "#/components/parameters/IdempotencyKeyRequired" }]
       x-rules:
-        - "Capability installations.recover. Identifies ONE existing install (org_id + install_id; it must be active). In one transaction: the install is revoked with revoked_reason recovered (its credential is invalid from then on; it can never be recovered or re-used) and a replacement path is created."
-        - "join install: a new staff invitation to the SAME recipient (from the install's completed attempt), carrying replaces_install_id; the recipient joins with a fresh extension attempt. The superseded install's invitation stays redeemed."
-        - "provision install: the deployment token's installs_used is decremented by exactly one (slot credit), so the re-provisioned browser takes the freed slot: net slot accounting is unchanged. No slot is ever credited twice for one install."
-        - "Never touches any other install, invitation or attempt. Recovery of a revoked install is 409 invalid_state. Rate limits: 5 per install per 24h, 20 per org per 24h."
-      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/InstallationActionRequest" } } } }
+        - "Capability installations.recover. Distinct from resend (email only) and revoke (unredeemed invitation only). Identifies ONE active install of org_id. In one transaction it is superseded: revoked with revoked_reason recovered, so its credential is dead from then on, and it can never be recovered or reused."
+        - "staff_invitation install: a NEW staff invitation to the same recipient (and display_name), carrying replaces_install_id; its email is queued in the same transaction. The recipient joins with a fresh extension attempt. The original invitation stays redeemed."
+        - "policy_push install: the deployment token's installs_used is decremented by exactly one, once per install (slot credit), so the re-provisioned browser takes the freed slot: net slot accounting is unchanged."
+        - "legacy_code or already revoked: 409 invalid_state (status legacy_code | revoked). Never touches any other install, invitation or attempt. Rate limits: 5 per install and 20 per org per 24h."
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/RecoverRequest" } } } }
       responses:
-        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/RecoveryResult" } } } }
+        "200": { description: "Recovered (or replayed)", content: { application/json: { schema: { $ref: "#/components/schemas/RecoveryResult" } } } }
+        "400": { description: invalid_request (incl. a missing Idempotency-Key), content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "401": { description: unauthorized, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
         "403": { description: forbidden, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
-        "409": { description: invalid_state, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "404": { description: not_found, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "409": { description: invalid_state | idempotency_conflict, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
+        "429": { description: rate_limited, content: { application/json: { schema: { $ref: "#/components/schemas/PortalError" } } } }
   /checkin:
     post:
-      summary: "PINNED v1.2.0 addition to the existing installation check-in: self-test reporting scoped to the installation."
-      x-implemented: false
+      summary: "Installation check-in (existing), including the installation-scoped quick-check report (v1.4.0)."
+      x-live-only: true
       security: [{ installCredential: [] }]
       x-rules:
-        - "The authenticated installation channel: the body's install_id + credential are verified against the stored credential hash before anything is recorded; no user session, no proxy secret."
-        - "Existing fields stay (self_test.passed + self_test.at). v1.2.0 adds self_test.outcome, self_test.scope and self_test.suite_version; the backend records all of them on the INSTALLATION (outcome, tested_at, scope, suite_version), shown in Installation.self_test. A report without tested_at is ignored: a check-in is never a self-test."
+        - "The authenticated installation channel: install_id + credential are verified against the stored credential hash before anything is recorded. No user session, no proxy secret. This is the ONLY writer of an installation's quick-check result; the backend never infers it from the bridge result message."
+        - "self_test is recorded on the INSTALLATION only when `at` is a real timestamp (a check-in is never a self-test): outcome (pass | fail | incomplete; derived from `passed` when absent), at, scope (ids matching ^[a-z0-9_.-]{1,64}$, ≤32; others dropped) and suite_version. Shown as Installation.last_quick_check."
       requestBody:
         required: true
         content:
@@ -657,7 +710,7 @@ paths:
                   properties:
                     passed: { type: boolean }
                     at: { type: string, format: date-time }
-                    outcome: { type: string, enum: [pass, fail, partial] }
+                    outcome: { type: string, enum: [pass, fail, incomplete] }
                     scope: { type: array, maxItems: 32, items: { type: string, pattern: "^[a-z0-9_.-]{1,64}$" } }
                     suite_version: { type: string, maxLength: 40 }
       responses:

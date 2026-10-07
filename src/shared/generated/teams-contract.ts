@@ -240,6 +240,15 @@ export interface paths {
                         "application/json": components["schemas"]["PortalError"];
                     };
                 };
+                /** @description origin_not_allowed (the call did not come through the website proxy; applies to every /portal path) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
             };
         };
         put?: never;
@@ -868,12 +877,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** PINNED, not yet implemented: list an org's installations, independent of invitations. */
+        /** List an org's installations (independent of invitations), newest first. */
         get: {
             parameters: {
                 query: {
                     org_id: string;
-                    status?: "active" | "revoked";
+                    status?: "active" | "offline" | "revoked";
                     limit?: number;
                     cursor?: string;
                 };
@@ -890,6 +899,24 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["InstallationList"];
+                    };
+                };
+                /** @description invalid_request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
                     };
                 };
                 /** @description forbidden */
@@ -920,7 +947,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** PINNED, not yet implemented: remove (revoke) one installation. */
+        /** Remove one installation (end that browser's access). */
         post: {
             parameters: {
                 query?: never;
@@ -940,7 +967,25 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Installation"];
+                        "application/json": components["schemas"]["InstallationResult"];
+                    };
+                };
+                /** @description invalid_request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
                     };
                 };
                 /** @description forbidden */
@@ -978,7 +1023,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** PINNED, not yet implemented: authorized recovery of an installation whose browser lost its credential. */
+        /** Authorized recovery of an installation whose browser lost (or must replace) its credential. */
         post: {
             parameters: {
                 query?: never;
@@ -991,17 +1036,35 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json": components["schemas"]["InstallationActionRequest"];
+                    "application/json": components["schemas"]["RecoverRequest"];
                 };
             };
             responses: {
-                /** @description OK */
+                /** @description Recovered (or replayed) */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
                         "application/json": components["schemas"]["RecoveryResult"];
+                    };
+                };
+                /** @description invalid_request (incl. a missing Idempotency-Key) */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
                     };
                 };
                 /** @description forbidden */
@@ -1013,8 +1076,26 @@ export interface paths {
                         "application/json": components["schemas"]["PortalError"];
                     };
                 };
-                /** @description invalid_state */
+                /** @description not_found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description invalid_state | idempotency_conflict */
                 409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PortalError"];
+                    };
+                };
+                /** @description rate_limited */
+                429: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -1039,7 +1120,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** PINNED v1.2.0 addition to the existing installation check-in: self-test reporting scoped to the installation. */
+        /** Installation check-in (existing), including the installation-scoped quick-check report (v1.4.0). */
         post: {
             parameters: {
                 query?: never;
@@ -1060,7 +1141,7 @@ export interface paths {
                             /** Format: date-time */
                             at: string;
                             /** @enum {string} */
-                            outcome?: "pass" | "fail" | "partial";
+                            outcome?: "pass" | "fail" | "incomplete";
                             scope?: string[];
                             suite_version?: string;
                         };
@@ -1197,10 +1278,12 @@ export interface components {
         };
         PortalError: {
             /** @enum {string} */
-            error: "unauthorized" | "forbidden" | "not_found" | "invalid_request" | "idempotency_conflict" | "invitation_exists" | "invitation_enrolled" | "invalid_state" | "org_pending" | "wrong_recipient" | "invitation_revoked" | "invitation_expired" | "invitation_consumed" | "rate_limited" | "method_not_allowed" | "service_unavailable";
+            error: "unauthorized" | "forbidden" | "origin_not_allowed" | "not_found" | "invalid_request" | "idempotency_conflict" | "invitation_exists" | "invitation_enrolled" | "invalid_state" | "org_pending" | "wrong_recipient" | "invitation_revoked" | "invitation_expired" | "invitation_consumed" | "rate_limited" | "method_not_allowed" | "service_unavailable";
             /** @description invitation_exists: the open invitation for that recipient (resend it instead). */
             invitation_id?: string;
-            status?: components["schemas"]["InvitationStatus"];
+            /** @description invalid_state: the current state (an InvitationStatus, or for installations revoked | legacy_code). */
+            status?: string;
+            required_capability?: components["schemas"]["Capability"];
         };
         /**
          * @description The caller's relationship to ONE org. A user can hold several roles across orgs; staff have no portal role.
@@ -1217,10 +1300,16 @@ export interface components {
             msp_account: string;
             msp_name: string;
         };
+        /**
+         * @description How the caller holds this org (the highest applies). owner_direct: owner who created the clinic (or received ownership); owner_invitation: owner by claiming an owner invitation; admin: org admin; msp_delegated: member of an MSP partner holding a non-revoked delegation. Capability defaults: owner_direct and owner_invitation get all 13; admin and msp_delegated get the 10 manager capabilities (not members.manage, owner_invitations.manage, delegation.manage).
+         * @enum {string}
+         */
+        OrgSource: "owner_direct" | "owner_invitation" | "admin" | "msp_delegated";
         PortalOrg: {
             /** Format: uuid */
             org_id: string;
             org_name: string;
+            source: components["schemas"]["OrgSource"];
             /**
              * @description pending: an MSP-created clinic awaiting the owner's claim and delegation decision. Invitations cannot be issued while pending.
              * @enum {string}
@@ -1234,7 +1323,17 @@ export interface components {
         PortalMe: {
             /** Format: uuid */
             user_id: string;
+            /** @description The caller's own confirmed address. */
             email: string;
+            /** @description The same, masked for display (s***@e***.com). */
+            user_email_masked: string;
+            /** @description Whether the A1a 'Create your clinic' path is offered: true for every verified user (rate limited at POST /portal/clinics). */
+            can_create_org: boolean;
+            /**
+             * Format: uuid
+             * @description A suggestion only: the single org when the caller has exactly one, else null (the UI keeps the selection).
+             */
+            current_org_id: string | null;
             /** @description Every org the caller may act on (owner, admin or delegated MSP), sorted by name. */
             orgs: components["schemas"]["PortalOrg"][];
             msp_accounts: {
@@ -1313,8 +1412,15 @@ export interface components {
             org_name: string;
             /** @enum {string} */
             type: "staff" | "owner";
+            /** @description Full address: only callers with invitations.read on this org see it. */
             recipient_email: string;
+            display_name: string | null;
             status: components["schemas"]["InvitationStatus"];
+            /**
+             * @description The extension attempt's own state, never changed by resend. none: no exchange token yet; in_flight: a live, unconsumed exchange token; lapsed: tokens were minted but all expired unconsumed (the extension keeps its attempt; the page mints a new token for the same challenge); completed: redeemed.
+             * @enum {string}
+             */
+            attempt_state: "none" | "in_flight" | "lapsed" | "completed";
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -1332,6 +1438,11 @@ export interface components {
             redeemed_at: string | null;
             /** Format: date-time */
             revoked_at: string | null;
+            /**
+             * Format: uuid
+             * @description Set on an invitation created by installation recovery: the superseded install.
+             */
+            replaces_install_id: string | null;
             email: components["schemas"]["InvitationEmail"];
             /** @description The installation this invitation produced (browser_enrolled only). */
             installation: {
@@ -1347,6 +1458,7 @@ export interface components {
             /** Format: uuid */
             org_id: string;
             recipient_email: string;
+            display_name?: string;
         };
         InvitationActionRequest: {
             /** Format: uuid */
@@ -1367,48 +1479,54 @@ export interface components {
             /** @description Opaque; pass back as ?cursor= for the next page. null on the last page. */
             next_cursor: string | null;
         };
-        /** @description v1.2.0 (pinned, not yet implemented): the installation's most recent self-test, as reported over the authenticated installation channel (/checkin). */
-        SelfTest: {
+        /** @description The installation's most recent quick check (self-test), as reported by the installation itself over /checkin. */
+        QuickCheck: {
             /** @enum {string} */
-            outcome: "pass" | "fail" | "partial";
+            outcome: "pass" | "fail" | "incomplete";
             /**
              * Format: date-time
-             * @description When the test ran on the device (not when it was reported).
+             * @description When the check ran on the device (not when it was reported).
              */
-            tested_at: string;
-            /** @description Ids of the checks that ran. */
+            at: string;
+            /** @description Ids of the checks that ran, e.g. chatgpt-send (vocabulary owned by the extension). Empty when an older extension reported only pass/fail. */
             scope: string[];
-            suite_version: string;
+            suite_version: string | null;
         };
-        /** @description v1.2.0 (pinned): independent of invitations. Policy/force-installed browsers appear with invitation_id null. */
+        /** @description Independent of invitations. Policy / force-installed browsers appear with source policy_push and invitation_id null. */
         Installation: {
             /** Format: uuid */
             install_id: string;
             /** Format: uuid */
             org_id: string;
-            /** @enum {string} */
-            status: "active" | "revoked";
             /**
-             * @description null: legacy code-entry install.
-             * @enum {string|null}
+             * @description staff_invitation: joined via an invitation (/join); policy_push: provisioned from a managed-policy deployment token (/provision); legacy_code: a pre-v1 code-entry install.
+             * @enum {string}
              */
-            created_via: "provision" | "join" | null;
+            source: "staff_invitation" | "policy_push" | "legacy_code";
             /** Format: uuid */
             invitation_id: string | null;
             recipient_email: string | null;
             /** Format: uuid */
             deployment_token_id: string | null;
-            label: string | null;
+            browser_label: string | null;
             extension_version: string | null;
+            /**
+             * @description offline: active, but no check-in for 24h (or none yet).
+             * @enum {string}
+             */
+            status: "active" | "offline" | "revoked";
             /** Format: date-time */
-            created_at: string;
+            installed_at: string;
             /** Format: date-time */
-            last_checkin_at: string | null;
+            last_seen_at: string | null;
             /** Format: date-time */
             revoked_at: string | null;
-            /** @enum {string|null} */
+            /**
+             * @description null on a revoked install: revoked by the legacy admin action.
+             * @enum {string|null}
+             */
             revoked_reason: "removed" | "recovered" | null;
-            self_test: components["schemas"]["SelfTest"] | null;
+            last_quick_check: components["schemas"]["QuickCheck"] | null;
         };
         InstallationList: {
             items: components["schemas"]["Installation"][];
@@ -1420,9 +1538,21 @@ export interface components {
             /** Format: uuid */
             install_id: string;
         };
+        RecoverRequest: {
+            /** Format: uuid */
+            org_id: string;
+            /** Format: uuid */
+            install_id: string;
+            /** @enum {string} */
+            reason?: "stuck" | "staff_lost_browser" | "staff_changed_device" | "other";
+        };
+        InstallationResult: {
+            installation: components["schemas"]["Installation"];
+        };
         RecoveryResult: {
             /** Format: uuid */
             superseded_install_id: string;
+            replayed: boolean;
             recovery: {
                 /** @enum {string} */
                 kind: "invitation";
