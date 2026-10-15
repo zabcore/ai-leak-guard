@@ -76,3 +76,37 @@ export function planManagedBootstrap(input: BootstrapInput): BootstrapDecision {
 
   return { action: 'provision', deploymentToken: token }
 }
+
+// ─── Install re-check (F-TD-1) ─────────────────────────────────────────
+//
+// On a force-install, `onInstalled` can read `chrome.storage.managed` before
+// Chrome has delivered the policy to that profile, and skip with `no-policy`.
+// The later policy-change event normally recovers it, but a missed or coalesced
+// event would leave the browser unenrolled until the next browser launch. So a
+// `no-policy` skip at INSTALL schedules a few short, bounded re-checks. Each is a
+// local managed-storage read only (no network without a token); once a token
+// appears the normal provision path runs — reusing the persisted attempt.
+
+/** Re-checks after an install-time `no-policy` skip, and their spacing. */
+export const BOOTSTRAP_RECHECK_MAX = 3
+export const BOOTSTRAP_RECHECK_DELAY_MIN = 1
+
+export type RecheckPlan =
+  | { readonly schedule: false }
+  | { readonly schedule: true; readonly delayMin: number; readonly nextCount: number }
+
+/**
+ * Decide whether to schedule another install re-check. Only a `no-policy` skip
+ * re-checks (anything else either enrolled, has its own retry, or is a decided
+ * skip); `count` is how many re-checks already ran, bounded by
+ * `BOOTSTRAP_RECHECK_MAX`. A corrupt count is treated as 0.
+ */
+export function planBootstrapRecheck(
+  skipReason: BootstrapSkipReason | null,
+  count: number,
+): RecheckPlan {
+  if (skipReason !== 'no-policy') return { schedule: false }
+  const safe = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0
+  if (safe >= BOOTSTRAP_RECHECK_MAX) return { schedule: false }
+  return { schedule: true, delayMin: BOOTSTRAP_RECHECK_DELAY_MIN, nextCount: safe + 1 }
+}

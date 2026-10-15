@@ -59,6 +59,70 @@ export async function recordNextAttempt(atIso: string | null): Promise<void> {
   }
 }
 
+// ─── Managed-bootstrap diagnostics (F-TD-1) ───────────────────────────
+//
+// Every managed-bootstrap pass records what it decided, so a browser that never
+// enrolled says WHY (e.g. `revoked-block`, `no-policy`, `exhausted`) instead of
+// skipping silently. Same content-free rule as above: trigger label, the skip
+// reason or provision outcome enum, and whether a token was present (a boolean)
+// — never the token, the attempt secret, or a credential.
+
+export const TEAMS_BOOTSTRAP_DIAG_KEY = 'teamsBootstrapDiag'
+const MAX_BOOTSTRAP_ATTEMPTS = 20
+
+export interface BootstrapAttempt {
+  /** ISO time the pass completed. */
+  at: string
+  /** What fired it: install | startup | policy-change | provision-retry | recheck | unknown. */
+  trigger: string
+  /** The decision: 'skip' or 'provision'. */
+  action: 'skip' | 'provision'
+  /** The skip reason (action 'skip') or provision outcome (action 'provision'). */
+  result: string
+  /** Whether the managed policy carried a deployment token (never its value). */
+  tokenPresent: boolean
+}
+
+/** Append one bootstrap pass to its ring buffer. Best-effort — never throws. */
+export async function recordBootstrapAttempt(entry: BootstrapAttempt): Promise<void> {
+  try {
+    const got = await chrome.storage.local.get(TEAMS_BOOTSTRAP_DIAG_KEY)
+    const raw = got[TEAMS_BOOTSTRAP_DIAG_KEY]
+    const current = Array.isArray(raw) ? (raw as BootstrapAttempt[]) : []
+    const next = [...current, entry].slice(-MAX_BOOTSTRAP_ATTEMPTS)
+    await chrome.storage.local.set({ [TEAMS_BOOTSTRAP_DIAG_KEY]: next })
+  } catch {
+    // diagnostics must never affect the bootstrap itself
+  }
+}
+
+/** The most recent bootstrap pass, or null when none was recorded. */
+export async function getLastBootstrapAttempt(): Promise<BootstrapAttempt | null> {
+  try {
+    const got = await chrome.storage.local.get(TEAMS_BOOTSTRAP_DIAG_KEY)
+    const raw = got[TEAMS_BOOTSTRAP_DIAG_KEY]
+    if (!Array.isArray(raw) || raw.length === 0) return null
+    const last = raw[raw.length - 1] as Partial<BootstrapAttempt> | null
+    if (
+      last === null ||
+      typeof last !== 'object' ||
+      (last.action !== 'skip' && last.action !== 'provision') ||
+      typeof last.result !== 'string'
+    ) {
+      return null
+    }
+    return {
+      at: typeof last.at === 'string' ? last.at : '',
+      trigger: typeof last.trigger === 'string' ? last.trigger : 'unknown',
+      action: last.action,
+      result: last.result,
+      tokenPresent: last.tokenPresent === true,
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Read the buffer + the next scheduled attempt (for the console mirror). */
 export async function readDiag(): Promise<{
   attempts: CheckinAttempt[]

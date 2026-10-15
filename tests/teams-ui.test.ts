@@ -7,7 +7,8 @@
 // Activate is clicked.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { enrollErrorMessage, setupTeamsSection } from '../src/popup/teams-ui'
+import { autoSetupMessage, enrollErrorMessage, setupTeamsSection } from '../src/popup/teams-ui'
+import { recordBootstrapAttempt, type BootstrapAttempt } from '../src/shared/teams-diag'
 import { setEnrollment, setRevokedNotice } from '../src/shared/teams-storage'
 import type { EnrollErrorCode } from '../src/shared/teams-contract'
 
@@ -49,7 +50,7 @@ describe('enrollErrorMessage', () => {
     ['expired', 'expired'],
     ['revoked', 'revoked'],
     ['not_configured', 'isn’t set up'],
-    ['network', "Couldn’t reach the server"],
+    ['network', 'Couldn’t reach the server'],
   ]
   it('maps each error code to a distinct, specific message', () => {
     const seen = new Set<string>()
@@ -115,5 +116,83 @@ describe('setupTeamsSection — status rendering', () => {
     const err = document.getElementById('teams-error') as HTMLElement
     expect(err.hidden).toBe(false)
     expect(err.textContent).toContain('Enter your enrollment code')
+  })
+})
+
+// ─── F-TD-1: why a policy-deployed browser has not set itself up ──────
+
+const attempt = (action: BootstrapAttempt['action'], result: string): BootstrapAttempt => ({
+  at: '2026-10-15T00:00:00.000Z',
+  trigger: 'install',
+  action,
+  result,
+  tokenPresent: true,
+})
+
+describe('autoSetupMessage', () => {
+  it.each([
+    ['skip', 'revoked-block', 'removed by your organization'],
+    ['provision', 'install-revoked', 'removed by your organization'],
+    ['skip', 'autoenroll-off', 'turned off'],
+    ['provision', 'network', 'retry'],
+    ['provision', 'invalid-token', 'isn’t valid'],
+    ['provision', 'expired', 'expired'],
+    ['provision', 'token-revoked', 'revoked'],
+    ['provision', 'exhausted', 'no installs left'],
+    ['provision', 'recovery-expired', 'in time'],
+    ['provision', 'not-configured', 'isn’t available'],
+  ] as const)('%s / %s → explains it, with the diagnostic code', (action, result, fragment) => {
+    const msg = autoSetupMessage(attempt(action, result))
+    expect(msg).toContain(fragment)
+    expect(msg).toContain(`(${result})`)
+  })
+
+  it.each([
+    ['skip', 'no-policy'],
+    ['skip', 'already-enrolled'],
+    ['provision', 'enrolled'],
+    ['provision', 'already-enrolled'],
+  ] as const)('%s / %s → nothing to say', (action, result) => {
+    expect(autoSetupMessage(attempt(action, result))).toBeNull()
+  })
+
+  it('no recorded pass → nothing to say', () => {
+    expect(autoSetupMessage(null)).toBeNull()
+  })
+})
+
+describe('setupTeamsSection — automatic-setup line', () => {
+  beforeEach(() => {
+    mountDom()
+    document
+      .querySelector('.teams__bar')
+      ?.insertAdjacentHTML('afterend', '<p id="teams-autosetup" hidden></p>')
+  })
+  const line = () => document.getElementById('teams-autosetup') as HTMLElement
+
+  it('Free user (no policy) → the line stays hidden', async () => {
+    await recordBootstrapAttempt({ ...attempt('skip', 'no-policy'), tokenPresent: false })
+    await setupTeamsSection()
+    expect(line().hidden).toBe(true)
+  })
+
+  it('revoke-blocked managed browser → the line says why', async () => {
+    await recordBootstrapAttempt(attempt('skip', 'revoked-block'))
+    await setupTeamsSection()
+    expect(line().hidden).toBe(false)
+    expect(line().textContent).toContain('(revoked-block)')
+  })
+
+  it('enrolled → hidden even if an older pass failed', async () => {
+    await recordBootstrapAttempt(attempt('provision', 'network'))
+    await setEnrollment({
+      install_id: 'i',
+      install_credential: 'c',
+      org_id: 'o',
+      org_name: 'Harbor',
+      base_url: 'http://127.0.0.1:54321',
+    })
+    await setupTeamsSection()
+    expect(line().hidden).toBe(true)
   })
 })

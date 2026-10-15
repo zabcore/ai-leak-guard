@@ -503,6 +503,12 @@ body {
 .teams__status--revoked {
   color: #92500b;
 }
+.teams__autosetup {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #92500b;
+  margin: 6px 0 0;
+}
 .teams__activate {
   flex: none;
   font-size: 12px;

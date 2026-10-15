@@ -14,6 +14,7 @@
 import { runCheckin, runEnroll, runUnenroll } from '../enterprise/teams-service'
 import { getEnrollment, getRevokedNotice } from '../shared/teams-storage'
 import type { EnrollErrorCode } from '../shared/teams-contract'
+import { getLastBootstrapAttempt, type BootstrapAttempt } from '../shared/teams-diag'
 
 /** Map an enroll error code to the specific user-facing message. Pure — tested. */
 export function enrollErrorMessage(code: EnrollErrorCode): string {
@@ -36,6 +37,43 @@ export function enrollErrorMessage(code: EnrollErrorCode): string {
   }
 }
 
+/**
+ * Why a policy-deployed browser has not set itself up yet (F-TD-1), from the
+ * last managed-bootstrap pass. Pure — tested. Null when there is nothing to say:
+ * no pass yet, no deployment policy (a Free user sees nothing), or the browser
+ * enrolled. The trailing code is the diagnostic enum, for support.
+ */
+export function autoSetupMessage(attempt: BootstrapAttempt | null): string | null {
+  if (attempt === null) return null
+  const text = ((): string | null => {
+    switch (attempt.result) {
+      case 'revoked-block':
+      case 'install-revoked':
+        return 'Automatic setup is blocked: this browser was removed by your organization.'
+      case 'autoenroll-off':
+        return 'Automatic setup is turned off by your IT provider.'
+      case 'network':
+        return 'Automatic setup couldn’t reach the server. It will retry.'
+      case 'invalid-token':
+        return 'Automatic setup failed: the deployment token isn’t valid. Contact your IT provider.'
+      case 'expired':
+        return 'Automatic setup failed: the deployment token has expired. Contact your IT provider.'
+      case 'token-revoked':
+        return 'Automatic setup failed: the deployment token was revoked. Contact your IT provider.'
+      case 'exhausted':
+        return 'Automatic setup failed: the deployment token has no installs left. Contact your IT provider.'
+      case 'recovery-expired':
+        return 'Automatic setup couldn’t finish in time. Contact your IT provider.'
+      case 'not-configured':
+        return 'Automatic setup isn’t available in this build.'
+      default:
+        // no-policy, already-enrolled, enrolled — nothing to report
+        return null
+    }
+  })()
+  return text === null ? null : `${text} (${attempt.result})`
+}
+
 interface TeamsEls {
   status: HTMLElement
   form: HTMLElement
@@ -49,6 +87,7 @@ interface TeamsEls {
   activateBtn: HTMLButtonElement | null
   cancelBtn: HTMLButtonElement | null
   icon: HTMLElement | null
+  autoSetup: HTMLElement | null
 }
 
 function resolveEls(): TeamsEls | null {
@@ -83,6 +122,7 @@ function resolveEls(): TeamsEls | null {
     activateBtn: activateEl instanceof HTMLButtonElement ? activateEl : null,
     cancelBtn: cancelEl instanceof HTMLButtonElement ? cancelEl : null,
     icon: document.getElementById('teams-icon'),
+    autoSetup: document.getElementById('teams-autosetup'),
   }
 }
 
@@ -122,8 +162,17 @@ function expand(els: TeamsEls): void {
   }
 }
 
+/** Show (or hide) the automatic-setup line. Unenrolled browsers only. */
+async function renderAutoSetup(els: TeamsEls, enrolled: boolean): Promise<void> {
+  if (els.autoSetup === null) return
+  const message = enrolled ? null : autoSetupMessage(await getLastBootstrapAttempt())
+  els.autoSetup.textContent = message ?? ''
+  els.autoSetup.hidden = message === null
+}
+
 async function render(els: TeamsEls): Promise<void> {
   const enrollment = await getEnrollment()
+  await renderAutoSetup(els, enrollment !== null)
   if (enrollment !== null) {
     setStatus(els, `Managed by ${enrollment.org_name}`, 'managed')
     els.form.hidden = true

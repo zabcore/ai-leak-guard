@@ -65,8 +65,16 @@
       <section class="teams" id="teams-section" aria-labelledby="teams-heading">
         <div class="teams__bar">
           <span class="teams__icon" id="teams-icon" aria-hidden="true">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
               <path d="M3 21h18M6 21V7l6-4 6 4v14" />
               <path d="M10 9h.01M14 9h.01M10 13h.01M14 13h.01M10 17h4" />
             </svg>
@@ -78,9 +86,14 @@
           <button type="button" class="teams__activate" id="teams-activate-btn">Activate</button>
           <button type="button" class="teams__remove" hidden id="teams-unenroll-btn">Remove</button>
         </div>
+        <!-- F-TD-1: why a managed (policy-deployed) browser has not set itself up yet. -->
+        <p class="teams__autosetup" role="status" hidden id="teams-autosetup"></p>
 
         <div class="teams__enroll" id="teams-enroll-form" hidden>
-          <p class="teams__hint">Enter the enrollment code from your IT provider to let them manage this browser's settings.</p>
+          <p class="teams__hint">
+            Enter the enrollment code from your IT provider to let them manage this browser's
+            settings.
+          </p>
           <input
             class="teams__input"
             id="teams-code"
@@ -125,8 +138,16 @@
           </select>
         </div>
         <button type="button" class="selftest__btn" id="selftest-btn">Test protection</button>
-        <p class="selftest__result" role="status" aria-live="polite" hidden id="selftest-result"></p>
-        <button type="button" class="selftest__report" hidden id="selftest-report">Report this</button>
+        <p
+          class="selftest__result"
+          role="status"
+          aria-live="polite"
+          hidden
+          id="selftest-result"
+        ></p>
+        <button type="button" class="selftest__report" hidden id="selftest-report">
+          Report this
+        </button>
       </section>
 
       <!--
