@@ -33,6 +33,7 @@ import { withLinkSource } from '../shared/link-source'
 import { runCheckin } from '../enterprise/teams-service'
 import { runManagedBootstrap, type ManagedBootstrapResult } from '../enterprise/teams-bootstrap'
 import { planBootstrapRecheck } from './teams-bootstrap-plan'
+import { readTeamsExport } from '../shared/teams-export'
 import {
   exchangeJoin,
   hasPendingJoin,
@@ -46,6 +47,11 @@ import { recordNextAttempt } from '../shared/teams-diag'
 import { nextRetryPlan } from './teams-retry-plan'
 
 console.log('[AI Leak Guard] service worker started')
+
+// Track D close-out: the secret-free, READ-ONLY enrollment export, for the
+// service-worker console with the popup closed: `await algTeamsExport()`.
+// Reads storage only — no network, no check-in, no write (`teams-export`).
+;(globalThis as { algTeamsExport?: typeof readTeamsExport }).algTeamsExport = readTeamsExport
 
 const STORAGE_KEY = 'events'
 const APPEND_MESSAGE_TYPE = 'alg-event-append'

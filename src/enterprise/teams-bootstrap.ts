@@ -42,6 +42,7 @@ import { planManagedBootstrap, type BootstrapSkipReason } from '../background/te
 import { readManagedPolicy } from '../shared/teams-managed-policy'
 import { getEnrollment, getRevokeBlock, setRevokeBlock } from '../shared/teams-storage'
 import { recordBootstrapAttempt } from '../shared/teams-diag'
+import { traceEvent } from '../shared/teams-trace'
 import { runProvision, type ProvisionRunDeps, type ProvisionRunOutcome } from './teams-provision'
 import type { ManagedDeploymentPolicy } from '../background/teams-bootstrap-plan'
 
@@ -126,6 +127,18 @@ async function runOnce(
   const decision = planManagedBootstrap({ enrolled, revokedBlock, policy })
   const tokenPresent = typeof policy?.deploymentToken === 'string' && policy.deploymentToken !== ''
 
+  // Trace every decision on a policy-managed browser (a token is present) — a
+  // Free user's `no-policy` passes stay out of the trace.
+  if (tokenPresent) {
+    await traceEvent('bootstrap-decision', {
+      trigger,
+      action: decision.action,
+      reason: decision.action === 'skip' ? decision.reason : null,
+      enrolled,
+      revokedBlock,
+    })
+  }
+
   if (decision.action === 'skip') {
     await recordBootstrapAttempt({
       at: new Date().toISOString(),
@@ -141,9 +154,13 @@ async function runOnce(
     deploymentToken: decision.deploymentToken,
     ...(deps.loadClient !== undefined ? { loadClient: deps.loadClient } : {}),
     ...(deps.newId !== undefined ? { newId: deps.newId } : {}),
+    trigger,
   })
 
-  if (outcome === 'install-revoked') await setRevokeBlock()
+  if (outcome === 'install-revoked') {
+    await setRevokeBlock()
+    await traceEvent('cleanup-completed', { source: 'provision', revokeBlock: true })
+  }
   await recordBootstrapAttempt({
     at: new Date().toISOString(),
     trigger,
