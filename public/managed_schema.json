@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "properties": {
+    "deploymentToken": {
+      "title": "Teams Lite deployment token",
+      "description": "Organization deployment token issued from the Teams Lite admin portal. When present (and autoEnroll is not false), an unenrolled browser exchanges it once for its own per-install credential. It authorizes enrollment only and is never itself an install credential.",
+      "type": "string"
+    },
+    "autoEnroll": {
+      "title": "Auto-enroll from the deployment token",
+      "description": "Set to false to stop browsers from enrolling automatically from deploymentToken (for example while staging). Defaults to true when a token is present.",
+      "type": "boolean"
+    }
+  }
+}

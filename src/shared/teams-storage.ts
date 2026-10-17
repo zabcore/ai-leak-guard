@@ -66,8 +66,37 @@ export async function getEnrollment(): Promise<TeamsEnrollment | null> {
   }
 }
 
+/** Raw write. Producers of a NEW credential must use `commitEnrollment`. */
 export async function setEnrollment(value: TeamsEnrollment): Promise<void> {
   await chrome.storage.local.set({ [TEAMS_ENROLLMENT_KEY]: value })
+}
+
+export type CommitEnrollmentResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'already_enrolled' }
+
+let commitChain: Promise<unknown> = Promise.resolve()
+
+/**
+ * Store a FRESHLY ISSUED credential (provision, join, code-entry enroll). The
+ * existing-enrollment / clinic-switch rule is enforced HERE, at the store, not
+ * only by callers: if a different install is already enrolled the new
+ * credential is refused and the existing enrollment is left untouched — so a
+ * competing join tab, a racing code-entry enroll or a different invitation can
+ * never silently overwrite it. Re-storing the SAME install (a recovered /
+ * replayed credential) is allowed. Commits are serialized within the worker.
+ */
+export function commitEnrollment(value: TeamsEnrollment): Promise<CommitEnrollmentResult> {
+  const run = commitChain.then(async (): Promise<CommitEnrollmentResult> => {
+    const existing = await getEnrollment()
+    if (existing !== null && existing.install_id !== value.install_id) {
+      return { ok: false, reason: 'already_enrolled' }
+    }
+    await setEnrollment(value)
+    return { ok: true }
+  })
+  commitChain = run.catch(() => undefined)
+  return run
 }
 
 export async function clearEnrollment(): Promise<void> {
@@ -129,4 +158,26 @@ export async function setRevokedNotice(value: boolean): Promise<void> {
     return
   }
   await chrome.storage.local.remove(TEAMS_REVOKED_KEY)
+}
+
+/** Set after a CONFIRMED revocation of this install (Contract B §5b). Blocks
+ *  managed-policy auto-enroll so a removed browser is never silently re-enrolled.
+ *  Unlike `teamsRevoked` (a UI notice), this block is NOT cleared by a new or
+ *  rotated policy token, by a code enroll ("Activate"), or by a user unenroll —
+ *  only by an explicit authorized recovery (`clearRevokeBlock`). */
+export const TEAMS_REVOKE_BLOCK_KEY = 'teamsRevokeBlock'
+
+export async function getRevokeBlock(): Promise<boolean> {
+  const stored = await chrome.storage.local.get(TEAMS_REVOKE_BLOCK_KEY)
+  return stored[TEAMS_REVOKE_BLOCK_KEY] === true
+}
+
+export async function setRevokeBlock(): Promise<void> {
+  await chrome.storage.local.set({ [TEAMS_REVOKE_BLOCK_KEY]: true })
+}
+
+/** Lift the revoke block. Call ONLY from an explicit, authorized recovery
+ *  action (Contract B §5a #8) — never from a policy change or an enroll. */
+export async function clearRevokeBlock(): Promise<void> {
+  await chrome.storage.local.remove(TEAMS_REVOKE_BLOCK_KEY)
 }

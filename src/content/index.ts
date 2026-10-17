@@ -20,7 +20,7 @@ import { clearFileInput, consumePassThroughIfArmed } from './upload-release'
 import { showReattachNudge } from './document-nudge'
 import { installFsaMessageHandler } from './fsa-isolated'
 import { appendEvent, type AlgAction, type AlgEvent } from '../shared/event-log'
-import { startTeamsHeartbeat } from './teams-heartbeat'
+import { reportQuickCheck, startTeamsHeartbeat } from './teams-heartbeat'
 import type { DetectorCategory, Finding } from '../detector/types'
 import { readPastedText } from './clipboard-text'
 import { isSubmitProtectionEnabled } from './submit/submit-flag'
@@ -661,6 +661,8 @@ async function runGuidedSelfTest(installed: InstalledSubmit, nonce: string): Pro
   } catch {
     // best-effort; the popup times out to "couldn't start" if unwritten.
   }
+  // #88: an enrolled browser reports this quick check to its installation now.
+  void reportQuickCheck()
 
   // Show the outcome IN THIS TAB — the popup has already closed (Chrome
   // dismisses it when the test tab took focus), so the storage result

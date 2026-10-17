@@ -1,10 +1,12 @@
 // Teams Lite — the enrollment/check-in HTTP client. THE ONLY `fetch` in the
 // extension's own code.
 //
-// This module is loaded ONLY via dynamic `import()` from enrolled code paths
-// (the popup's Enroll click and the service worker's check-in scheduler, which
-// runs only when enrolled). The Free, unenrolled mode never imports it, so no
-// network call is even reachable before an explicit enrollment. Because it is a
+// Every call here is gated at RUNTIME by its caller: enroll (the popup's code
+// entry) and join (the zabcore join-page handoff) only on an explicit user
+// enrollment; provision only when an admin's managed policy authorizes it
+// (`planManagedBootstrap`); checkin only when enrolled. The popup loads this
+// module lazily; the service worker imports it statically (no dynamic import()
+// in a worker) but an unenrolled worker with no policy never calls it. Because it is a
 // dynamic import, Vite emits it as its own chunk, which `verify-no-network.mjs`
 // allowlists BY NAME (egress gated behind explicit enrollment) — the free-mode
 // silence guarantee is carried by the behavioral test, not the static scan.
@@ -18,6 +20,10 @@ import {
   enrollErrorForStatus,
   isCheckinResponse,
   isEnrollSuccess,
+  joinErrorFor,
+  type JoinErrorCode,
+  provisionErrorFor,
+  type ProvisionErrorCode,
   type CheckinRequest,
   type CheckinResponse,
   type EnrollRequest,
@@ -107,6 +113,133 @@ export async function checkin(
   const body = await readJson(res)
   if (isCheckinResponse(body)) return { ok: true, response: body }
   return { ok: false }
+}
+
+// ─── Deployment-token provisioning (managed deployment, Contract B) ──
+export interface ProvisionRequest {
+  readonly deployment_token: string
+  readonly attempt_id: string
+  readonly idempotency_key: string
+}
+export interface ProvisionSuccess {
+  readonly install_id: string
+  readonly install_credential: string
+  readonly org_id: string
+  readonly org_name: string
+}
+export type { ProvisionErrorCode }
+export type ProvisionCallResult =
+  | { ok: true; data: ProvisionSuccess }
+  | { ok: false; code: ProvisionErrorCode }
+
+function isProvisionSuccess(body: unknown): body is ProvisionSuccess {
+  if (body === null || typeof body !== 'object') return false
+  const b = body as Record<string, unknown>
+  return (
+    typeof b.install_id === 'string' &&
+    typeof b.install_credential === 'string' &&
+    typeof b.org_id === 'string' &&
+    typeof b.org_name === 'string'
+  )
+}
+
+/** POST /functions/v1/provision — exchange a deployment token for a per-install
+ *  credential. Content-free body; the attempt secret travels only here (never a
+ *  URL / diagnostic). Maps the contract's status codes to error codes; any
+ *  offline / malformed / unexpected result becomes `network`, on which the caller
+ *  retries with the SAME persisted attempt. */
+export async function provision(
+  baseUrl: string,
+  anonKey: string,
+  req: ProvisionRequest,
+): Promise<ProvisionCallResult> {
+  let res: Response
+  try {
+    res = await fetch(`${baseUrl}/functions/v1/provision`, {
+      method: 'POST',
+      headers: authHeaders(anonKey),
+      body: JSON.stringify(req),
+      signal: requestSignal(),
+    })
+  } catch {
+    return { ok: false, code: 'network' }
+  }
+
+  if (res.ok) {
+    const body = await readJson(res)
+    if (isProvisionSuccess(body)) return { ok: true, data: body }
+    return { ok: false, code: 'network' }
+  }
+  return {
+    ok: false,
+    code: provisionErrorFor(res.status, res.status === 410 ? await readJson(res) : null),
+  }
+}
+
+// ─── Staff-invitation join (connect handoff, Contract A §4c) ─────────
+export interface JoinRequest {
+  /** Bound by the backend to {challenge, recipient, invitation, organization}. */
+  readonly exchange_token: string
+  /** The extension-held code-verifier; SHA256(attempt_secret) == challenge. */
+  readonly attempt_secret: string
+  readonly idempotency_key: string
+}
+export interface JoinSuccess {
+  readonly install_id: string
+  readonly install_credential: string
+  readonly org_id: string
+  readonly org_name: string
+  readonly role: 'staff'
+}
+export type { JoinErrorCode }
+export type JoinCallResult = { ok: true; data: JoinSuccess } | { ok: false; code: JoinErrorCode }
+
+function isJoinSuccess(body: unknown): body is JoinSuccess {
+  if (body === null || typeof body !== 'object') return false
+  const b = body as Record<string, unknown>
+  return (
+    typeof b.install_id === 'string' &&
+    typeof b.install_credential === 'string' &&
+    typeof b.org_id === 'string' &&
+    typeof b.org_name === 'string' &&
+    b.role === 'staff'
+  )
+}
+
+/** POST /functions/v1/join — redeem a bound exchange token with the attempt
+ *  secret. The secret travels ONLY in this body to the backend (never to the
+ *  website, a URL, or diagnostics). Offline / malformed / unexpected → `network`,
+ *  on which the caller retries with the SAME persisted attempt. */
+export async function join(
+  baseUrl: string,
+  anonKey: string,
+  req: JoinRequest,
+): Promise<JoinCallResult> {
+  let res: Response
+  try {
+    res = await fetch(`${baseUrl}/functions/v1/join`, {
+      method: 'POST',
+      headers: authHeaders(anonKey),
+      body: JSON.stringify({
+        exchange_token: req.exchange_token,
+        attempt_secret: req.attempt_secret,
+        idempotency_key: req.idempotency_key,
+      }),
+      signal: requestSignal(),
+    })
+  } catch {
+    return { ok: false, code: 'network' }
+  }
+
+  if (res.ok) {
+    const body = await readJson(res)
+    if (isJoinSuccess(body)) return { ok: true, data: body }
+    return { ok: false, code: 'network' }
+  }
+  return {
+    ok: false,
+    code: joinErrorFor(res.status, res.status === 410 ? await readJson(res) : null),
+  }
 }
 
 async function readJson(res: Response): Promise<unknown> {

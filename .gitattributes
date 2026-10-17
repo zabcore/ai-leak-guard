@@ -1,0 +1,18 @@
+# LF everywhere, on every OS. contracts/teams-contract.openapi.yaml and
+# src/shared/generated/teams-contract.ts are pinned by sha256; a Windows CRLF
+# checkout must not change their bytes.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.zip binary
+*.tgz binary
+*.crx binary
+*.woff binary
+*.woff2 binary
