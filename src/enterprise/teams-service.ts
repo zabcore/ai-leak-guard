@@ -27,6 +27,7 @@ import {
 import { getBackendConfig } from './teams-config'
 import { reconcileCheckin, type CheckinOutcome, type Reconciliation } from './teams-state'
 import { recordCheckinAttempt } from '../shared/teams-diag'
+import { nowHr, traceEvent } from '../shared/teams-trace'
 import type { checkin as checkinFn, enroll as enrollFn } from './teams-client'
 
 export interface TeamsClientDeps {
@@ -194,6 +195,21 @@ async function runCheckinOnce(deps: TeamsClientDeps): Promise<CheckinRunOutcome>
 
   const { checkin } = await (deps.loadClient ?? defaultLoadClient)()
   const call = await checkin(enrollment.base_url, config.anonKey, request)
+  // The network-receipt instant, captured before any processing (Track D
+  // close-out): a revoke's receipt and its cleanup are traced separately.
+  const receivedAt = nowHr()
+  if (call.ok && call.response.revoked === true) {
+    await traceEvent(
+      'revoke-response-received',
+      {
+        source: 'checkin',
+        trigger: deps.reason ?? 'unknown',
+        install_id: enrollment.install_id,
+        org_id: enrollment.org_id,
+      },
+      receivedAt,
+    )
+  }
 
   // What the server returned (for diagnostics): the target revision on an active
   // 2xx; null on a non-2xx/network failure or a revocation.
@@ -239,6 +255,15 @@ async function runCheckinOnce(deps: TeamsClientDeps): Promise<CheckinRunOutcome>
     await clearEnrollment()
     await setRevokedNotice(true)
     await setRevokeBlock()
+    await traceEvent('cleanup-completed', {
+      source: 'checkin',
+      install_id: enrollment.install_id,
+      org_id: enrollment.org_id,
+      enrollmentCleared: true,
+      revokedNotice: true,
+      revokeBlock: true,
+      showIndicator: (await getPrefs()).showIndicator,
+    })
   }
 
   // Applied revision AFTER this attempt (for diagnostics): the new revision on an

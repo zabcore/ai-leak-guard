@@ -31,7 +31,9 @@ import {
 import { setSubmitKillSwitch } from '../shared/storage'
 import { withLinkSource } from '../shared/link-source'
 import { runCheckin } from '../enterprise/teams-service'
-import { runManagedBootstrap } from '../enterprise/teams-bootstrap'
+import { runManagedBootstrap, type ManagedBootstrapResult } from '../enterprise/teams-bootstrap'
+import { planBootstrapRecheck } from './teams-bootstrap-plan'
+import { readTeamsExport } from '../shared/teams-export'
 import {
   exchangeJoin,
   hasPendingJoin,
@@ -45,6 +47,11 @@ import { recordNextAttempt } from '../shared/teams-diag'
 import { nextRetryPlan } from './teams-retry-plan'
 
 console.log('[AI Leak Guard] service worker started')
+
+// Track D close-out: the secret-free, READ-ONLY enrollment export, for the
+// service-worker console with the popup closed: `await algTeamsExport()`.
+// Reads storage only — no network, no check-in, no write (`teams-export`).
+;(globalThis as { algTeamsExport?: typeof readTeamsExport }).algTeamsExport = readTeamsExport
 
 const STORAGE_KEY = 'events'
 const APPEND_MESSAGE_TYPE = 'alg-event-append'
@@ -260,39 +267,83 @@ async function scheduleProvisionRetry(): Promise<void> {
   }
 }
 
-/**
- * Run the managed bootstrap and reconcile its retry alarm. Returns true when
- * this run enrolled the browser. Errors are logged by NAME only — never a
- * message that could carry a token or URL.
- */
-async function safeManagedBootstrap(): Promise<boolean> {
+// Install re-check (F-TD-1): a `no-policy` skip at install schedules a few
+// short, bounded re-checks (`planBootstrapRecheck`) in case Chrome delivers the
+// managed policy after `onInstalled` read it. Local reads only without a token.
+const TEAMS_BOOTSTRAP_RECHECK_ALARM = 'alg-teams-bootstrap-recheck'
+const TEAMS_BOOTSTRAP_RECHECK_COUNT_KEY = 'teamsBootstrapRecheckCount'
+
+async function clearBootstrapRecheck(): Promise<void> {
   try {
-    const result = await runManagedBootstrap({ loadClient: swLoadProvisionClient })
+    await chrome.alarms?.clear(TEAMS_BOOTSTRAP_RECHECK_ALARM)
+    await chrome.storage.local.remove(TEAMS_BOOTSTRAP_RECHECK_COUNT_KEY)
+  } catch {
+    // best-effort
+  }
+}
+
+/** Schedule the next install re-check, or stop when the result no longer calls
+ *  for one / the bound is reached. `fresh` restarts the count (a new install). */
+async function reconcileBootstrapRecheck(
+  result: ManagedBootstrapResult | null,
+  fresh: boolean,
+): Promise<void> {
+  try {
+    const got = await chrome.storage.local.get(TEAMS_BOOTSTRAP_RECHECK_COUNT_KEY)
+    const n = got[TEAMS_BOOTSTRAP_RECHECK_COUNT_KEY]
+    const count = fresh ? 0 : typeof n === 'number' ? n : 0
+    const plan = planBootstrapRecheck(result?.action === 'skip' ? result.reason : null, count)
+    if (!plan.schedule) {
+      await clearBootstrapRecheck()
+      return
+    }
+    chrome.alarms?.create(TEAMS_BOOTSTRAP_RECHECK_ALARM, { delayInMinutes: plan.delayMin })
+    await chrome.storage.local.set({ [TEAMS_BOOTSTRAP_RECHECK_COUNT_KEY]: plan.nextCount })
+  } catch {
+    // best-effort
+  }
+}
+
+/**
+ * Run the managed bootstrap and reconcile its retry alarm. Returns the result
+ * (null when it threw). `trigger` labels the pass in the bootstrap diagnostics.
+ * Errors are logged by NAME only — never a message that could carry a token or
+ * URL.
+ */
+async function safeManagedBootstrap(trigger: string): Promise<ManagedBootstrapResult | null> {
+  try {
+    const result = await runManagedBootstrap({ loadClient: swLoadProvisionClient, trigger })
     if (result.action === 'provision' && result.outcome === 'network') {
       await scheduleProvisionRetry()
-      return false
+    } else {
+      await clearProvisionRetry()
     }
-    await clearProvisionRetry()
-    return result.action === 'provision' && result.outcome === 'enrolled'
+    return result
   } catch (err) {
     console.warn(
       '[AI Leak Guard] teams managed bootstrap failed:',
       err instanceof Error ? err.name : 'error',
     )
-    return false
+    return null
   }
 }
 
-/** Bootstrap outside startup/install (policy change, retry): on a fresh
- *  enrollment, run the first check-in right away so the check-in alarm exists
- *  and managed settings apply without waiting. */
-async function bootstrapThenCheckin(): Promise<void> {
-  if (await safeManagedBootstrap()) await safeRunCheckin('post-provision')
+function enrolledNow(result: ManagedBootstrapResult | null): boolean {
+  return result?.action === 'provision' && result.outcome === 'enrolled'
+}
+
+/** Bootstrap outside startup/install (policy change, retry, re-check): on a
+ *  fresh enrollment, run the first check-in right away so the check-in alarm
+ *  exists and managed settings apply without waiting. */
+async function bootstrapThenCheckin(trigger: string): Promise<ManagedBootstrapResult | null> {
+  const result = await safeManagedBootstrap(trigger)
+  if (enrolledNow(result)) await safeRunCheckin('post-provision')
+  return result
 }
 
 chrome.storage.onChanged?.addListener(async (_changes, areaName) => {
   if (areaName !== 'managed') return
-  await bootstrapThenCheckin()
+  await bootstrapThenCheckin('policy-change')
 })
 
 // ─── Teams Lite (deployment m1) — staff-invitation join handoff ───────
@@ -351,7 +402,10 @@ chrome.alarms?.onAlarm.addListener(async (alarm) => {
   // Async listener → Chrome keeps the worker alive until the check-in settles.
   if (alarm.name === TEAMS_CHECKIN_ALARM) await safeRunCheckin('alarm')
   else if (alarm.name === TEAMS_RETRY_ALARM) await safeRunCheckin('retry')
-  else if (alarm.name === TEAMS_PROVISION_RETRY_ALARM) await bootstrapThenCheckin()
+  else if (alarm.name === TEAMS_PROVISION_RETRY_ALARM) await bootstrapThenCheckin('provision-retry')
+  else if (alarm.name === TEAMS_BOOTSTRAP_RECHECK_ALARM) {
+    await reconcileBootstrapRecheck(await bootstrapThenCheckin('recheck'), false)
+  }
 })
 
 /**
@@ -524,7 +578,7 @@ chrome.runtime.onStartup.addListener(async () => {
   clearSubmitKillSwitchOnStartup()
   // Managed bootstrap first (a no-op without a policy), so a just-provisioned
   // browser's first check-in is this startup one.
-  await safeManagedBootstrap()
+  await safeManagedBootstrap('startup')
   await recoverPendingJoin()
   await safeRunCheckin('startup')
 })
@@ -534,7 +588,9 @@ chrome.runtime.onStartup.addListener(async () => {
 // paused state.
 chrome.runtime.onInstalled.addListener(async () => {
   clearSubmitKillSwitchOnStartup()
-  await safeManagedBootstrap()
+  // A `no-policy` skip here may only mean the policy isn't delivered yet
+  // (force-install): schedule the bounded re-check (F-TD-1).
+  await reconcileBootstrapRecheck(await safeManagedBootstrap('install'), true)
   await safeRunCheckin('install')
 })
 

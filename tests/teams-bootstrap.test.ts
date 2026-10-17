@@ -3,7 +3,8 @@
 // no live backend.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { runManagedBootstrap } from '../src/enterprise/teams-bootstrap'
+import { MAX_BOOTSTRAP_RERUNS, runManagedBootstrap } from '../src/enterprise/teams-bootstrap'
+import { TEAMS_BOOTSTRAP_DIAG_KEY, getLastBootstrapAttempt } from '../src/shared/teams-diag'
 import { runCheckin, runEnroll, runUnenroll } from '../src/enterprise/teams-service'
 import type { ManagedDeploymentPolicy } from '../src/background/teams-bootstrap-plan'
 import type { ProvisionCallResult, ProvisionRequest } from '../src/enterprise/teams-client'
@@ -14,6 +15,7 @@ import {
   setEnrollment,
 } from '../src/shared/teams-storage'
 import { getProvisionAttempt } from '../src/shared/teams-provision-attempt'
+import type { ManagedBootstrapDeps } from '../src/enterprise/teams-bootstrap'
 
 const BASE = 'http://127.0.0.1:54321'
 const OK: ProvisionCallResult = {
@@ -249,5 +251,259 @@ describe('network silence', () => {
     const r = await runManagedBootstrap() // default policy reader + default loader
     expect(r).toEqual({ action: 'skip', reason: 'no-policy' })
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+})
+
+// ─── F-TD-1: a trigger arriving mid-run is coalesced, not swallowed ─────
+
+/** A policy reader whose FIRST read lets the test act "during" the read (e.g. a
+ *  second trigger joining the run after the policy read started), then returns
+ *  the scripted policies in order. */
+function scriptedPolicy(
+  reads: Array<ManagedDeploymentPolicy | null>,
+  duringFirstRead?: () => void,
+) {
+  let n = 0
+  return {
+    readPolicy: async (): Promise<ManagedDeploymentPolicy | null> => {
+      const i = n++
+      if (i === 0) duringFirstRead?.()
+      return reads[Math.min(i, reads.length - 1)] ?? null
+    },
+    count: () => n,
+  }
+}
+
+describe('runManagedBootstrap — coalesced reruns (F-TD-1)', () => {
+  it('force-install race: install reads no policy, the policy-change joins mid-run → one more pass enrolls', async () => {
+    const c = provisionClient([OK])
+    let joined: Promise<unknown> | undefined
+    const deps: ManagedBootstrapDeps = { loadClient: c.loadClient, newId: seqIds() }
+    const p = scriptedPolicy([null, { deploymentToken: 'tok-A', autoEnroll: true }], () => {
+      joined = runManagedBootstrap({ ...deps, readPolicy: p.readPolicy, trigger: 'policy-change' })
+    })
+    const first = await runManagedBootstrap({
+      ...deps,
+      readPolicy: p.readPolicy,
+      trigger: 'install',
+    })
+
+    expect(first).toEqual({ action: 'provision', outcome: 'enrolled' })
+    expect(await joined).toEqual(first) // the joined caller gets the FINAL result
+    expect(p.count()).toBe(2)
+    expect(c.calls).toHaveLength(1)
+    expect(await getEnrollment()).toMatchObject({ install_id: 'i1' })
+    const diag = (await chrome.storage.local.get(TEAMS_BOOTSTRAP_DIAG_KEY))[
+      TEAMS_BOOTSTRAP_DIAG_KEY
+    ]
+    expect(diag).toEqual([
+      expect.objectContaining({
+        trigger: 'install',
+        action: 'skip',
+        result: 'no-policy',
+        tokenPresent: false,
+      }),
+      expect.objectContaining({
+        trigger: 'policy-change',
+        action: 'provision',
+        result: 'enrolled',
+        tokenPresent: true,
+      }),
+    ])
+  })
+
+  it('a trigger that joins BEFORE the policy read needs no rerun (one read, one pass)', async () => {
+    const c = provisionClient([OK])
+    const p = scriptedPolicy([{ deploymentToken: 'tok-A' }])
+    const deps = { readPolicy: p.readPolicy, loadClient: c.loadClient, newId: seqIds() }
+    const [a, b] = await Promise.all([
+      runManagedBootstrap({ ...deps, trigger: 'install' }),
+      runManagedBootstrap({ ...deps, trigger: 'startup' }),
+    ])
+    expect(a).toEqual({ action: 'provision', outcome: 'enrolled' })
+    expect(b).toEqual(a)
+    expect(p.count()).toBe(1)
+    expect(c.calls).toHaveLength(1)
+  })
+
+  it('reruns are bounded: at most 1 + MAX_BOOTSTRAP_RERUNS passes per run', async () => {
+    let reads = 0
+    const readPolicy = async (): Promise<ManagedDeploymentPolicy | null> => {
+      reads++
+      void runManagedBootstrap({ readPolicy, trigger: 'policy-change' }) // a trigger every pass
+      return null
+    }
+    expect(await runManagedBootstrap({ readPolicy, trigger: 'install' })).toEqual({
+      action: 'skip',
+      reason: 'no-policy',
+    })
+    expect(reads).toBe(1 + MAX_BOOTSTRAP_RERUNS)
+  })
+
+  it('never reruns after enrolling (the caller must see `enrolled` to run the first check-in)', async () => {
+    const c = provisionClient([OK])
+    const p = scriptedPolicy([{ deploymentToken: 'tok-A' }])
+    let joined: Promise<unknown> | undefined
+    const loadClient = async () => {
+      // A trigger lands while /provision is in flight (after the policy read).
+      joined = runManagedBootstrap({ readPolicy: p.readPolicy, trigger: 'policy-change' })
+      return c.loadClient()
+    }
+    const r = await runManagedBootstrap({
+      readPolicy: p.readPolicy,
+      loadClient,
+      newId: seqIds(),
+      trigger: 'install',
+    })
+    expect(r).toEqual({ action: 'provision', outcome: 'enrolled' })
+    expect(await joined).toEqual(r)
+    expect(p.count()).toBe(1)
+  })
+
+  it('never reruns a revoke block (permanent by design — no rerun, no request)', async () => {
+    const { setRevokeBlock } = await import('../src/shared/teams-storage')
+    await setRevokeBlock()
+    const c = provisionClient([OK])
+    const p = scriptedPolicy([{ deploymentToken: 'tok-A' }], () => {
+      void runManagedBootstrap({
+        readPolicy: p.readPolicy,
+        loadClient: c.loadClient,
+        trigger: 'policy-change',
+      })
+    })
+    expect(
+      await runManagedBootstrap({
+        readPolicy: p.readPolicy,
+        loadClient: c.loadClient,
+        trigger: 'startup',
+      }),
+    ).toEqual({
+      action: 'skip',
+      reason: 'revoked-block',
+    })
+    expect(p.count()).toBe(1)
+    expect(c.calls).toHaveLength(0)
+    expect(await getLastBootstrapAttempt()).toMatchObject({
+      result: 'revoked-block',
+      tokenPresent: true,
+    })
+  })
+})
+
+// ─── Same-attempt retry, including the FINAL slot ──────────────────────
+//
+// A fake /provision with ONE free slot, modelling the server's contract: a NEW
+// attempt consumes a slot; the SAME attempt recovers its credential without
+// consuming another; a different attempt once the slot is gone is `exhausted`.
+// The first response is LOST after the server consumed the slot. Every retry
+// path the client has — a coalesced rerun, the provision-retry alarm, a browser
+// restart — must send the SAME attempt_id, so the final slot is recovered rather
+// than reported exhausted.
+function oneSlotServer() {
+  const issued = new Map<string, ProvisionCallResult>()
+  let slotsLeft = 1
+  let loseNextResponse = true
+  const seen: string[] = []
+  const loadClient = async () => ({
+    provision: async (
+      _b: string,
+      _a: string,
+      req: ProvisionRequest,
+    ): Promise<ProvisionCallResult> => {
+      seen.push(req.attempt_id)
+      let result = issued.get(req.attempt_id)
+      if (result === undefined) {
+        if (slotsLeft === 0) return { ok: false, code: 'exhausted' }
+        slotsLeft--
+        result = OK
+        issued.set(req.attempt_id, result)
+      }
+      if (loseNextResponse) {
+        loseNextResponse = false
+        return { ok: false, code: 'network' } // slot consumed, response lost
+      }
+      return result
+    },
+  })
+  return { loadClient, seen, slotsLeft: () => slotsLeft }
+}
+
+describe('same-attempt retry, including the final slot (Contract B §5a)', () => {
+  it('lost response on the final slot → a mid-run trigger, then the retry alarm, recover it with the SAME attempt', async () => {
+    const server = oneSlotServer()
+    const policyA = policy({ deploymentToken: 'tok-A' })
+    let joined: Promise<unknown> | undefined
+    const deps: ManagedBootstrapDeps = { loadClient: server.loadClient, newId: seqIds() }
+    const readPolicy = async () => {
+      joined ??= runManagedBootstrap({ ...deps, readPolicy: policyA, trigger: 'policy-change' })
+      return policyA()
+    }
+    expect(await runManagedBootstrap({ ...deps, readPolicy, trigger: 'install' })).toEqual({
+      action: 'provision',
+      outcome: 'network',
+    })
+    expect(await joined).toEqual({ action: 'provision', outcome: 'network' }) // no rerun after network
+    expect(server.seen).toEqual(['id1'])
+
+    // The provision-retry alarm (or a restart) — same persisted attempt.
+    expect(
+      await runManagedBootstrap({ ...deps, readPolicy: policyA, trigger: 'provision-retry' }),
+    ).toEqual({
+      action: 'provision',
+      outcome: 'enrolled',
+    })
+    expect(server.seen).toEqual(['id1', 'id1'])
+    expect(server.slotsLeft()).toBe(0)
+    expect(await getEnrollment()).toMatchObject({ install_id: 'i1' })
+    expect(await getProvisionAttempt()).toBeNull()
+  })
+
+  it('the install re-check path (no policy, then policy) also reuses the persisted attempt after a lost response', async () => {
+    const server = oneSlotServer()
+    const deps: ManagedBootstrapDeps = { loadClient: server.loadClient, newId: seqIds() }
+    expect(
+      await runManagedBootstrap({ ...deps, readPolicy: policy(null), trigger: 'install' }),
+    ).toEqual({
+      action: 'skip',
+      reason: 'no-policy',
+    })
+    expect(
+      await runManagedBootstrap({
+        ...deps,
+        readPolicy: policy({ deploymentToken: 'tok-A' }),
+        trigger: 'recheck',
+      }),
+    ).toEqual({ action: 'provision', outcome: 'network' })
+    expect(
+      await runManagedBootstrap({
+        ...deps,
+        readPolicy: policy({ deploymentToken: 'tok-A' }),
+        trigger: 'recheck',
+      }),
+    ).toEqual({ action: 'provision', outcome: 'enrolled' })
+    expect(new Set(server.seen)).toEqual(new Set(['id1']))
+    expect(server.slotsLeft()).toBe(0)
+  })
+})
+
+describe('bootstrap diagnostics are content-free', () => {
+  it('records the decision and token presence — never the token or the attempt secret', async () => {
+    const c = provisionClient([{ ok: false, code: 'exhausted' }])
+    await runManagedBootstrap({
+      readPolicy: policy({ deploymentToken: 'tok-SECRET-VALUE' }),
+      loadClient: c.loadClient,
+      newId: () => 'attempt-SECRET-VALUE',
+      trigger: 'startup',
+    })
+    const raw = JSON.stringify(
+      (await chrome.storage.local.get(TEAMS_BOOTSTRAP_DIAG_KEY))[TEAMS_BOOTSTRAP_DIAG_KEY],
+    )
+    expect(raw).not.toContain('SECRET')
+    expect(await getLastBootstrapAttempt()).toMatchObject({
+      trigger: 'startup',
+      action: 'provision',
+      result: 'exhausted',
+      tokenPresent: true,
+    })
   })
 })

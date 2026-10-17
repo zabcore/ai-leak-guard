@@ -24,6 +24,7 @@ import {
   type ProvisionAttempt,
 } from '../shared/teams-provision-attempt'
 import type { provision as provisionFn } from './teams-client'
+import { attemptRef, nowHr, traceEvent } from '../shared/teams-trace'
 
 export type ProvisionRunOutcome =
   | 'already-enrolled'
@@ -44,6 +45,8 @@ export interface ProvisionRunDeps {
   readonly loadClient?: () => Promise<{ provision: typeof provisionFn }>
   /** Injectable high-entropy id generator (default: crypto.randomUUID). */
   readonly newId?: () => string
+  /** What fired this run (trace only). */
+  readonly trigger?: string
 }
 
 const defaultLoadClient = (): Promise<{ provision: typeof provisionFn }> => import('./teams-client')
@@ -73,7 +76,8 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
   const newId = deps.newId ?? defaultNewId
   const existing = await getProvisionAttempt()
   let attempt: ProvisionAttempt
-  if (existing !== null && existing.deploymentToken === deps.deploymentToken) {
+  const reused = existing !== null && existing.deploymentToken === deps.deploymentToken
+  if (reused) {
     attempt = existing
   } else {
     const attemptId = newId()
@@ -87,6 +91,14 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
   }
 
   const { provision } = await (deps.loadClient ?? defaultLoadClient)()
+  // Trace BEFORE the request, and wait for it to persist: an attempt that hangs,
+  // is blocked, or dies with the worker is still on record (Track D close-out).
+  const ref = await attemptRef(attempt.attemptId)
+  await traceEvent('provision-start', {
+    trigger: deps.trigger ?? 'unknown',
+    attempt: reused ? 'reused' : 'new',
+    attemptRef: ref,
+  })
   const result = await provision(config.baseUrl, config.anonKey, {
     deployment_token: deps.deploymentToken,
     attempt_id: attempt.attemptId,
@@ -94,6 +106,15 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
     // attempt persisted by an older build sends the canonical key.
     idempotency_key: await deriveIdempotencyKey('provision', attempt.attemptId),
   })
+
+  const receivedAt = nowHr()
+  if (!result.ok && result.code === 'install_revoked') {
+    await traceEvent(
+      'revoke-response-received',
+      { source: 'provision', attemptRef: ref },
+      receivedAt,
+    )
+  }
 
   if (result.ok) {
     // The store refuses to overwrite another install's enrollment (invariant):
@@ -106,30 +127,39 @@ export async function runProvision(deps: ProvisionRunDeps): Promise<ProvisionRun
       base_url: config.baseUrl,
     })
     await clearProvisionAttempt()
-    return stored.ok ? 'enrolled' : 'already-enrolled'
+    const outcome = stored.ok ? 'enrolled' : 'already-enrolled'
+    await traceEvent('provision-result', {
+      outcome,
+      attemptRef: ref,
+      install_id: result.data.install_id,
+      org_id: result.data.org_id,
+    })
+    return outcome
   }
 
-  switch (result.code) {
+  const outcome = provisionFailureOutcome(result.code)
+  if (outcome !== 'network') await clearProvisionAttempt() // keep it for a same-attempt retry
+  await traceEvent('provision-result', { outcome, attemptRef: ref })
+  return outcome
+}
+
+function provisionFailureOutcome(
+  code: Exclude<Awaited<ReturnType<typeof provisionFn>>, { ok: true }>['code'],
+): ProvisionRunOutcome {
+  switch (code) {
     case 'network':
-      // Keep the attempt so a later retry reuses the same attempt_id.
       return 'network'
     case 'invalid_token':
-      await clearProvisionAttempt()
       return 'invalid-token'
     case 'exhausted':
-      await clearProvisionAttempt()
       return 'exhausted'
     case 'expired':
-      await clearProvisionAttempt()
       return 'expired'
     case 'token_revoked':
-      await clearProvisionAttempt()
       return 'token-revoked'
     case 'install_revoked':
-      await clearProvisionAttempt()
       return 'install-revoked'
     case 'recovery_window_expired':
-      await clearProvisionAttempt()
       return 'recovery-expired'
   }
 }
