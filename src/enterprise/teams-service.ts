@@ -306,8 +306,13 @@ async function applyReconciliation(reconciliation: Reconciliation): Promise<void
       // Snapshot BEFORE overwriting the effective pref (snapshot is unchanged on
       // a later revision bump — it holds the user's ORIGINAL value).
       await setPreManagedPrefs(reconciliation.nextPreManaged)
-      await setManagedState(reconciliation.nextManaged)
       await setPrefs({ showIndicator: reconciliation.nextShowIndicator })
+      // The applied revision is what the NEXT check-in reports as acknowledged,
+      // so it is recorded LAST, only once every settings write above succeeded.
+      // A failed write or a worker death before this line leaves the previous
+      // revision recorded: the next check-in reports that one and re-applies
+      // (the snapshot above is kept, never overwritten, on the retry).
+      await setManagedState(reconciliation.nextManaged)
       return
     case 'revoke':
       if (reconciliation.restoreShowIndicator !== null) {
