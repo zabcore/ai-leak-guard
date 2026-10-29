@@ -19,6 +19,10 @@
 //
 // Output (release/selfhosted/): ai-leak-guard-<version>.crx, update.xml,
 // managed_schema.json, extension-id.txt, POLICIES.md.
+//
+// Chrome runs WITH its sandbox. Only a throwaway CI/container run as root, where
+// Chrome refuses to start sandboxed, may opt out explicitly with
+// ALG_CHROME_NO_SANDBOX=1 (it prints a warning). Never set it on a signing machine.
 
 import { execFileSync } from 'node:child_process'
 import { createHash, createPrivateKey, createPublicKey } from 'node:crypto'
@@ -120,16 +124,28 @@ writeFileSync(
   `${JSON.stringify({ ...manifest, update_url: updateUrl }, null, 2)}\n`,
 )
 
-execFileSync(
-  chromeBin(),
-  [
-    '--no-sandbox',
-    '--headless=new',
-    `--pack-extension=${extDir}`,
-    `--pack-extension-key=${resolve(keyPath)}`,
-  ],
-  { stdio: 'ignore', timeout: 120_000 },
-)
+const chromeArgs = [
+  '--headless=new',
+  `--pack-extension=${extDir}`,
+  `--pack-extension-key=${resolve(keyPath)}`,
+]
+const noSandbox = process.env.ALG_CHROME_NO_SANDBOX === '1'
+if (noSandbox) {
+  console.warn(
+    '[pack-crx] WARNING: ALG_CHROME_NO_SANDBOX=1 — Chrome runs WITHOUT its sandbox. Only for a throwaway CI/container run; never on a signing machine.',
+  )
+  chromeArgs.unshift('--no-sandbox')
+}
+try {
+  execFileSync(chromeBin(), chromeArgs, { stdio: 'ignore', timeout: 120_000 })
+} catch {
+  const root = typeof process.getuid === 'function' && process.getuid() === 0
+  fail(
+    root && !noSandbox
+      ? 'Chrome failed to pack. It refuses to run sandboxed as root: run as a normal user (recommended), or, in a throwaway CI container only, set ALG_CHROME_NO_SANDBOX=1.'
+      : 'Chrome failed to pack the extension.',
+  )
+}
 const packed = join(stage, 'ext.crx')
 if (!existsSync(packed)) fail('Chromium did not produce a .crx.')
 const crx = readFileSync(packed)
